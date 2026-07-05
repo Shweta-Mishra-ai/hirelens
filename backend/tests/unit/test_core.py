@@ -208,9 +208,9 @@ class TestConfig:
             SUPABASE_URL="https://test.supabase.co",
             SUPABASE_SERVICE_KEY="test",
         )
-        assert isinstance(s.ALLOWED_ORIGINS, list)
-        assert len(s.ALLOWED_ORIGINS) == 2
-        assert "http://localhost:3000" in s.ALLOWED_ORIGINS
+        assert isinstance(s.allowed_origins_list, list)
+        assert len(s.allowed_origins_list) == 2
+        assert "http://localhost:3000" in s.allowed_origins_list
 
 
 # ── Test: Exceptions ──────────────────────────────────────────────────────────
