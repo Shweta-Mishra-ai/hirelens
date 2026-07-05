@@ -4,14 +4,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        # This tells pydantic-settings to NOT try JSON parsing strings
+        env_parse_none_str="None",
+    )
 
     APP_ENV: str = "development"
     SECRET_KEY: str = "dev-secret-key-change-in-production-min-32"
     DEBUG: bool = False
 
-    # CORS
-    ALLOWED_ORIGINS: List[str] = ["http://localhost:3000"]
+    # CORS — stored as plain string, parsed manually
+    ALLOWED_ORIGINS: str = "http://localhost:3000"
 
     # Supabase
     DATABASE_URL: str = ""
@@ -19,26 +24,44 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_KEY: str = ""
     SUPABASE_ANON_KEY: str = ""
 
-    # Redis (optional — rate limiting degrades gracefully without it)
+    # Redis
     REDIS_URL: str = ""
     REDIS_PASSWORD: str = ""
 
-    # LLM — Gemini 2.5 Flash primary
+    # LLM
     GEMINI_API_KEY: str = ""
-    GROQ_API_KEY: str = ""          # fallback
-    ANTHROPIC_API_KEY: str = ""     # fallback
+    GROQ_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
 
-    # File limits
+    # Limits
     MAX_FILE_SIZE_MB: int = 10
     RATE_LIMIT_PER_MINUTE: int = 20
     ANALYSIS_TIMEOUT_SECONDS: int = 120
 
-    @field_validator("ALLOWED_ORIGINS", mode="before")
-    @classmethod
-    def parse_origins(cls, v):
-        if isinstance(v, str):
-            return [o.strip() for o in v.split(",")]
-        return v
+    @property
+    def allowed_origins_list(self) -> List[str]:
+        """
+        Parse ALLOWED_ORIGINS from any format:
+        - "http://localhost:3000"
+        - "http://localhost:3000,https://app.vercel.app"
+        - '["http://localhost:3000"]'
+        """
+        val = self.ALLOWED_ORIGINS.strip()
+        
+        # JSON array format: ["url1","url2"]
+        if val.startswith("["):
+            import json
+            try:
+                return json.loads(val)
+            except Exception:
+                pass
+        
+        # Comma-separated: url1,url2
+        if "," in val:
+            return [o.strip() for o in val.split(",") if o.strip()]
+        
+        # Single URL
+        return [val] if val else ["http://localhost:3000"]
 
     @property
     def is_production(self) -> bool:
