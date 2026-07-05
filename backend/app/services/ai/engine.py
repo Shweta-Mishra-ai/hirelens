@@ -94,16 +94,24 @@ async def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 
     }
 
     async with httpx.AsyncClient(timeout=90.0) as client:
-        r = await client.post(url, json=payload)
+        try:
+            r = await client.post(url, json=payload)
 
-        if r.status_code == 429:
-            raise LLMError("Gemini rate limit hit. Try again in a moment.")
-        if r.status_code == 400:
-            body = r.json()
-            raise LLMError(f"Gemini API error: {body.get('error', {}).get('message', 'Bad request')}")
+            if r.status_code == 429:
+                raise LLMError("Gemini rate limit hit. Try again in a moment.")
+            if r.status_code == 400:
+                body = r.json()
+                raise LLMError(f"Gemini API error: {body.get('error', {}).get('message', 'Bad request')}")
 
-        r.raise_for_status()
-        data = r.json()
+            if not r.is_success:
+                raise LLMError(f"Gemini API returned status code {r.status_code}")
+
+            data = r.json()
+        except httpx.HTTPError as e:
+            error_msg = str(e)
+            if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY in error_msg:
+                error_msg = error_msg.replace(settings.GEMINI_API_KEY, "********")
+            raise LLMError(f"Gemini connection error: {error_msg}")
 
         # Safe extraction with helpful error
         try:
@@ -237,7 +245,10 @@ async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000
                 break
 
             except Exception as e:
-                last_error = LLMError(f"Unexpected error from {provider_name}: {e}")
+                error_msg = str(e)
+                if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY in error_msg:
+                    error_msg = error_msg.replace(settings.GEMINI_API_KEY, "********")
+                last_error = LLMError(f"Unexpected error from {provider_name}: {error_msg}")
                 logger.warning(str(last_error))
                 if attempt == 0:
                     await asyncio.sleep(2)
