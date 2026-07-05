@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "HireLens — AI Recruiter Intelligence",
   description:
-    "Analyze resumes for credibility signals, skills verification, and risk — powered by Gemini 2.5 Flash.",
+    "Analyze resumes for credibility signals, skills verification, and risk — powered by HireLens Decision Intelligence.",
   keywords: ["resume analysis", "AI recruiting", "credibility score", "HireLens"],
   openGraph: {
     title: "HireLens",
