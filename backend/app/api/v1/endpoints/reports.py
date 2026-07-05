@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from typing import Literal
 
 from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError
+from app.core.exceptions import NotFoundError, ForbiddenError
 from app.api.v1.endpoints.analysis import _jobs  # in-memory fallback store
 
 logger = logging.getLogger("hirelens")
