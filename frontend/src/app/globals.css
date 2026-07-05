@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #060F1A;
+  --surf: #0A1525;
+  --card: #0E1C2E;
+  --border: #172840;
+  --blue: #1D6AFF;
+  --blue-l: #4B8DFF;
+  --cyan: #06B6D4;
+  --cyan-l: #22D3EE;
+  --green: #059669;
+  --green-l: #10B981;
+  --amber: #D97706;
+  --amber-l: #FBBF24;
+  --rose: #DC2626;
+  --rose-l: #F87171;
+  --text-pri: #EFF6FF;
+  --text-sec: #94A3B8;
+  --text-mut: #475569;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text-pri);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: .2; transform: scale(.7); }
+  50%       { opacity: 1;  transform: scale(1.1); }
+}
+
+.animate-fade-up { animation: fadeUp .3s ease forwards; }
+.animate-spin    { animation: spin 1s linear infinite; }

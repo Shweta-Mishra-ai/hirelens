@@ -1,0 +1,258 @@
+"""
+HireLens — Analysis API
+Fixed:
+- Supabase .execute() is SYNC — no await
+- MIME type detection improved (browsers send wrong types)
+- Job cleanup after 1 hour to prevent memory leak
+- Background task error isolation
+- Rate limiting with Redis (sync client)
+"""
+
+import uuid
+import time
+import logging
+from typing import Annotated
+from fastapi import APIRouter, Depends, File, UploadFile, BackgroundTasks
+
+from app.core.config import settings
+from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.exceptions import FileTooLarge, UnsupportedFileType, NotFoundError, ForbiddenError
+from app.services.parser.document_parser import extract_text
+from app.services.ai.engine import engine
+
+logger = logging.getLogger("hirelens")
+router = APIRouter()
+
+# In-memory job store with timestamp for cleanup
+# Key: job_id, Value: {job data + created_at}
+_jobs: dict[str, dict] = {}
+
+ALLOWED_MIME = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    # Some browsers/OS send these variants
+    "application/msword",
+    "application/x-pdf",
+    "binary/octet-stream",
+    "application/octet-stream",
+}
+
+ALLOWED_EXT = {"pdf", "docx"}
+
+
+def _cleanup_old_jobs():
+    """Remove jobs older than 1 hour to prevent memory leak."""
+    cutoff = time.time() - 3600
+    stale = [jid for jid, j in _jobs.items() if j.get("created_at", 0) < cutoff]
+    for jid in stale:
+        _jobs.pop(jid, None)
+    if stale:
+        logger.info(f"Cleaned up {len(stale)} stale jobs")
+
+
+def _check_rate_limit(redis, user_id: str) -> None:
+    """Simple Redis rate limiting. Skips if Redis unavailable."""
+    if not redis:
+        return
+    try:
+        key = f"rl:{user_id}:{int(time.time()) // 60}"
+        count = redis.incr(key)
+        if count == 1:
+            redis.expire(key, 60)
+        if count > settings.RATE_LIMIT_PER_MINUTE:
+            from app.core.exceptions import RateLimitExceeded
+            raise RateLimitExceeded(retry_after=60)
+    except Exception as e:
+        # Don't block upload if Redis has issues
+        if "RateLimitExceeded" in type(e).__name__:
+            raise
+        logger.warning(f"Rate limit check failed (skipping): {e}")
+
+
+@router.post("/upload")
+async def upload_resume(
+    background_tasks: BackgroundTasks,
+    file: Annotated[UploadFile, File(description="PDF or DOCX, max 10MB")],
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+):
+    """
+    Upload resume → returns job_id immediately (202 Accepted).
+    Background task runs AI analysis (~10-30s).
+    Poll /analysis/{job_id}/status for progress updates.
+    """
+    # Cleanup old jobs periodically
+    if len(_jobs) > 100:
+        _cleanup_old_jobs()
+
+    # Rate limit check
+    _check_rate_limit(redis, current_user["id"])
+
+    # Read file
+    contents = await file.read()
+    if not contents:
+        raise UnsupportedFileType("empty file")
+
+    size_mb = len(contents) / (1024 * 1024)
+    if size_mb > settings.MAX_FILE_SIZE_MB:
+        raise FileTooLarge(settings.MAX_FILE_SIZE_MB)
+
+    filename = (file.filename or "").strip()
+    mime = (file.content_type or "").lower().strip()
+
+    # Detect file type — prefer extension (more reliable than browser MIME)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    if ext not in ALLOWED_EXT and mime not in ALLOWED_MIME:
+        raise UnsupportedFileType(f"{mime or ext or 'unknown'}")
+
+    # Normalize mime type for parser
+    if ext == "pdf" or mime == "application/pdf":
+        effective_mime = "application/pdf"
+    elif ext == "docx" or "wordprocessingml" in mime:
+        effective_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif ext == "pdf":
+        effective_mime = "application/pdf"
+    else:
+        effective_mime = "application/pdf"  # default, parser will validate
+
+    job_id = str(uuid.uuid4())
+    user_id = current_user["id"]
+
+    _jobs[job_id] = {
+        "id": job_id,
+        "user_id": user_id,
+        "status": "queued",
+        "stage": "queued",
+        "progress": 0,
+        "file_name": filename or "resume",
+        "report_id": None,
+        "error": None,
+        "created_at": time.time(),
+    }
+
+    logger.info(f"Job created | id={job_id} user={user_id} file={filename} size={size_mb:.1f}MB mime={effective_mime}")
+
+    background_tasks.add_task(
+        _run_analysis,
+        job_id=job_id,
+        user_id=user_id,
+        file_bytes=contents,
+        mime_type=effective_mime,
+        filename=filename or "resume",
+        db=db,
+    )
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "message": f"Analysis queued. Poll /api/v1/analysis/{job_id}/status every 2s.",
+    }
+
+
+@router.get("/{job_id}/status")
+async def get_status(
+    job_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Poll analysis job status. Returns progress, stage, and report_id when complete."""
+    job = _jobs.get(job_id)
+    if not job:
+        raise NotFoundError(f"Job '{job_id}' not found. It may have expired (jobs kept 1 hour).")
+    if job["user_id"] != current_user["id"]:
+        raise ForbiddenError()
+
+    # Return without internal fields
+    return {
+        "id": job["id"],
+        "status": job["status"],
+        "stage": job["stage"],
+        "progress": job["progress"],
+        "file_name": job["file_name"],
+        "report_id": job["report_id"],
+        "error": job["error"],
+    }
+
+
+# ── Background Analysis Task ──────────────────────────────────────────────────
+
+async def _run_analysis(
+    job_id: str,
+    user_id: str,
+    file_bytes: bytes,
+    mime_type: str,
+    filename: str,
+    db,
+):
+    """
+    Runs in background. Updates _jobs[job_id] with progress.
+    All exceptions are caught — never crashes the server.
+    """
+
+    def upd(**kwargs):
+        if job_id in _jobs:
+            _jobs[job_id].update(kwargs)
+
+    async def on_progress(stage: str, pct: int):
+        upd(stage=stage, progress=pct, status="running")
+
+    try:
+        upd(status="running", stage="parsing", progress=5)
+
+        # ── Step 1: Parse document ────────────────────────────────────────────
+        try:
+            raw_text = extract_text(file_bytes, mime_type, filename)
+        except Exception as e:
+            logger.error(f"[{job_id}] Parse failed: {e}")
+            upd(status="failed", stage="failed", error=f"Could not read file: {str(e)}")
+            return
+
+        logger.info(f"[{job_id}] Parsed {len(raw_text)} chars from {filename}")
+        upd(stage="extracting", progress=15)
+
+        # ── Step 2: AI analysis ───────────────────────────────────────────────
+        try:
+            result = await engine.run(raw_text=raw_text, on_progress=on_progress)
+        except Exception as e:
+            logger.error(f"[{job_id}] AI analysis failed: {e}", exc_info=True)
+            upd(status="failed", stage="failed", error=f"AI analysis failed: {str(e)}")
+            return
+
+        # ── Step 3: Store in DB ───────────────────────────────────────────────
+        report_id = str(uuid.uuid4())
+
+        if db:
+            try:
+                # Supabase Python v2 — synchronous .execute(), NO await
+                db.table("reports").insert({
+                    "id": report_id,
+                    "user_id": user_id,
+                    "job_id": job_id,
+                    "file_name": filename,
+                    "candidate_name": (result.get("candidate") or {}).get("name") or "Unknown",
+                    "overall_score": int((result.get("credibility") or {}).get("overall") or 0),
+                    "recommendation": (result.get("credibility") or {}).get("recommendation") or "manual_review",
+                    "report_data": result,
+                }).execute()
+                logger.info(f"[{job_id}] Stored report {report_id} in Supabase")
+            except Exception as e:
+                logger.warning(f"[{job_id}] DB store failed — using in-memory fallback: {e}")
+                # Store in memory as fallback so report is still accessible
+                _jobs[f"report_{report_id}"] = result
+        else:
+            # No DB configured — store in memory
+            logger.info(f"[{job_id}] No DB — storing report {report_id} in memory")
+            _jobs[f"report_{report_id}"] = result
+
+        upd(status="complete", stage="complete", progress=100, report_id=report_id)
+        logger.info(
+            f"[{job_id}] ✓ Complete | report={report_id} "
+            f"score={result.get('credibility', {}).get('overall')} "
+            f"rec={result.get('credibility', {}).get('recommendation')}"
+        )
+
+    except Exception as e:
+        # Catch-all — should never reach here
+        logger.error(f"[{job_id}] Unexpected error in background task: {e}", exc_info=True)
+        upd(status="failed", stage="failed", error="Unexpected server error. Please try again.")
