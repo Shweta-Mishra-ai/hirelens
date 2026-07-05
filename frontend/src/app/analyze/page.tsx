@@ -9,7 +9,7 @@ const STAGES = [
   { key: "queued",     label: "Preparing upload" },
   { key: "parsing",   label: "Extracting document text" },
   { key: "extracting", label: "Parsing resume structure" },
-  { key: "analyzing", label: "Running Gemini 2.5 Flash analysis" },
+  { key: "analyzing", label: "Running Deep Decision Intelligence Analysis" },
   { key: "complete",  label: "Building your report" },
 ];
 
@@ -84,7 +84,7 @@ export default function AnalyzePage() {
                 Analyze a Resume
               </h1>
               <p style={{ fontSize: 14, color: "#94A3B8", margin: 0, lineHeight: 1.65 }}>
-                Upload a real PDF or DOCX. Gemini 2.5 Flash reads the actual file<br />
+                Upload a real PDF or DOCX. HireLens reads the actual file<br />
                 and returns a full credibility assessment in under 30 seconds.
               </p>
             </div>
@@ -117,7 +117,7 @@ export default function AnalyzePage() {
             {/* Feature chips */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 20 }}>
               {[
-                ["🤖", "Gemini 2.5 Flash", "Google's latest model"],
+                ["⚡", "Deep Analysis", "Frontier-class semantic engine"],
                 ["📊", "Credibility Score", "Evidence-linked 0–100"],
                 ["🚩", "Risk Flags", "Every flag cites source text"],
                 ["💬", "Interview Qs", "Candidate-specific only"],
@@ -131,7 +131,7 @@ export default function AnalyzePage() {
             </div>
 
             <div style={{ marginTop: 16, padding: "12px 16px", background: "#0E1C2E", border: "1px solid #172840", borderRadius: 12, fontSize: 12, color: "#64748B", lineHeight: 1.6 }}>
-              🛡 <strong style={{ color: "#94A3B8" }}>Privacy notice:</strong> Resume text is sent to Google Gemini for analysis. No data is permanently stored without your consent. HireLens assists recruiters — final hiring decisions always rest with humans.
+              🛡 <strong style={{ color: "#94A3B8" }}>Privacy notice:</strong> Resume text is processed securely. No data is permanently stored without your consent. HireLens assists recruiters — final hiring decisions always rest with humans.
             </div>
           </div>
         )}
