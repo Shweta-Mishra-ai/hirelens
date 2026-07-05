@@ -78,7 +78,7 @@ async def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 
     import httpx
 
     # Use stable model name
-    model = "gemini-2.5-flash-preview-05-20"
+    model = "gemini-2.5-flash"
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{model}:generateContent?key={settings.GEMINI_API_KEY}"
