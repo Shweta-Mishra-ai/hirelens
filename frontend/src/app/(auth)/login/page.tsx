@@ -1,14 +1,38 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
+import { supabase } from "@/lib/supabase";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, isLoading, error, clearError } = useAuthStore();
+  const { login, oauthLogin, isLoading, error, clearError } = useAuthStore();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+
+  // Listen for Supabase auth state change (like redirect from OAuth)
+  useEffect(() => {
+    // Check active session on mount
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.access_token && !isLoading && !useAuthStore.getState().token) {
+        oauthLogin(session.access_token);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === "SIGNED_IN" && session?.access_token) {
+        try {
+          await oauthLogin(session.access_token);
+          router.replace("/dashboard");
+        } catch (e) {
+          console.error("Google Sign-In failed:", e);
+        }
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [oauthLogin, router, isLoading]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -18,6 +42,22 @@ export default function LoginPage() {
       router.replace("/dashboard");
     } catch { /* shown via store */ }
   }
+
+  const handleGoogleLogin = async () => {
+    clearError();
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin + "/login",
+        },
+      });
+      if (error) throw error;
+    } catch (e: any) {
+      console.error(e);
+      alert(e.message || "Google Sign-in failed");
+    }
+  };
 
   const S = {
     page: { minHeight: "100vh", background: "#060F1A", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 },
@@ -56,6 +96,45 @@ export default function LoginPage() {
               {isLoading ? "Signing in…" : "Sign In"}
             </button>
           </form>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "20px 0" }}>
+            <div style={{ flex: 1, height: 1, background: "#172840" }} />
+            <span style={{ fontSize: 11, color: "#64748B", fontWeight: 700, letterSpacing: 1 }}>OR</span>
+            <div style={{ flex: 1, height: 1, background: "#172840" }} />
+          </div>
+
+          <button
+            onClick={handleGoogleLogin}
+            disabled={isLoading}
+            style={{
+              width: "100%",
+              padding: "11px",
+              borderRadius: 11,
+              background: "none",
+              border: "1px solid #172840",
+              color: "#EFF6FF",
+              fontWeight: 600,
+              fontSize: 14,
+              cursor: isLoading ? "not-allowed" : "pointer",
+              fontFamily: "inherit",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 10,
+              transition: "all .15s",
+            }}
+            onMouseOver={e => { (e.currentTarget as HTMLElement).style.borderColor = "#1D6AFF"; (e.currentTarget as HTMLElement).style.background = "rgba(29,106,255,0.06)"; }}
+            onMouseOut={e => { (e.currentTarget as HTMLElement).style.borderColor = "#172840"; (e.currentTarget as HTMLElement).style.background = "none"; }}
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18">
+              <path fill="#EA4335" d="M9 3.6c1.6 0 3 .6 4.1 1.6l3-3C14.3.9 11.9 0 9 0 5.5 0 2.4 2 1 5l3.2 2.5C5 5.2 6.8 3.6 9 3.6z"/>
+              <path fill="#4285F4" d="M17.6 9.2c0-.6 0-1.2-.1-1.8H9v3.4h4.8c-.2 1.1-.8 2-1.8 2.6l2.8 2.2c1.7-1.6 2.8-3.9 2.8-6.4z"/>
+              <path fill="#FBBC05" d="M4.2 10.5C4 9.9 3.9 9.3 3.9 8.7s.1-1.2.3-1.8L1 4.4C.3 5.7 0 7.2 0 8.7s.3 3 1 4.3l3.2-2.5z"/>
+              <path fill="#34A853" d="M9 18c2.4 0 4.5-.8 6-2.2l-2.8-2.2c-.8.6-1.9.9-3.2.9-2.2 0-4-1.6-4.8-3.8L1 13.2C2.4 16 5.5 18 9 18z"/>
+            </svg>
+            Continue with Google
+          </button>
+
           <p style={{ textAlign: "center", fontSize: 13, color: "#64748B", marginTop: 20, marginBottom: 0 }}>
             No account? <Link href="/signup" style={{ color: "#4B8DFF", textDecoration: "none", fontWeight: 600 }}>Create one free</Link>
           </p>

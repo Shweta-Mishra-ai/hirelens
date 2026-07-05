@@ -119,6 +119,12 @@ export const authAPI = {
 
   me: (token: string) =>
     req<{ id: string; email: string }>("/api/v1/auth/me", { token }),
+
+  oauthVerify: (accessToken: string) =>
+    req<{ access_token: string; user: User }>(
+      "/api/v1/auth/oauth-verify",
+      { method: "POST", body: JSON.stringify({ access_token: accessToken }) },
+    ),
 };
 
 // ── Analysis ──────────────────────────────────────────────────────────────────
