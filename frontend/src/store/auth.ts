@@ -9,6 +9,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { authAPI, APIError } from "@/lib/api";
 import type { User } from "@/types";
+import { supabase } from "@/lib/supabase";
 
 interface AuthStore {
   user: User | null;
@@ -23,6 +24,7 @@ interface AuthStore {
     fullName: string,
     company?: string,
   ) => Promise<{ requiresEmailConfirmation: boolean }>;
+  oauthLogin: (accessToken: string) => Promise<void>;
   logout: () => void;
   clearError: () => void;
 }
@@ -91,13 +93,33 @@ export const useAuthStore = create<AuthStore>()(
         }
       },
 
-      logout: () =>
+      oauthLogin: async (accessToken) => {
+        set({ isLoading: true, error: null });
+        try {
+          const res = await authAPI.oauthVerify(accessToken);
+          set({
+            token: res.access_token,
+            user: res.user,
+            isLoading: false,
+            error: null,
+          });
+        } catch (e) {
+          const msg =
+            e instanceof APIError ? e.message : "Google Sign-In verification failed.";
+          set({ isLoading: false, error: msg, token: null, user: null });
+          throw e;
+        }
+      },
+
+      logout: () => {
+        supabase.auth.signOut();
         set({
           user: null,
           token: null,
           error: null,
           requiresEmailConfirmation: false,
-        }),
+        });
+      },
 
       clearError: () => set({ error: null }),
     }),

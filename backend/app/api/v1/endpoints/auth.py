@@ -167,6 +167,46 @@ async def login(body: LoginRequest, db=Depends(get_db)):
         raise AuthError("Login failed. Please try again.")
 
 
+class OAuthVerifyRequest(BaseModel):
+    access_token: str
+
+
+@router.post("/oauth-verify")
+async def oauth_verify(body: OAuthVerifyRequest, db=Depends(get_db)):
+    """
+    Verify Supabase session from frontend OAuth (Google) and return custom JWT.
+    """
+    if not db:
+        raise HireLensException("Database not configured.")
+    
+    try:
+        # Get user details from Supabase using the frontend's access token
+        user_response = db.auth.get_user(body.access_token)
+        user = user_response.user
+        if not user:
+            raise AuthError("Invalid Supabase session.")
+            
+        token = create_access_token({
+            "sub": str(user.id),
+            "email": str(user.email),
+        })
+        
+        meta = user.user_metadata or {}
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": {
+                "id": str(user.id),
+                "email": str(user.email),
+                "full_name": meta.get("full_name", meta.get("name", "")),
+                "company": meta.get("company", ""),
+            },
+        }
+    except Exception as e:
+        logger.error(f"OAuth verification failed: {e}")
+        raise AuthError("OAuth session verification failed. Please try again.")
+
+
 @router.get("/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
     """Get current authenticated user's profile."""
