@@ -90,6 +90,9 @@ async def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 
             "temperature": temperature,
             "maxOutputTokens": max_tokens,
             "responseMimeType": "application/json",
+            "thinkingConfig": {
+                "thinkingBudget": 0
+            }
         },
     }
 
