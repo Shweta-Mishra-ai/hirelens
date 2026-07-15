@@ -14,7 +14,7 @@ module.exports = {
         cyanl:  "#22D3EE",
       },
       fontFamily: {
-        mono: ["'JetBrains Mono'", "'Fira Code'", "monospace"],
+        mono: ["var(--font-mono)", "'Fira Code'", "monospace"],
       },
     },
   },

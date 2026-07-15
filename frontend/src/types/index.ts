@@ -132,6 +132,66 @@ export interface AnalysisJob {
   error?: string | null;
 }
 
+// ── JD Match (Feature 2) ────────────────────────────────────────────────────
+export type MatchVerdict = "strong_fit" | "partial_fit" | "weak_fit" | "unknown";
+
+export interface MatchedCandidate {
+  rank: number;
+  is_best_fit: boolean;
+  report_id: string;
+  file_name: string;
+  candidate_name: string;
+  overall_score: number;
+  recommendation: Recommendation;
+  match_percent: number;
+  matching_skills: string[];
+  missing_skills: string[];
+  verdict: MatchVerdict;
+  rationale: string;
+}
+
+export interface MatchBatchStatus {
+  batch_id: string;
+  total: number;
+  queued: number;
+  running: number;
+  complete: number;
+  failed: number;
+  is_done: boolean;
+  jobs: AnalysisJob[];
+  ranking: MatchedCandidate[];
+}
+
+// ── Bulk Upload (Feature 1) ────────────────────────────────────────────────
+export interface BulkUploadResponse {
+  batch_id: string;
+  total: number;
+  accepted: number;
+  rejected: number;
+  message: string;
+}
+
+export interface RankedCandidate {
+  rank: number;
+  report_id: string;
+  file_name: string;
+  candidate_name: string;
+  overall_score: number;
+  recommendation: Recommendation;
+}
+
+export interface BatchStatus {
+  batch_id: string;
+  total: number;
+  queued: number;
+  running: number;
+  complete: number;
+  failed: number;
+  is_done: boolean;
+  jobs: AnalysisJob[];
+  ranking: RankedCandidate[];
+}
+
 export interface User {
   id: string;
   email: string;

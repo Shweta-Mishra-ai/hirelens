@@ -13,7 +13,7 @@ from app.core.exceptions import (
     HireLensException, RateLimitExceeded,
     FileTooLarge, UnsupportedFileType, AuthError,
 )
-from app.api.v1.endpoints import analysis, reports, auth, health
+from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hirelens")
@@ -106,6 +106,8 @@ async def auth_handler(request: Request, exc: AuthError):
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["Analysis"])
+app.include_router(bulk.router, prefix="/api/v1/bulk", tags=["Bulk Upload"])
+app.include_router(match.router, prefix="/api/v1/match", tags=["JD Match"])
 app.include_router(reports.router, prefix="/api/v1/reports", tags=["Reports"])
 
 @app.get("/", include_in_schema=False)

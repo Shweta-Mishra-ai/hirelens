@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 20
     ANALYSIS_TIMEOUT_SECONDS: int = 120
 
+    # Bulk upload (Feature 1)
+    BULK_MAX_FILES: int = 50
+    BULK_MAX_TOTAL_MB: int = 150            # total batch payload cap (protects free-tier RAM)
+    BULK_CONCURRENCY: int = 3               # simultaneous AI analyses within a batch
+    BULK_MAX_CONCURRENT_BATCHES_PER_USER: int = 2
+    BATCH_TTL_SECONDS: int = 21_600         # 6 hours — how long batch/job state is kept
+
+    # JD Match (Feature 2)
+    JD_MAX_CHARS: int = 6000
+
     @property
     def allowed_origins_list(self) -> List[str]:
         """

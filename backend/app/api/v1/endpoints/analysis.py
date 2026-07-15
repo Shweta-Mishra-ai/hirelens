@@ -69,6 +69,41 @@ def _check_rate_limit(redis, user_id: str) -> None:
         logger.warning(f"Rate limit check failed (skipping): {e}")
 
 
+def validate_upload(contents: bytes, filename: str, mime: str) -> str:
+    """
+    Shared validation for a single resume file (used by both the single-file
+    /upload endpoint and the /bulk/upload endpoint). Returns the normalized
+    effective MIME type, or raises UnsupportedFileType / FileTooLarge.
+    """
+    if not contents:
+        raise UnsupportedFileType("empty file")
+
+    size_mb = len(contents) / (1024 * 1024)
+    if size_mb > settings.MAX_FILE_SIZE_MB:
+        raise FileTooLarge(settings.MAX_FILE_SIZE_MB)
+
+    filename = (filename or "").strip()
+    mime = (mime or "").lower().strip()
+
+    # Detect file type — prefer extension (more reliable than browser MIME)
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    if ext not in ALLOWED_EXT and mime not in ALLOWED_MIME:
+        raise UnsupportedFileType(f"{mime or ext or 'unknown'}")
+
+    # Normalize mime type for parser
+    if ext == "pdf" or mime == "application/pdf":
+        effective_mime = "application/pdf"
+    elif ext == "docx" or "wordprocessingml" in mime:
+        effective_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    elif ext == "pdf":
+        effective_mime = "application/pdf"
+    else:
+        effective_mime = "application/pdf"  # default, parser will validate
+
+    return effective_mime
+
+
 @router.post("/upload")
 async def upload_resume(
     background_tasks: BackgroundTasks,
@@ -91,31 +126,10 @@ async def upload_resume(
 
     # Read file
     contents = await file.read()
-    if not contents:
-        raise UnsupportedFileType("empty file")
-
-    size_mb = len(contents) / (1024 * 1024)
-    if size_mb > settings.MAX_FILE_SIZE_MB:
-        raise FileTooLarge(settings.MAX_FILE_SIZE_MB)
-
     filename = (file.filename or "").strip()
     mime = (file.content_type or "").lower().strip()
 
-    # Detect file type — prefer extension (more reliable than browser MIME)
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-
-    if ext not in ALLOWED_EXT and mime not in ALLOWED_MIME:
-        raise UnsupportedFileType(f"{mime or ext or 'unknown'}")
-
-    # Normalize mime type for parser
-    if ext == "pdf" or mime == "application/pdf":
-        effective_mime = "application/pdf"
-    elif ext == "docx" or "wordprocessingml" in mime:
-        effective_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    elif ext == "pdf":
-        effective_mime = "application/pdf"
-    else:
-        effective_mime = "application/pdf"  # default, parser will validate
+    effective_mime = validate_upload(contents, filename, mime)
 
     job_id = str(uuid.uuid4())
     user_id = current_user["id"]
@@ -184,10 +198,15 @@ async def _run_analysis(
     mime_type: str,
     filename: str,
     db,
+    post_process=None,
 ):
     """
     Runs in background. Updates _jobs[job_id] with progress.
     All exceptions are caught — never crashes the server.
+
+    post_process: optional async callable (result: dict) -> dict, run after
+    AI analysis but before storage. Lets other features (e.g. JD matching)
+    enrich the report without duplicating the parse/analyze/store pipeline.
     """
 
     def upd(**kwargs):
@@ -218,6 +237,14 @@ async def _run_analysis(
             logger.error(f"[{job_id}] AI analysis failed: {e}", exc_info=True)
             upd(status="failed", stage="failed", error=f"AI analysis failed: {str(e)}")
             return
+
+        # ── Step 2b: Optional enrichment (e.g. JD match) ───────────────────────
+        if post_process is not None:
+            try:
+                upd(stage="matching", progress=90)
+                result = await post_process(result)
+            except Exception as e:
+                logger.warning(f"[{job_id}] post_process failed (continuing without it): {e}")
 
         # ── Step 3: Store in DB ───────────────────────────────────────────────
         report_id = str(uuid.uuid4())
