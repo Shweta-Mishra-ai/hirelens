@@ -425,7 +425,39 @@ QUESTIONS: Generate exactly 7-9 interview questions mixing:
 POSITIVE SIGNALS: Include 2-4 genuine strengths with evidence"""
 
 
+# ── JD Match Prompt (Feature 2) ────────────────────────────────────────────────
+JD_MATCH_PROMPT = """You are a senior technical recruiter comparing a candidate against a job description.
+
+CANDIDATE PROFILE (already extracted from their resume):
+{candidate_json}
+
+JOB DESCRIPTION:
+---
+{jd_text}
+---
+
+Return ONLY valid JSON — no markdown, no explanation outside the JSON:
+
+{{
+  "match_percent": 72,
+  "matching_skills": ["skills/requirements from the JD that the candidate genuinely has evidence for"],
+  "missing_skills": ["skills/requirements the JD asks for that the candidate does NOT show evidence of"],
+  "verdict": "strong_fit",
+  "rationale": "2-3 sentences on why this match score, referencing specific JD requirements vs candidate evidence"
+}}
+
+RULES:
+- match_percent reflects how well the candidate's VERIFIED skills/experience align with the JD's actual requirements — not just keyword overlap
+- Weigh core/must-have requirements heavier than nice-to-haves
+- "verdict" must be one of: "strong_fit" (75-100), "partial_fit" (45-74), "weak_fit" (0-44) — matching match_percent
+- missing_skills should only include things the JD explicitly requires or strongly implies
+- Be realistic: a generic resume padded with keywords should NOT score as a strong fit"""
+
+
 # ── Analysis Engine ───────────────────────────────────────────────────────────
+
+
+
 class AnalysisEngine:
     """
     Two-stage analysis pipeline:
@@ -561,6 +593,67 @@ class AnalysisEngine:
             "summary":              str(analysis.get("summary") or "Analysis complete."),
             "one_liner":            str(analysis.get("one_liner") or ""),
             "recruiter_decision":   None,
+        }
+
+    async def match_jd(self, resume_result: dict, jd_text: str) -> dict:
+        """
+        Compares an already-analyzed candidate against a job description.
+        Reuses the resume's already-extracted skills/experience/projects —
+        no need to re-parse or re-run the credibility analysis.
+
+        Returns: {match_percent, matching_skills, missing_skills, verdict, rationale}
+        """
+        candidate_view = {
+            "candidate": resume_result.get("candidate") or {},
+            "skills": resume_result.get("skills") or {},
+            "experience": [
+                {
+                    "role": e.get("role"),
+                    "company": e.get("company"),
+                    "duration_months": e.get("duration_months"),
+                    "technologies": e.get("technologies"),
+                    "responsibilities": e.get("responsibilities"),
+                }
+                for e in (resume_result.get("experience") or [])
+            ],
+            "projects": [
+                {"name": p.get("name"), "technologies": p.get("technologies")}
+                for p in (resume_result.get("projects") or [])
+            ],
+            "education": resume_result.get("education") or [],
+            "certifications": resume_result.get("certifications") or [],
+        }
+
+        prompt = JD_MATCH_PROMPT.format(
+            candidate_json=json.dumps(candidate_view, indent=2)[:6000],
+            jd_text=jd_text[:5000],
+        )
+
+        raw = await llm_call(prompt, temperature=0.1, max_tokens=1500)
+        return self._merge_jd_match(raw)
+
+    def _merge_jd_match(self, raw: dict) -> dict:
+        pct = raw.get("match_percent")
+        try:
+            pct = max(0, min(100, int(pct)))
+        except (TypeError, ValueError):
+            pct = 0
+
+        verdict = raw.get("verdict") or ""
+        if verdict not in ("strong_fit", "partial_fit", "weak_fit"):
+            if pct >= 75:
+                verdict = "strong_fit"
+            elif pct >= 45:
+                verdict = "partial_fit"
+            else:
+                verdict = "weak_fit"
+
+        return {
+            "match_percent": pct,
+            "matching_skills": list(raw.get("matching_skills") or [])[:25],
+            "missing_skills": list(raw.get("missing_skills") or [])[:25],
+            "verdict": verdict,
+            "rationale": str(raw.get("rationale") or ""),
         }
 
 

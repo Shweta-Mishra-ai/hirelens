@@ -93,9 +93,17 @@ export default function DashboardPage() {
               {user?.full_name ? `Welcome back, ${user.full_name}` : "Your resume analyses"}
             </p>
           </div>
-          <Link href="/analyze" style={{ padding: "10px 20px", borderRadius: 10, background: "linear-gradient(135deg,#1D6AFF,#1045C8)", color: "#EFF6FF", fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
-            + Analyze Resume
-          </Link>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Link href="/match" style={{ padding: "10px 20px", borderRadius: 10, border: "1px solid #172840", background: "#0E1C2E", color: "#CBD5E1", fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
+              🎯 JD Match
+            </Link>
+            <Link href="/bulk" style={{ padding: "10px 20px", borderRadius: 10, border: "1px solid #172840", background: "#0E1C2E", color: "#CBD5E1", fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
+              🗂️ Bulk Upload
+            </Link>
+            <Link href="/analyze" style={{ padding: "10px 20px", borderRadius: 10, background: "linear-gradient(135deg,#1D6AFF,#1045C8)", color: "#EFF6FF", fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
+              + Analyze Resume
+            </Link>
+          </div>
         </div>
 
         {/* Stats */}

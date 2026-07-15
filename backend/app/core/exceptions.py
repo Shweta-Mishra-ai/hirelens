@@ -48,3 +48,26 @@ class RateLimitExceeded(HireLensException):
     def __init__(self, retry_after: int = 60):
         self.retry_after = retry_after
         super().__init__(f"Rate limit exceeded. Retry after {retry_after}s.")
+
+class TooManyFiles(HireLensException):
+    http_status = 413; code = "too_many_files"
+    def __init__(self, max_files: int = 50):
+        self.max_files = max_files
+        super().__init__(f"Too many files in one batch. Max is {max_files}.")
+
+class EmptyBatch(HireLensException):
+    http_status = 422; code = "empty_batch"
+    message = "No valid files were provided."
+
+class TooManyBatches(HireLensException):
+    http_status = 429; code = "too_many_batches"
+    def __init__(self, max_batches: int = 2):
+        self.max_batches = max_batches
+        super().__init__(
+            f"You already have {max_batches} bulk uploads in progress. "
+            "Wait for one to finish before starting another."
+        )
+
+class InvalidJobDescription(HireLensException):
+    http_status = 422; code = "invalid_job_description"
+    message = "Provide a job description as text (min 30 characters) or as a PDF/DOCX/TXT file."

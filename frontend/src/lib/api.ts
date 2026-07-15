@@ -6,10 +6,12 @@
  * - Timeout handling
  * - 204 No Content handled correctly
  */
-import type { Report, AnalysisJob, User } from "@/types";
+import type { Report, AnalysisJob, User, BulkUploadResponse, BatchStatus, MatchBatchStatus } from "@/types";
 
 const BASE =
   (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
+
+export const API_BASE = BASE;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 export class APIError extends Error {
@@ -140,6 +142,67 @@ export const analysisAPI = {
 
   status: (jobId: string, token: string) =>
     req<AnalysisJob>(`/api/v1/analysis/${jobId}/status`, { token }),
+};
+
+// ── Bulk Upload (Feature 1) ─────────────────────────────────────────────────
+export const bulkAPI = {
+  upload: (files: File[], token: string) => {
+    const form = new FormData();
+    files.forEach((f) => form.append("files", f));
+    return req<BulkUploadResponse>("/api/v1/bulk/upload", {
+      method: "POST",
+      body: form,
+      token,
+    });
+  },
+
+  status: (batchId: string, token: string) =>
+    req<BatchStatus>(`/api/v1/bulk/${batchId}/status`, { token }),
+
+  // Downloads the ranked-candidate CSV as a Blob (fetched with the auth
+  // header, since a plain <a href> link can't attach Authorization).
+  downloadCsv: async (batchId: string, token: string): Promise<Blob> => {
+    const res = await fetch(`${BASE}/api/v1/bulk/${batchId}/export.csv`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      throw new APIError(res.status, "export_failed", "Could not export CSV. Please try again.");
+    }
+    return res.blob();
+  },
+};
+
+// ── JD Match (Feature 2) ────────────────────────────────────────────────────
+export interface JdInput {
+  text?: string;
+  file?: File;
+}
+
+export const matchAPI = {
+  upload: (files: File[], jd: JdInput, token: string) => {
+    const form = new FormData();
+    files.forEach((f) => form.append("files", f));
+    if (jd.text && jd.text.trim()) form.append("jd_text", jd.text.trim());
+    if (jd.file) form.append("jd_file", jd.file);
+    return req<BulkUploadResponse>("/api/v1/match/upload", {
+      method: "POST",
+      body: form,
+      token,
+    });
+  },
+
+  status: (batchId: string, token: string) =>
+    req<MatchBatchStatus>(`/api/v1/match/${batchId}/status`, { token }),
+
+  downloadCsv: async (batchId: string, token: string): Promise<Blob> => {
+    const res = await fetch(`${BASE}/api/v1/match/${batchId}/export.csv`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      throw new APIError(res.status, "export_failed", "Could not export CSV. Please try again.");
+    }
+    return res.blob();
+  },
 };
 
 // ── Reports ───────────────────────────────────────────────────────────────────
