@@ -6,7 +6,7 @@
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Vercel-000?style=flat-square&logo=vercel)](https://hirelens.vercel.app)
 [![API](https://img.shields.io/badge/API%20Docs-FastAPI-009688?style=flat-square&logo=fastapi)](https://hirelens-api.onrender.com/docs)
-[![License](https://img.shields.io/badge/License-MIT-6366F1?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-Proprietary-red?style=flat-square)](#)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Next.js](https://img.shields.io/badge/Next.js-14-000?style=flat-square&logo=next.js)](https://nextjs.org)
 [![Gemini](https://img.shields.io/badge/Gemini-2.5%20Flash-4285F4?style=flat-square&logo=google)](https://aistudio.google.com)
@@ -28,6 +28,8 @@ Upload a PDF or DOCX resume → Gemini 2.5 Flash reads the actual file → retur
 - **Timeline Analysis** — employment gaps, promotion velocity
 - **Interview Questions** — targeted to this candidate's specific signals
 - **Recruiter Summary** — 4-sentence evidence-based briefing
+- **Job Description (JD) Matching & Ranking** — Upload/paste a JD along with multiple resumes to score suitability, map matching/missing skills, and identify the best-fitting candidates.
+- **Bulk Upload & Batch Processing** — Queue and process up to 50+ resumes simultaneously, monitor live status progress, and export ranked candidate data to CSV.
 
 > HireLens assists recruiters. Final hiring decisions always rest with humans.
 
@@ -149,14 +151,21 @@ CREATE INDEX IF NOT EXISTS idx_reports_created_at ON public.reports(created_at D
 Full Swagger UI at `/docs` when running locally or deployed.
 
 ```http
-POST /api/v1/auth/signup         Create recruiter account
-POST /api/v1/auth/login          Get JWT token
-POST /api/v1/analysis/upload     Upload resume → returns job_id
-GET  /api/v1/analysis/{id}/status  Poll analysis progress
-GET  /api/v1/reports             List all reports (paginated)
-GET  /api/v1/reports/{id}        Full report JSON
-POST /api/v1/reports/{id}/decision  Submit hiring decision
-GET  /api/v1/health              Health check
+POST /api/v1/auth/signup            Create recruiter account
+POST /api/v1/auth/login             Get JWT token
+POST /api/v1/analysis/upload        Upload resume → returns job_id
+GET  /api/v1/analysis/{id}/status     Poll analysis progress
+GET  /api/v1/reports                List all reports (paginated)
+GET  /api/v1/reports/{id}           Full report JSON
+POST /api/v1/reports/{id}/decision     Submit hiring decision
+POST /api/v1/bulk/upload            Upload many resumes → returns batch_id
+GET  /api/v1/bulk/batch/{id}/status  Poll bulk batch status
+GET  /api/v1/bulk/batch/{id}/ranking Get batch ranking results
+GET  /api/v1/bulk/batch/{id}/export  Export batch ranking results as CSV
+POST /api/v1/match/upload           Upload JD + many resumes → returns batch_id
+GET  /api/v1/match/{batch_id}/status Poll match status & JD-match ranking
+GET  /api/v1/match/{batch_id}/export.csv Export JD match ranking results as CSV
+GET  /api/v1/health                 Health check
 ```
 
 ---
@@ -232,10 +241,11 @@ hirelens/
 - [x] Skills verification matrix
 - [x] Recruiter decision feedback loop
 - [x] Supabase auth + Row Level Security
+- [x] Bulk upload & batch processing
+- [x] Job description (JD) matching & fit analysis
 - [ ] LinkedIn comparison (with consent)
 - [ ] GitHub profile analysis
 - [ ] ATS plugin (Greenhouse, Ashby)
-- [ ] Bulk upload
 - [ ] Team workspaces
 - [ ] Candidate explanation report (GDPR)
 - [ ] Fine-tuned scoring model from recruiter feedback
@@ -244,7 +254,7 @@ hirelens/
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+Proprietary and Confidential. Unauthorized copying, distribution, or modification of this software is strictly prohibited.
 
 ---
 
