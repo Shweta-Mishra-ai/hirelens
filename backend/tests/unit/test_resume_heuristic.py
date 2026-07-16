@@ -131,3 +131,21 @@ class TestLooksLikeResume:
         assert ok is False
         assert "doesn't look like a resume" in reason
 
+    def test_research_paper_rejected(self):
+        text = """
+        Correctness-Aware Repository Filtering for Robust Agentic Workflows
+        Shweta Mishra, Independent Researcher
+        shweta.mishra.research@gmail.com
+        
+        Abstract
+        LLMs are widely used for code generation...
+        
+        1. Introduction
+        In recent years, software repositories have grown...
+        Published in 2024. References: [1] Doe et al. (2020), [2] Smith (2023).
+        """
+        ok, reason = looks_like_resume(text)
+        assert ok is False
+        assert "doesn't look like a resume" in reason
+
+
