@@ -110,3 +110,24 @@ class TestLooksLikeResume:
         """
         ok, _ = looks_like_resume(text)
         assert ok is True
+
+    def test_data_analysis_report_rejected(self):
+        text = """
+        DataForge AI · Data Health & Business Insights
+        HR-Employee-Attrition-All.csv
+        July 16, 2026
+        CONFIDENTIAL
+        DATA HEALTH & BUSINESS INSIGHTS REPORT
+        Overall Data Health Score: 95/100
+        Dataset Summary:
+        Total Rows: 1,470
+        Total Columns: 32
+        Grade: A+ — Excellent
+        Meaningful Business Insights:
+        Attrition rate is 16.1% (planning threshold: <10%)
+        Employees seek better career opportunities with higher education profile.
+        """
+        ok, reason = looks_like_resume(text)
+        assert ok is False
+        assert "doesn't look like a resume" in reason
+
