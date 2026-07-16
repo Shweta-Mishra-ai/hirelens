@@ -134,6 +134,7 @@ async def upload_resume(
 
     job_id = str(uuid.uuid4())
     user_id = current_user["id"]
+    size_mb = len(contents) / (1024 * 1024)
 
     _jobs[job_id] = {
         "id": job_id,
