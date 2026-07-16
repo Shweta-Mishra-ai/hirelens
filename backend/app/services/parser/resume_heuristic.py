@@ -54,7 +54,11 @@ def looks_like_resume(text: str) -> tuple[bool, str]:
 
     signals_present = int(has_contact) + int(header_hits >= 2) + int(year_hits >= 2)
 
-    if signals_present >= 2:
+    # A valid resume must have at least 2 signals, and must have section headers:
+    # - If it has contact details, it needs at least 1 section header (e.g. Skills or Education).
+    # - If it has no contact details, it needs at least 2 section headers.
+    # This prevents research papers/general documents with emails/dates but no CV structure from passing.
+    if signals_present >= 2 and ((has_contact and header_hits >= 1) or (header_hits >= 2)):
         return True, ""
 
     return False, (
