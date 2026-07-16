@@ -17,8 +17,8 @@ export), not to be a perfect filter.
 import re
 
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
-PHONE_RE = re.compile(r"(\+?\d[\d\-\s()]{7,}\d)")
-YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+PHONE_RE = re.compile(r"(\+?\d[\d\-[ \t]()]{7,}\d)")
+YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 
 SECTION_HEADERS = [
     "experience", "employment", "work history", "professional experience",
@@ -42,7 +42,14 @@ def looks_like_resume(text: str) -> tuple[bool, str]:
     lower = text.lower()
 
     has_contact = bool(EMAIL_RE.search(text)) or bool(PHONE_RE.search(text))
-    header_hits = sum(1 for h in SECTION_HEADERS if h in lower)
+    
+    # Stand-alone headers only (at start of line/preceded by space/newlines, followed by punctuation/newlines/spaces)
+    header_hits = 0
+    for h in SECTION_HEADERS:
+        pattern = r"(?:^|\n)\s*(?:professional\s+|technical\s+|work\s+|academic\s+|career\s+)?{}(?:\s*[:\-\n]|\s*$)".format(re.escape(h))
+        if re.search(pattern, lower):
+            header_hits += 1
+
     year_hits = len(YEAR_RE.findall(text))
 
     signals_present = int(has_contact) + int(header_hits >= 2) + int(year_hits >= 2)
