@@ -39,7 +39,7 @@ function statusBadge(status: string) {
 
 export default function JdMatchPage() {
   const router = useRouter();
-  const { token } = useAuthStore();
+  const { token, hasHydrated } = useAuthStore();
   const { state, upload, exportCsv, exporting, reset } = useJdMatch();
   const inputRef = useRef<HTMLInputElement>(null);
   const jdInputRef = useRef<HTMLInputElement>(null);
@@ -52,8 +52,8 @@ export default function JdMatchPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token) router.replace("/login");
-  }, [token, router]);
+    if (hasHydrated && !token) router.replace("/login");
+  }, [hasHydrated, token, router]);
 
   const pickJdFile = useCallback((f: File) => {
     setJdFileError(null);

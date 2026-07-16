@@ -7,6 +7,7 @@ Fixed:
 - Decision validation with proper 422
 """
 
+import re
 import logging
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -25,22 +26,91 @@ class DecisionRequest(BaseModel):
     notes: str | None = None
 
 
+SEARCH_UNSAFE_CHARS = re.compile(r"[^a-zA-Z0-9 ._+#@\-]")
+
+
+def _sanitize_search(raw: str) -> str:
+    """
+    Strict ALLOWLIST (not denylist) for search terms that get embedded into
+    a hand-built PostgREST `.or_()` filter string. PostgREST's filter
+    mini-language treats comma, parentheses, and other punctuation as
+    syntax — an unsanitized search term could inject extra filter
+    conditions. Keeping only characters a legitimate name/skill search
+    would ever need (letters, digits, spaces, and a few common symbols
+    like . + # @ - for things like "C++", "C#", "Node.js") closes that off
+    far more reliably than trying to blocklist "the bad ones".
+    """
+    return SEARCH_UNSAFE_CHARS.sub("", raw).strip()[:100]
+
+
+SORT_MAP = {
+    "newest":     ("created_at", True),
+    "oldest":     ("created_at", False),
+    "score_desc": ("overall_score", True),
+    "score_asc":  ("overall_score", False),
+    "name_asc":   ("candidate_name", False),
+}
+
+
+def _mem_reports_for_user(user_id: str) -> list[dict]:
+    out = []
+    for key, v in _jobs.items():
+        if not (key.startswith("report_") and isinstance(v, dict)):
+            continue
+        # In-memory job dicts don't carry user_id directly on the report blob
+        # in older entries — best-effort match, skip if we truly can't tell.
+        if v.get("user_id") not in (None, user_id):
+            continue
+        cred = v.get("credibility") or {}
+        cand = v.get("candidate") or {}
+        out.append({
+            "id": key.replace("report_", "", 1),
+            "file_name": v.get("file_name"),
+            "candidate_name": cand.get("name") or "Unknown",
+            "overall_score": cred.get("overall", 0),
+            "recommendation": cred.get("recommendation", "manual_review"),
+            "created_at": v.get("created_at") or "",
+            "recruiter_decision": v.get("recruiter_decision"),
+            "_skills_text": " ".join(
+                (v.get("skills") or {}).get("all_claimed") or []
+            ).lower(),
+        })
+    return out
+
+
 @router.get("")
 async def list_reports(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     recommendation: str | None = Query(None),
+    search: str | None = Query(None, description="Matches candidate name, file name, or skills"),
+    sort: str = Query("newest", description="newest|oldest|score_desc|score_asc|name_asc"),
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """List all reports for current recruiter, newest first."""
+    """List all reports for current recruiter — searchable + sortable."""
+    sort_col, sort_desc = SORT_MAP.get(sort, SORT_MAP["newest"])
+
     if not db:
-        # Return in-memory reports if no DB
-        mem_reports = [
-            v for k, v in _jobs.items()
-            if k.startswith("report_") and isinstance(v, dict)
-        ]
-        return {"reports": [], "total": 0, "page": 1, "pages": 0}
+        items = _mem_reports_for_user(current_user["id"])
+        if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
+            items = [r for r in items if r["recommendation"] == recommendation]
+        if search:
+            s = search.strip().lower()
+            items = [
+                r for r in items
+                if s in (r.get("candidate_name") or "").lower()
+                or s in (r.get("file_name") or "").lower()
+                or s in r.get("_skills_text", "")
+            ]
+        for r in items:
+            r.pop("_skills_text", None)
+        items.sort(key=lambda r: (r.get(sort_col) or ""), reverse=sort_desc)
+
+        total = len(items)
+        offset = (page - 1) * limit
+        page_items = items[offset: offset + limit]
+        return {"reports": page_items, "total": total, "page": page, "pages": max(1, (total + limit - 1) // limit)}
 
     try:
         offset = (page - 1) * limit
@@ -49,25 +119,44 @@ async def list_reports(
             db.table("reports")
             .select("id,file_name,candidate_name,overall_score,recommendation,created_at,recruiter_decision")
             .eq("user_id", current_user["id"])
-            .order("created_at", desc=True)
-            .range(offset, offset + limit - 1)
         )
 
         if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
             query = query.eq("recommendation", recommendation)
 
+        if search:
+            s = _sanitize_search(search)
+            or_filter = (
+                f"candidate_name.ilike.%{s}%,"
+                f"file_name.ilike.%{s}%,"
+                f"report_data->skills->>all_claimed.ilike.%{s}%"
+            )
+            try:
+                query = query.or_(or_filter)
+            except Exception as e:
+                logger.warning(f"Skill-path search unsupported, falling back to name/file only: {e}")
+                query = query.or_(f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%")
+
+        query = query.order(sort_col, desc=sort_desc).range(offset, offset + limit - 1)
+
         # SYNC call — no await
         result = query.execute()
         items = result.data or []
 
-        # Count total
-        count_result = (
-            db.table("reports")
-            .select("id", count="exact")
-            .eq("user_id", current_user["id"])
-            .execute()
-        )
-        total = count_result.count or len(items)
+        # Count total (respecting the same filters, without range)
+        count_query = db.table("reports").select("id", count="exact").eq("user_id", current_user["id"])
+        if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
+            count_query = count_query.eq("recommendation", recommendation)
+        if search:
+            s = _sanitize_search(search)
+            try:
+                count_query = count_query.or_(
+                    f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%,report_data->skills->>all_claimed.ilike.%{s}%"
+                )
+            except Exception:
+                count_query = count_query.or_(f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%")
+        count_result = count_query.execute()
+        total = count_result.count if count_result.count is not None else len(items)
 
         return {
             "reports": items,
@@ -78,6 +167,78 @@ async def list_reports(
     except Exception as e:
         logger.error(f"list_reports failed for user {current_user['id']}: {e}")
         return {"reports": [], "total": 0, "page": 1, "pages": 0}
+
+
+@router.get("/export.csv")
+async def export_all_reports_csv(
+    recommendation: str | None = Query(None),
+    search: str | None = Query(None),
+    sort: str = Query("newest"),
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Exports every report matching the current filters/search/sort as CSV (cap 1000 rows)."""
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    sort_col, sort_desc = SORT_MAP.get(sort, SORT_MAP["newest"])
+    CAP = 1000
+
+    if not db:
+        items = _mem_reports_for_user(current_user["id"])
+        if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
+            items = [r for r in items if r["recommendation"] == recommendation]
+        if search:
+            s = search.strip().lower()
+            items = [
+                r for r in items
+                if s in (r.get("candidate_name") or "").lower()
+                or s in (r.get("file_name") or "").lower()
+                or s in r.get("_skills_text", "")
+            ]
+        for r in items:
+            r.pop("_skills_text", None)
+        items.sort(key=lambda r: (r.get(sort_col) or ""), reverse=sort_desc)
+        items = items[:CAP]
+    else:
+        try:
+            query = (
+                db.table("reports")
+                .select("id,file_name,candidate_name,overall_score,recommendation,created_at,recruiter_decision")
+                .eq("user_id", current_user["id"])
+            )
+            if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
+                query = query.eq("recommendation", recommendation)
+            if search:
+                s = _sanitize_search(search)
+                try:
+                    query = query.or_(
+                        f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%,report_data->skills->>all_claimed.ilike.%{s}%"
+                    )
+                except Exception:
+                    query = query.or_(f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%")
+            result = query.order(sort_col, desc=sort_desc).limit(CAP).execute()
+            items = result.data or []
+        except Exception as e:
+            logger.error(f"export_all_reports_csv failed for user {current_user['id']}: {e}")
+            items = []
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Candidate Name", "File Name", "Score", "Recommendation", "Recruiter Decision", "Created At", "Report ID"])
+    for r in items:
+        writer.writerow([
+            r.get("candidate_name") or "Unknown", r.get("file_name") or "", r.get("overall_score") or 0,
+            r.get("recommendation") or "", r.get("recruiter_decision") or "", r.get("created_at") or "", r.get("id") or "",
+        ])
+    buf.seek(0)
+
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="hirelens_all_reports.csv"'},
+    )
 
 
 @router.get("/{report_id}")

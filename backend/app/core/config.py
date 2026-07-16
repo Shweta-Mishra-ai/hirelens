@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # JD Match (Feature 2)
     JD_MAX_CHARS: int = 6000
 
+    # Public Data Verification (Feature 3)
+    GITHUB_TOKEN: str = ""             # optional — raises GitHub rate limit 60/hr → 5000/hr
+    VERIFY_TIMEOUT_SECONDS: int = 20   # per external HTTP call
+
     @property
     def allowed_origins_list(self) -> List[str]:
         """
