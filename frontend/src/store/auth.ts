@@ -17,6 +17,8 @@ interface AuthStore {
   isLoading: boolean;
   error: string | null;
   requiresEmailConfirmation: boolean;
+  hasHydrated: boolean;
+  setHasHydrated: (v: boolean) => void;
   login: (email: string, password: string) => Promise<void>;
   signup: (
     email: string,
@@ -37,6 +39,8 @@ export const useAuthStore = create<AuthStore>()(
       isLoading: false,
       error: null,
       requiresEmailConfirmation: false,
+      hasHydrated: false,
+      setHasHydrated: (v) => set({ hasHydrated: v }),
 
       login: async (email, password) => {
         set({ isLoading: true, error: null });
@@ -126,6 +130,9 @@ export const useAuthStore = create<AuthStore>()(
     {
       name: "hirelens-auth-v2", // bumped version clears old stale storage
       partialize: (s) => ({ user: s.user, token: s.token }),
+      onRehydrateStorage: () => (state) => {
+        state?.setHasHydrated(true);
+      },
     },
   ),
 );

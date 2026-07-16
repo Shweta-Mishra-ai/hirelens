@@ -8,15 +8,19 @@ Fixed:
 """
 
 import logging
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, EmailStr, field_validator
 
-from app.core.dependencies import get_db, get_current_user
+from app.core.dependencies import get_db, get_current_user, get_redis
 from app.core.security import create_access_token
 from app.core.exceptions import AuthError, HireLensException
+from app.core.rate_limit import check_rate_limit, get_client_ip
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
+
+LOGIN_LIMIT_PER_15_MIN = 10   # per IP — brute-force protection
+SIGNUP_LIMIT_PER_HOUR = 8     # per IP — bulk fake-account protection
 
 
 class SignupRequest(BaseModel):
@@ -56,12 +60,14 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/signup")
-async def signup(body: SignupRequest, db=Depends(get_db)):
+async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redis=Depends(get_redis)):
     """
     Create a new recruiter account.
     Note: Supabase may send a confirmation email depending on your project settings.
     For development, disable email confirmation in Supabase Auth settings.
     """
+    check_rate_limit(redis, f"signup:{get_client_ip(request)}", SIGNUP_LIMIT_PER_HOUR, window_seconds=3600)
+
     if not db:
         raise HireLensException(
             "Database not configured. Please set SUPABASE_URL and SUPABASE_SERVICE_KEY."
@@ -119,11 +125,13 @@ async def signup(body: SignupRequest, db=Depends(get_db)):
 
 
 @router.post("/login")
-async def login(body: LoginRequest, db=Depends(get_db)):
+async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=Depends(get_redis)):
     """
     Login with email and password.
     Returns JWT access token valid for 7 days.
     """
+    check_rate_limit(redis, f"login:{get_client_ip(request)}", LOGIN_LIMIT_PER_15_MIN, window_seconds=900)
+
     if not db:
         raise HireLensException("Database not configured.")
 

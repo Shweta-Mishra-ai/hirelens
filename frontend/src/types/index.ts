@@ -207,3 +207,52 @@ export interface AuthState {
   signup: (email: string, password: string, fullName: string, company?: string) => Promise<void>;
   logout: () => void;
 }
+
+// ── Public Data Verification (Feature 3) ────────────────────────────────────
+export type GithubVerifyStatus =
+  | "verified" | "partial" | "no_public_activity" | "not_found"
+  | "no_username" | "rate_limited" | "error";
+
+export interface GithubVerification {
+  status: GithubVerifyStatus;
+  username: string | null;
+  profile_url?: string;
+  avatar_url?: string;
+  public_repos?: number;
+  account_created?: string;
+  top_languages?: string[];
+  verified_skills?: string[];
+  unverified_skills?: string[];
+  note?: string;
+}
+
+export interface EducationVerification {
+  institution: string | null;
+  status: "verified" | "not_found" | "skipped" | "error";
+  matched_name?: string;
+  country?: string;
+  domain?: string;
+  note?: string;
+}
+
+export interface CertificationVerification {
+  name: string;
+  url?: string;
+  status: "verified_via_link" | "link_reachable_name_not_confirmed" | "link_unreachable" | "no_link_provided" | "error";
+  note?: string;
+}
+
+export interface ExperienceVerification {
+  company: string | null;
+  domain_checked?: string;
+  status: "domain_found" | "domain_not_found" | "skipped";
+  note?: string;
+}
+
+export interface VerificationResult {
+  run_at: string;
+  github: GithubVerification;
+  education: EducationVerification[];
+  certifications: CertificationVerification[];
+  experience: ExperienceVerification[];
+}
