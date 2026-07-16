@@ -1,10 +1,10 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, type ReactNode } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
-import { reportsAPI, APIError } from "@/lib/api";
-import type { Report, Flag, Decision } from "@/types";
+import { reportsAPI, verifyAPI, APIError } from "@/lib/api";
+import type { Report, Flag, Decision, VerificationResult } from "@/types";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function scoreColor(n: number) {
@@ -29,6 +29,138 @@ function sevInfo(s: string) {
     low:    { label: "LOW",  color: "#22D3EE", bg: "rgba(6,182,212,.08)",  border: "#06B6D4" },
   };
   return m[s] || m.low;
+}
+
+// ── Verify Tab: status → badge maps ─────────────────────────────────────────
+type StatusBadge = { icon: string; label: string; color: string };
+
+const GITHUB_STATUS_MAP: Record<string, StatusBadge> = {
+  verified:            { icon: "✓", label: "Verified",         color: "#10B981" },
+  partial:             { icon: "◐", label: "Partial Match",    color: "#FBBF24" },
+  no_public_activity:  { icon: "○", label: "No Public Repos",  color: "#64748B" },
+  not_found:           { icon: "✕", label: "Account Not Found", color: "#F87171" },
+  no_username:         { icon: "—", label: "No Username",      color: "#64748B" },
+  rate_limited:        { icon: "⚠", label: "Rate Limited",     color: "#FBBF24" },
+  error:               { icon: "⚠", label: "Check Failed",     color: "#FBBF24" },
+};
+
+const EDU_STATUS_MAP: Record<string, StatusBadge> = {
+  verified:  { icon: "✓", label: "Verified",     color: "#10B981" },
+  not_found: { icon: "?", label: "Not in Registry", color: "#FBBF24" },
+  skipped:   { icon: "—", label: "Skipped",      color: "#64748B" },
+  error:     { icon: "⚠", label: "Check Failed", color: "#FBBF24" },
+};
+
+const CERT_STATUS_MAP: Record<string, StatusBadge> = {
+  verified_via_link:               { icon: "✓", label: "Verified",         color: "#10B981" },
+  link_reachable_name_not_confirmed: { icon: "◐", label: "Link Works, Name Unconfirmed", color: "#FBBF24" },
+  link_unreachable:                { icon: "✕", label: "Link Unreachable", color: "#F87171" },
+  no_link_provided:                { icon: "—", label: "No Link on Resume", color: "#64748B" },
+  error:                            { icon: "⚠", label: "Check Failed",     color: "#FBBF24" },
+};
+
+const EXP_STATUS_MAP: Record<string, StatusBadge> = {
+  domain_found:     { icon: "✓", label: "Website Found",     color: "#10B981" },
+  domain_not_found: { icon: "?", label: "Website Not Found", color: "#FBBF24" },
+  skipped:          { icon: "—", label: "Skipped",           color: "#64748B" },
+};
+
+function VerifyCard({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div style={{ background: "#0A1525", border: "1px solid #172840", borderRadius: 14, overflow: "hidden" }}>
+      <div style={{ padding: "12px 18px", borderBottom: "1px solid #172840", fontSize: 13, fontWeight: 700, color: "#EFF6FF" }}>
+        {title}
+      </div>
+      <div style={{ padding: "6px 18px 12px" }}>{children}</div>
+    </div>
+  );
+}
+
+function EmptyNote({ text }: { text: string }) {
+  return <div style={{ fontSize: 12, color: "#64748B", padding: "10px 0" }}>{text}</div>;
+}
+
+function VerifyRow({
+  label, status, statusMap, detail, link,
+}: {
+  label: string;
+  status: string;
+  statusMap: Record<string, StatusBadge>;
+  detail?: string;
+  link?: string;
+}) {
+  const b = statusMap[status] || { icon: "?", label: status, color: "#64748B" };
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 0", borderTop: "1px solid #172840" }}>
+      <span style={{ fontSize: 13, color: b.color, fontWeight: 800, minWidth: 16 }}>{b.icon}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, color: "#EFF6FF", fontWeight: 600 }}>{label}</div>
+        {detail && <div style={{ fontSize: 11, color: "#64748B", marginTop: 2, lineHeight: 1.5 }}>{detail}</div>}
+        {link && (
+          <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#4B8DFF", textDecoration: "none" }}>
+            View link ↗
+          </a>
+        )}
+      </div>
+      <span style={{ fontSize: 11, fontWeight: 700, color: b.color, whiteSpace: "nowrap" }}>{b.label}</span>
+    </div>
+  );
+}
+
+function GithubVerifyBlock({ g }: { g: { status: string; username: string | null; profile_url?: string; public_repos?: number; top_languages?: string[]; verified_skills?: string[]; unverified_skills?: string[]; note?: string } }) {
+  const b = GITHUB_STATUS_MAP[g.status] || { icon: "?", label: g.status, color: "#64748B" };
+  return (
+    <div style={{ padding: "10px 0" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13, color: b.color, fontWeight: 800 }}>{b.icon}</span>
+          {g.username ? (
+            <a href={g.profile_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: "#4B8DFF", textDecoration: "none", fontWeight: 700 }}>
+              @{g.username} ↗
+            </a>
+          ) : (
+            <span style={{ fontSize: 13, color: "#94A3B8" }}>No GitHub username</span>
+          )}
+        </div>
+        <span style={{ fontSize: 11, fontWeight: 700, color: b.color }}>{b.label}</span>
+      </div>
+
+      {typeof g.public_repos === "number" && (
+        <div style={{ fontSize: 11, color: "#64748B", marginBottom: 8 }}>{g.public_repos} public repositories</div>
+      )}
+
+      {!!g.top_languages?.length && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+          {g.top_languages.map((l) => (
+            <span key={l} style={{ fontSize: 10, color: "#94A3B8", background: "#0E1C2E", border: "1px solid #172840", padding: "2px 8px", borderRadius: 999 }}>{l}</span>
+          ))}
+        </div>
+      )}
+
+      {(!!g.verified_skills?.length || !!g.unverified_skills?.length) && (
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 8 }}>
+          {!!g.verified_skills?.length && (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#10B981", marginBottom: 4 }}>✓ VERIFIED</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {g.verified_skills.map((s) => <span key={s} style={{ fontSize: 10, color: "#A7F3D0", background: "rgba(5,150,105,0.12)", padding: "2px 8px", borderRadius: 999 }}>{s}</span>)}
+              </div>
+            </div>
+          )}
+          {!!g.unverified_skills?.length && (
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#64748B", marginBottom: 4 }}>NOT FOUND IN REPOS</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                {g.unverified_skills.map((s) => <span key={s} style={{ fontSize: 10, color: "#94A3B8", background: "#0E1C2E", padding: "2px 8px", borderRadius: 999 }}>{s}</span>)}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {g.note && <div style={{ fontSize: 11, color: "#64748B", marginTop: 8, lineHeight: 1.5 }}>{g.note}</div>}
+    </div>
+  );
 }
 
 // ── Score Ring ────────────────────────────────────────────────────────────────
@@ -112,17 +244,21 @@ function FlagCard({ flag }: { flag: Flag }) {
 export default function ReportPage() {
   const params  = useParams<{ id: string }>();
   const router  = useRouter();
-  const { token, logout } = useAuthStore();
+  const { token, logout, hasHydrated } = useAuthStore();
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]   = useState<string | null>(null);
   const [tab, setTab]       = useState("overview");
   const [decision, setDecision] = useState<Decision | null>(null);
   const [saving, setSaving] = useState(false);
+  const [verification, setVerification] = useState<VerificationResult | null>(null);
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [githubOverride, setGithubOverride] = useState("");
 
   useEffect(() => {
-    if (!token) { router.replace("/login"); return; }
-  }, [token, router]);
+    if (hasHydrated && !token) { router.replace("/login"); return; }
+  }, [hasHydrated, token, router]);
 
   useEffect(() => {
     if (!token || !params.id) return;
@@ -140,6 +276,19 @@ export default function ReportPage() {
     })();
   }, [params.id, token, logout, router]);
 
+  // Load any verification that was already run for this report (silent — 404 just means "not run yet")
+  useEffect(() => {
+    if (!token || !params.id) return;
+    (async () => {
+      try {
+        const v = await verifyAPI.get(params.id, token);
+        setVerification(v);
+      } catch {
+        // No verification yet — that's expected, not an error state.
+      }
+    })();
+  }, [params.id, token]);
+
   const submitDecision = useCallback(async (d: Decision) => {
     if (!token || !params.id) return;
     setDecision(d);
@@ -148,6 +297,20 @@ export default function ReportPage() {
     catch { /* silent fail — decision still shown locally */ }
     setSaving(false);
   }, [token, params.id]);
+
+  const runVerification = useCallback(async () => {
+    if (!token || !params.id) return;
+    setVerifyLoading(true);
+    setVerifyError(null);
+    try {
+      const v = await verifyAPI.run(params.id, githubOverride.trim() || undefined, token);
+      setVerification(v);
+    } catch (e) {
+      setVerifyError(e instanceof APIError ? e.message : "Verification failed. Please try again.");
+    } finally {
+      setVerifyLoading(false);
+    }
+  }, [token, params.id, githubOverride]);
 
   if (loading) return (
     <div style={{ minHeight: "100vh", background: "#060F1A", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -174,6 +337,7 @@ export default function ReportPage() {
     { id: "flags",      label: `Flags (${flags.length})` },
     { id: "skills",     label: "Skills" },
     { id: "timeline",   label: "Timeline" },
+    { id: "verify",     label: "Verify" },
     { id: "questions",  label: "Interview Qs" },
     { id: "json",       label: "JSON" },
   ];
@@ -406,6 +570,123 @@ export default function ReportPage() {
                         {e.concern && <div style={{ fontSize: 11, color: "#FBBF24", marginTop: 4 }}>⚠ {e.concern}</div>}
                       </div>
                     ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* VERIFY — Feature 3: real-time public data verification */}
+            {tab === "verify" && (
+              <div className="fu">
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+                  <div style={{ flex: "1 1 220px" }}>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", display: "block", marginBottom: 6 }}>
+                      GitHub username (optional override)
+                    </label>
+                    <input
+                      value={githubOverride}
+                      onChange={(e) => setGithubOverride(e.target.value)}
+                      placeholder={report.candidate?.github ? "Found on resume — leave blank to use it" : "e.g. octocat"}
+                      style={{
+                        width: "100%", boxSizing: "border-box", padding: "9px 12px", background: "#0A1525",
+                        border: "1px solid #172840", borderRadius: 9, color: "#EFF6FF", fontSize: 13,
+                        fontFamily: "inherit", outline: "none",
+                      }}
+                    />
+                  </div>
+                  <button
+                    onClick={runVerification}
+                    disabled={verifyLoading}
+                    style={{
+                      padding: "10px 20px", borderRadius: 10, border: "none", cursor: verifyLoading ? "default" : "pointer",
+                      background: "linear-gradient(135deg,#1D6AFF,#1045C8)", color: "#EFF6FF", fontWeight: 700,
+                      fontSize: 13, fontFamily: "inherit", opacity: verifyLoading ? 0.7 : 1, whiteSpace: "nowrap",
+                    }}
+                  >
+                    {verifyLoading ? "Verifying…" : verification ? "Re-run Verification" : "Run Verification"}
+                  </button>
+                </div>
+                <p style={{ fontSize: 11, color: "#64748B", margin: "0 0 20px", lineHeight: 1.6 }}>
+                  Runs live checks against GitHub, a university registry, and company websites.
+                  These are corroborating signals, not proof — a &quot;not found&quot; result often means
+                  the data simply isn&apos;t public, not that something is false.
+                </p>
+
+                {verifyError && (
+                  <div style={{ padding: "10px 14px", background: "rgba(220,38,38,0.08)", border: "1px solid rgba(220,38,38,.3)", borderRadius: 10, fontSize: 12, color: "#F87171", marginBottom: 16 }}>
+                    {verifyError}
+                  </div>
+                )}
+
+                {!verification && !verifyLoading && !verifyError && (
+                  <div style={{ padding: 40, textAlign: "center", border: "1px dashed #172840", borderRadius: 14 }}>
+                    <div style={{ fontSize: 28, marginBottom: 10 }}>🔍</div>
+                    <div style={{ fontSize: 13, color: "#94A3B8" }}>No verification has been run yet for this report.</div>
+                  </div>
+                )}
+
+                {verification && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                    <div style={{ fontSize: 11, color: "#475569" }}>
+                      Last run: {new Date(verification.run_at).toLocaleString()}
+                    </div>
+
+                    {/* GitHub */}
+                    <VerifyCard title="🐙 GitHub Skills">
+                      <GithubVerifyBlock g={verification.github} />
+                    </VerifyCard>
+
+                    {/* Education */}
+                    <VerifyCard title="🎓 Education">
+                      {verification.education.length === 0 ? (
+                        <EmptyNote text="No education entries were found on this resume to check." />
+                      ) : (
+                        verification.education.map((e, i) => (
+                          <VerifyRow
+                            key={i}
+                            label={e.institution || "Unknown institution"}
+                            status={e.status}
+                            statusMap={EDU_STATUS_MAP}
+                            detail={e.status === "verified" ? `${e.matched_name}${e.country ? " · " + e.country : ""}` : e.note}
+                          />
+                        ))
+                      )}
+                    </VerifyCard>
+
+                    {/* Certifications */}
+                    <VerifyCard title="📜 Certifications">
+                      {verification.certifications.length === 0 ? (
+                        <EmptyNote text="No certifications were found on this resume to check." />
+                      ) : (
+                        verification.certifications.map((c, i) => (
+                          <VerifyRow
+                            key={i}
+                            label={c.name}
+                            status={c.status}
+                            statusMap={CERT_STATUS_MAP}
+                            detail={c.note}
+                            link={c.url}
+                          />
+                        ))
+                      )}
+                    </VerifyCard>
+
+                    {/* Employer / Experience */}
+                    <VerifyCard title="🏢 Employers">
+                      {verification.experience.length === 0 ? (
+                        <EmptyNote text="No work experience entries were found on this resume to check." />
+                      ) : (
+                        verification.experience.map((x, i) => (
+                          <VerifyRow
+                            key={i}
+                            label={x.company || "Unknown company"}
+                            status={x.status}
+                            statusMap={EXP_STATUS_MAP}
+                            detail={x.domain_checked ? `Checked: ${x.domain_checked}` : x.note}
+                          />
+                        ))
+                      )}
+                    </VerifyCard>
                   </div>
                 )}
               </div>

@@ -18,6 +18,7 @@ from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import FileTooLarge, UnsupportedFileType, NotFoundError, ForbiddenError
 from app.services.parser.document_parser import extract_text
+from app.services.parser.resume_heuristic import looks_like_resume
 from app.services.ai.engine import engine
 
 logger = logging.getLogger("hirelens")
@@ -133,6 +134,7 @@ async def upload_resume(
 
     job_id = str(uuid.uuid4())
     user_id = current_user["id"]
+    size_mb = len(contents) / (1024 * 1024)
 
     _jobs[job_id] = {
         "id": job_id,
@@ -229,6 +231,13 @@ async def _run_analysis(
 
         logger.info(f"[{job_id}] Parsed {len(raw_text)} chars from {filename}")
         upd(stage="extracting", progress=15)
+
+        # ── Step 1b: Reject obviously-non-resume documents ─────────────────────
+        is_resume, rejection_reason = looks_like_resume(raw_text)
+        if not is_resume:
+            logger.warning(f"[{job_id}] Rejected as non-resume: {filename}")
+            upd(status="failed", stage="failed", error=rejection_reason)
+            return
 
         # ── Step 2: AI analysis ───────────────────────────────────────────────
         try:

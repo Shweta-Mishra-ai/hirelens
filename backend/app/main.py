@@ -13,15 +13,35 @@ from app.core.exceptions import (
     HireLensException, RateLimitExceeded,
     FileTooLarge, UnsupportedFileType, AuthError,
 )
-from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match
+from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match, verify
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hirelens")
 
 
+DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production-min-32"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"HireLens API starting — env={settings.APP_ENV}")
+
+    # ── Security startup checks ─────────────────────────────────────────────
+    if settings.is_production:
+        if settings.SECRET_KEY == DEFAULT_SECRET_KEY or len(settings.SECRET_KEY) < 32:
+            logger.critical(
+                "SECURITY: SECRET_KEY is unset or using the default dev value in "
+                "production. JWTs can be forged by anyone who has read this public "
+                "repo. Set a real random SECRET_KEY (32+ chars) in your environment "
+                "immediately — e.g. `python -c \"import secrets; print(secrets.token_urlsafe(48))\"`."
+            )
+        if "*" in settings.allowed_origins_list:
+            logger.critical(
+                "SECURITY: ALLOWED_ORIGINS includes '*' in production — this allows "
+                "any website to make authenticated requests to this API. Restrict it "
+                "to your actual frontend domain(s)."
+            )
+
     yield
     logger.info("HireLens API shutting down")
 
@@ -43,6 +63,16 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Request-ID", "X-Response-Time"],
 )
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if settings.is_production:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 @app.middleware("http")
 async def request_middleware(request: Request, call_next):
@@ -108,6 +138,7 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["Analysis"])
 app.include_router(bulk.router, prefix="/api/v1/bulk", tags=["Bulk Upload"])
 app.include_router(match.router, prefix="/api/v1/match", tags=["JD Match"])
+app.include_router(verify.router, prefix="/api/v1/verify", tags=["Verification"])
 app.include_router(reports.router, prefix="/api/v1/reports", tags=["Reports"])
 
 @app.get("/", include_in_schema=False)
