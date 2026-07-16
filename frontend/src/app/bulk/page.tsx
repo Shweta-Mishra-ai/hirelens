@@ -36,15 +36,15 @@ function statusBadge(status: string) {
 
 export default function BulkUploadPage() {
   const router = useRouter();
-  const { token } = useAuthStore();
+  const { token, hasHydrated } = useAuthStore();
   const { state, upload, exportCsv, exporting, reset } = useBulkAnalysis();
   const inputRef = useRef<HTMLInputElement>(null);
   const [pending, setPending] = useState<File[]>([]);
   const [pickError, setPickError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token) router.replace("/login");
-  }, [token, router]);
+    if (hasHydrated && !token) router.replace("/login");
+  }, [hasHydrated, token, router]);
 
   const addFiles = useCallback((incoming: FileList | File[]) => {
     setPickError(null);

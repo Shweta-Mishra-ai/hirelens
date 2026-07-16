@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
@@ -31,24 +31,45 @@ function relTime(iso: string) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+const SORT_OPTIONS = [
+  { value: "newest", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "score_desc", label: "Score: high → low" },
+  { value: "score_asc", label: "Score: low → high" },
+  { value: "name_asc", label: "Name: A → Z" },
+];
+
 export default function DashboardPage() {
   const router = useRouter();
-  const { user, token, logout } = useAuthStore();
+  const { user, token, logout, hasHydrated } = useAuthStore();
   const [reports, setReports] = useState<Report[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("newest");
+  const [exporting, setExporting] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
-    if (!token) { router.replace("/login"); return; }
-  }, [token, router]);
+    if (hasHydrated && !token) { router.replace("/login"); return; }
+  }, [hasHydrated, token, router]);
+
+  // Debounce search box → search state (avoids a request per keystroke)
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setSearch(searchInput.trim()), 350);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [searchInput]);
 
   const loadReports = useCallback(async () => {
     if (!token) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await reportsAPI.list(token);
+      const res = await reportsAPI.list(token, { search: search || undefined, sort });
       setReports(res.reports as unknown as Report[]);
       setTotal(res.total);
     } catch (e) {
@@ -60,9 +81,29 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, logout, router]);
+  }, [token, logout, router, search, sort]);
 
   useEffect(() => { loadReports(); }, [loadReports]);
+
+  const handleExportAll = async () => {
+    if (!token) return;
+    setExporting(true);
+    try {
+      const blob = await reportsAPI.downloadAllCsv(token, { search: search || undefined, sort });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "hirelens_all_reports.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Could not export reports. Please try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Dashboard stats
   const recommended = reports.filter(r => (r as any).recommendation === "recommended").length;
@@ -107,7 +148,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Stats */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 28 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 22 }}>
           {[
             { n: total,       label: "Total Analyzed", color: "#4B8DFF", icon: "📄" },
             { n: avgScore,    label: "Avg Score",       color: "#22D3EE", icon: "📊" },
@@ -122,10 +163,49 @@ export default function DashboardPage() {
           ))}
         </div>
 
+        {/* Search + Sort + Export toolbar */}
+        <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 220px", position: "relative" }}>
+            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: "#64748B" }}>🔍</span>
+            <input
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search by candidate name or skill…"
+              style={{
+                width: "100%", boxSizing: "border-box", padding: "10px 14px 10px 34px",
+                background: "#0E1C2E", border: "1px solid #172840", borderRadius: 10,
+                color: "#EFF6FF", fontSize: 13, fontFamily: "inherit", outline: "none",
+              }}
+            />
+          </div>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value)}
+            style={{
+              padding: "10px 14px", background: "#0E1C2E", border: "1px solid #172840",
+              borderRadius: 10, color: "#CBD5E1", fontSize: 13, fontFamily: "inherit", cursor: "pointer",
+            }}
+          >
+            {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <button
+            onClick={handleExportAll}
+            disabled={exporting || reports.length === 0}
+            style={{
+              padding: "10px 18px", borderRadius: 10, border: "1px solid #172840", background: "#0E1C2E",
+              color: "#CBD5E1", fontWeight: 700, fontSize: 13, cursor: exporting || reports.length === 0 ? "default" : "pointer",
+              opacity: exporting || reports.length === 0 ? 0.5 : 1, fontFamily: "inherit", whiteSpace: "nowrap",
+            }}
+          >
+            {exporting ? "Exporting…" : "⬇ Export All"}
+          </button>
+        </div>
+
         {/* Reports table */}
         <div style={{ background: "#0E1C2E", border: "1px solid #172840", borderRadius: 16, overflow: "hidden" }}>
-          <div style={{ padding: "14px 22px", borderBottom: "1px solid #172840", fontSize: 12, fontWeight: 700, color: "#94A3B8" }}>
-            Recent Analyses
+          <div style={{ padding: "14px 22px", borderBottom: "1px solid #172840", fontSize: 12, fontWeight: 700, color: "#94A3B8", display: "flex", justifyContent: "space-between" }}>
+            <span>{search ? `Results for "${search}"` : "Recent Analyses"}</span>
+            {!loading && <span style={{ color: "#475569", fontWeight: 400 }}>{total} total</span>}
           </div>
 
           {loading && (
@@ -134,7 +214,14 @@ export default function DashboardPage() {
           {error && (
             <div style={{ padding: 32, textAlign: "center", color: "#F87171", fontSize: 13 }}>{error}</div>
           )}
-          {!loading && !error && reports.length === 0 && (
+          {!loading && !error && reports.length === 0 && search && (
+            <div style={{ padding: 56, textAlign: "center" }}>
+              <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
+              <div style={{ fontSize: 15, color: "#EFF6FF", marginBottom: 8 }}>No matches for &quot;{search}&quot;</div>
+              <div style={{ fontSize: 13, color: "#64748B" }}>Try a different name or skill.</div>
+            </div>
+          )}
+          {!loading && !error && reports.length === 0 && !search && (
             <div style={{ padding: 56, textAlign: "center" }}>
               <div style={{ fontSize: 36, marginBottom: 12 }}>📄</div>
               <div style={{ fontSize: 15, color: "#EFF6FF", marginBottom: 8 }}>No analyses yet</div>

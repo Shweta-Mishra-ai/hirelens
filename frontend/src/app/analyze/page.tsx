@@ -15,13 +15,13 @@ const STAGES = [
 
 export default function AnalyzePage() {
   const router   = useRouter();
-  const { token } = useAuthStore();
+  const { token, hasHydrated } = useAuthStore();
   const { state, analyze, reset } = useAnalysis();
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!token) router.replace("/login");
-  }, [token, router]);
+    if (hasHydrated && !token) router.replace("/login");
+  }, [hasHydrated, token, router]);
 
   // Auto-navigate when complete
   useEffect(() => {

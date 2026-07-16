@@ -6,7 +6,7 @@
  * - Timeout handling
  * - 204 No Content handled correctly
  */
-import type { Report, AnalysisJob, User, BulkUploadResponse, BatchStatus, MatchBatchStatus } from "@/types";
+import type { Report, AnalysisJob, User, BulkUploadResponse, BatchStatus, MatchBatchStatus, VerificationResult } from "@/types";
 
 const BASE =
   (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -205,19 +205,51 @@ export const matchAPI = {
   },
 };
 
+// ── Public Data Verification (Feature 3) ────────────────────────────────────
+export const verifyAPI = {
+  run: (reportId: string, githubUsername: string | undefined, token: string) =>
+    req<VerificationResult>(`/api/v1/verify/${reportId}/run`, {
+      method: "POST",
+      body: JSON.stringify({ github_username: githubUsername || null }),
+      token,
+    }),
+
+  get: (reportId: string, token: string) =>
+    req<VerificationResult>(`/api/v1/verify/${reportId}`, { token }),
+};
+
 // ── Reports ───────────────────────────────────────────────────────────────────
 export const reportsAPI = {
   list: (
     token: string,
-    params?: { page?: number; recommendation?: string },
+    params?: { page?: number; recommendation?: string; search?: string; sort?: string },
   ) => {
     const qs = new URLSearchParams();
     if (params?.page) qs.set("page", String(params.page));
     if (params?.recommendation) qs.set("recommendation", params.recommendation);
+    if (params?.search) qs.set("search", params.search);
+    if (params?.sort) qs.set("sort", params.sort);
     return req<{ reports: Report[]; total: number; pages: number }>(
       `/api/v1/reports?${qs.toString()}`,
       { token },
     );
+  },
+
+  downloadAllCsv: async (
+    token: string,
+    params?: { recommendation?: string; search?: string; sort?: string },
+  ): Promise<Blob> => {
+    const qs = new URLSearchParams();
+    if (params?.recommendation) qs.set("recommendation", params.recommendation);
+    if (params?.search) qs.set("search", params.search);
+    if (params?.sort) qs.set("sort", params.sort);
+    const res = await fetch(`${BASE}/api/v1/reports/export.csv?${qs.toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      throw new APIError(res.status, "export_failed", "Could not export CSV. Please try again.");
+    }
+    return res.blob();
   },
 
   get: (id: string, token: string) =>
