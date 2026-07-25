@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Next.js](https://img.shields.io/badge/Next.js-14.2-000?style=flat-square&logo=next.js)](https://nextjs.org)
 [![Tests](https://img.shields.io/badge/backend%20tests-254%20passing-10B981?style=flat-square)](backend/tests)
-[![License](https://img.shields.io/badge/License-MIT-6366F1?style=flat-square)](LICENSE)
+
 
 **Upload a resume → get a credibility score, AI-generated-content detection, risk flags anchored to exact text, and real-time public-data verification — in under 30 seconds.**
 
@@ -519,6 +519,5 @@ touching the 5 endpoint files' logic beyond 3 one-line mutation-pattern fixes.
 
 ---
 
-## License
 
-MIT — see [LICENSE](LICENSE)
+
