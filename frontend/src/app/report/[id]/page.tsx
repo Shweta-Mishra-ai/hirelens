@@ -9,9 +9,9 @@ import { VerdictStamp, verdictFromRecommendation, type VerdictKind } from "@/com
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function scoreColor(n: number) {
-  if (n >= 75) return "#6E9974";
-  if (n >= 55) return "#D4AC5C";
-  return "#D46A4C";
+  if (n >= 75) return "#10B981";
+  if (n >= 55) return "#F59E0B";
+  return "#EF4444";
 }
 
 
@@ -282,19 +282,19 @@ function ScoreBar({ label, value, rationale }: { label: string; value: number; r
   useEffect(() => { const t = setTimeout(() => setW(value), 150); return () => clearTimeout(t); }, [value]);
   const col = scoreColor(value);
   return (
-    <div style={{ marginBottom: 14, position: "relative" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-        <span style={{ fontSize: 12, color: "#A79E8C", cursor: rationale ? "help" : "default" }}
+    <div style={{ marginBottom: 16, position: "relative" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+        <span style={{ fontSize: 13, color: "#CBD5E1", fontWeight: 500, cursor: rationale ? "help" : "default" }}
           onMouseOver={() => rationale && setTip(true)} onMouseOut={() => setTip(false)}>
-          {label}{rationale && <span style={{ color: "#6B6355", marginLeft: 4, fontSize: 10 }}>ⓘ</span>}
+          {label}{rationale && <span style={{ color: "#94A3B8", marginLeft: 6, fontSize: 11 }}>ⓘ</span>}
         </span>
-        <span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: col }}>{value}</span>
+        <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: col }}>{value}</span>
       </div>
-      <div style={{ height: 4, background: "#2A251C", borderRadius: 99, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${w}%`, background: `linear-gradient(90deg,${col}88,${col})`, borderRadius: 99, transition: "width 1.3s cubic-bezier(.4,0,.2,1)" }} />
+      <div style={{ height: 6, background: "rgba(255, 255, 255, 0.08)", borderRadius: 99, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${w}%`, background: `linear-gradient(90deg, ${col}88, ${col})`, borderRadius: 99, transition: "width 1.3s cubic-bezier(.4,0,.2,1)" }} />
       </div>
       {tip && rationale && (
-        <div style={{ position: "absolute", bottom: "110%", left: 0, right: 0, background: "#17140F", border: "1px solid #1E3450", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#D9D2C0", zIndex: 10, lineHeight: 1.5 }}>
+        <div style={{ position: "absolute", bottom: "110%", left: 0, right: 0, background: "#1E293B", border: "1px solid rgba(99, 102, 241, 0.4)", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: "#F8FAFC", zIndex: 10, lineHeight: 1.5, boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
           {rationale}
         </div>
       )}
@@ -554,72 +554,76 @@ export default function ReportPage() {
         </Link>
       </nav>
 
-      <div style={{ maxWidth: 960, margin: "0 auto", padding: "24px 20px 80px" }}>
-        <Link href="/dashboard" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "#9C9483", textDecoration: "none", marginBottom: 20 }}>
-          ← Dashboard
+      <div style={{ maxWidth: 980, margin: "0 auto", padding: "24px 20px 80px" }}>
+        <Link href="/dashboard" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: "#818CF8", textDecoration: "none", marginBottom: 20, fontWeight: 600 }}>
+          ← Back to Dashboard
         </Link>
 
         {/* Header card */}
-        <div className="fu" style={{ background: "#17140F", border: "1px solid #2A251C", borderRadius: 6, overflow: "hidden", marginBottom: 12 }}>
+        <div className="fu" style={{
+          background: "rgba(30, 41, 59, 0.6)", backdropFilter: "blur(16px)",
+          border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 20,
+          overflow: "hidden", marginBottom: 16
+        }}>
 
-          {/* Docket strip — case-file identity */}
-          <div style={{ padding: "8px 28px", borderBottom: "1px solid #2A251C", display: "flex", justifyContent: "space-between", alignItems: "center", background: "#131110" }}>
-            <span className="font-mono" style={{ fontSize: 10, color: "#6B6355", letterSpacing: 1.5, textTransform: "uppercase" }}>
-              Case File · {report.id ? report.id.slice(0, 8) : "—"}
+          {/* Docket strip */}
+          <div style={{ padding: "10px 28px", borderBottom: "1px solid rgba(255, 255, 255, 0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(15, 23, 42, 0.7)" }}>
+            <span className="font-mono" style={{ fontSize: 11, color: "#94A3B8", letterSpacing: 1.5, textTransform: "uppercase", fontWeight: 600 }}>
+              Candidate Intelligence File · {report.id ? report.id.slice(0, 8) : "—"}
             </span>
-            <span className="font-mono" style={{ fontSize: 10, color: "#6B6355", letterSpacing: 1.5, textTransform: "uppercase" }}>
+            <span className="font-mono" style={{ fontSize: 11, color: "#94A3B8", letterSpacing: 1.5, textTransform: "uppercase" }}>
               Examined {report.created_at ? new Date(report.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—"}
             </span>
           </div>
 
           {cred.recommendation_adjusted_by_verification && (
-            <div style={{ padding: "10px 28px", background: "rgba(177,66,38,.08)", borderBottom: "1px solid rgba(177,66,38,.25)" }}>
-              <span style={{ fontSize: 12, color: "#D46A4C", fontWeight: 700 }}>
-                ⚠ Recommendation downgraded from &quot;{cred.ai_recommendation}&quot; after verification —
+            <div style={{ padding: "12px 28px", background: "rgba(239, 68, 68, 0.1)", borderBottom: "1px solid rgba(239, 68, 68, 0.25)" }}>
+              <span style={{ fontSize: 12, color: "#EF4444", fontWeight: 700 }}>
+                ⚠️ Recommendation adjusted from &quot;{cred.ai_recommendation}&quot; after verification —
               </span>
-              <span style={{ fontSize: 12, color: "#D9D2C0" }}> {cred.recommendation_adjustment_reason}</span>
+              <span style={{ fontSize: 12, color: "#F8FAFC" }}> {cred.recommendation_adjustment_reason}</span>
             </div>
           )}
 
           {/* Top section */}
-          <div style={{ padding: "22px 28px", borderBottom: "1px solid #2A251C", display: "flex", gap: 22, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div style={{ padding: "24px 28px", borderBottom: "1px solid rgba(255, 255, 255, 0.08)", display: "flex", gap: 24, alignItems: "flex-start", flexWrap: "wrap" }}>
             <ScoreDocket score={cred.overall || 0} verdict={verdictFromRecommendation(cred.recommendation || "manual_review")} />
             <div style={{ flex: 1, minWidth: 220 }}>
               <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                <h2 className="font-display" style={{ margin: 0, fontSize: 25, fontWeight: 600, color: "#EDE6D6", letterSpacing: -.3 }}>
+                <h2 style={{ margin: 0, fontSize: 26, fontWeight: 800, color: "#F8FAFC", letterSpacing: -0.5 }}>
                   {report.candidate?.name || "Unknown Candidate"}
                 </h2>
                 {highFlags > 0 && (
-                  <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "#D46A4C", background: "rgba(177,66,38,.1)" }}>
+                  <span style={{ padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "#EF4444", background: "rgba(239, 68, 68, 0.15)", border: "1px solid rgba(239, 68, 68, 0.3)" }}>
                     {highFlags} high-risk flag{highFlags > 1 ? "s" : ""}
                   </span>
                 )}
               </div>
               {report.candidate?.current_role && (
-                <div style={{ fontSize: 13, color: "#6E90AC", marginBottom: 6 }}>{report.candidate.current_role}</div>
+                <div style={{ fontSize: 14, color: "#818CF8", fontWeight: 600, marginBottom: 6 }}>{report.candidate.current_role}</div>
               )}
-              <div style={{ fontSize: 12, color: "#9C9483", marginBottom: 12, lineHeight: 1.7 }}>
+              <div style={{ fontSize: 13, color: "#94A3B8", marginBottom: 14, lineHeight: 1.6 }}>
                 {[report.candidate?.email, report.candidate?.phone, report.candidate?.location].filter(Boolean).join("  ·  ") || "Contact info not found in resume"}
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {(report.skills?.all_claimed || []).slice(0, 8).map(s => {
                   const v = (report.skills?.verified_by_evidence || []).includes(s);
                   return (
-                    <span key={s} style={{ padding: "4px 10px", borderRadius: 7, fontSize: 11, fontWeight: 600, color: v ? "#6E9974" : "#D4AC5C", background: v ? "rgba(75,112,81,.1)" : "rgba(176,137,49,.1)", border: `1px solid ${v ? "#4B7051" : "#B08931"}33` }}>
+                    <span key={s} style={{ padding: "4px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600, color: v ? "#10B981" : "#F59E0B", background: v ? "rgba(16,185,129,0.15)" : "rgba(245,158,11,0.15)", border: `1px solid ${v ? "rgba(16,185,129,0.3)" : "rgba(245,158,11,0.3)"}` }}>
                       {v ? "✓" : "?"} {s}
                     </span>
                   );
                 })}
                 {(report.skills?.all_claimed?.length || 0) > 8 && (
-                  <span style={{ fontSize: 11, color: "#9C9483", alignSelf: "center" }}>
+                  <span style={{ fontSize: 12, color: "#94A3B8", alignSelf: "center", fontWeight: 500 }}>
                     +{(report.skills?.all_claimed?.length || 0) - 8} more
                   </span>
                 )}
               </div>
             </div>
             <div style={{ flexShrink: 0, textAlign: "right" }}>
-              <div style={{ fontFamily: "monospace", fontSize: 11, color: "#6B6355", marginBottom: 4 }}>{report.file_name}</div>
-              <div style={{ fontFamily: "monospace", fontSize: 11, color: "#6B6355" }}>
+              <div style={{ fontFamily: "monospace", fontSize: 12, color: "#94A3B8", marginBottom: 4 }}>{report.file_name}</div>
+              <div style={{ fontFamily: "monospace", fontSize: 12, color: "#64748B" }}>
                 {report.created_at ? new Date(report.created_at).toLocaleDateString() : "Just analyzed"}
               </div>
             </div>
@@ -627,22 +631,27 @@ export default function ReportPage() {
 
           {/* One-liner */}
           {report.one_liner && (
-            <div style={{ padding: "10px 28px", background: "rgba(62,92,118,.06)", borderBottom: "1px solid #2A251C" }}>
-              <span style={{ fontSize: 13, color: "#D9D2C0", fontStyle: "italic" }}>&ldquo;{report.one_liner}&rdquo;</span>
+            <div style={{ padding: "12px 28px", background: "rgba(99, 102, 241, 0.08)", borderBottom: "1px solid rgba(255, 255, 255, 0.08)" }}>
+              <span style={{ fontSize: 14, color: "#CBD5E1", fontStyle: "italic", fontWeight: 500 }}>&ldquo;{report.one_liner}&rdquo;</span>
             </div>
           )}
 
           {/* Tabs */}
-          <div style={{ display: "flex", borderBottom: "1px solid #2A251C", overflowX: "auto" }}>
+          <div style={{ display: "flex", borderBottom: "1px solid rgba(255, 255, 255, 0.08)", overflowX: "auto", background: "rgba(15, 23, 42, 0.4)" }}>
             {TABS.map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)} style={{ padding: "12px 16px", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", color: tab === t.id ? "#6E90AC" : "#9C9483", borderBottom: `2px solid ${tab === t.id ? "#3E5C76" : "transparent"}`, fontWeight: tab === t.id ? 700 : 400, fontSize: 12, whiteSpace: "nowrap", transition: "color .15s" }}>
+              <button key={t.id} onClick={() => setTab(t.id)} style={{
+                padding: "14px 20px", background: "none", border: "none", cursor: "pointer",
+                fontFamily: "inherit", color: tab === t.id ? "#F8FAFC" : "#94A3B8",
+                borderBottom: `2px solid ${tab === t.id ? "#6366F1" : "transparent"}`,
+                fontWeight: tab === t.id ? 700 : 500, fontSize: 13, whiteSpace: "nowrap", transition: "all 0.15s ease"
+              }}>
                 {t.label}
               </button>
             ))}
           </div>
 
           {/* Tab content */}
-          <div style={{ padding: "24px 28px" }}>
+          <div style={{ padding: "28px 28px" }}>
 
             {/* OVERVIEW */}
             {tab === "overview" && (
@@ -659,27 +668,27 @@ export default function ReportPage() {
                     <ScoreBar label="Content Authenticity" value={scores.content_authenticity ?? 70} rationale={rationale.content_authenticity} />
                   </div>
                 </div>
-                <div style={{ fontSize: 11, color: "#6B6355", marginTop: -12, marginBottom: 20 }}>ⓘ Hover labels to see AI rationale</div>
+                <div style={{ fontSize: 12, color: "#94A3B8", marginTop: -12, marginBottom: 20 }}>ⓘ Hover score labels to view detailed AI rationale</div>
 
-                {/* AI-Generated Content Detection — core feature, shown prominently */}
+                {/* AI-Generated Content Detection — core feature */}
                 {report.ai_content_analysis && (
                   <AIContentCard analysis={report.ai_content_analysis} />
                 )}
 
                 {/* Summary */}
-                <div style={{ background: "#131110", border: "1px solid #2A251C", borderRadius: 12, padding: "18px 20px", marginBottom: 14 }}>
-                  <div style={{ fontSize: 10, color: "#6B6355", letterSpacing: 2.5, textTransform: "uppercase", marginBottom: 10 }}>AI Recruiter Summary</div>
-                  <p style={{ fontSize: 13, color: "#D9D2C0", lineHeight: 1.75, margin: 0 }}>{report.summary}</p>
+                <div style={{ background: "rgba(15, 23, 42, 0.6)", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 16, padding: "20px 24px", marginBottom: 18 }}>
+                  <div style={{ fontSize: 11, color: "#818CF8", fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>AI Recruiter Summary</div>
+                  <p style={{ fontSize: 14, color: "#CBD5E1", lineHeight: 1.75, margin: 0 }}>{report.summary}</p>
                 </div>
 
                 {/* Positives */}
                 {(report.positive_signals || []).length > 0 && (
-                  <div style={{ background: "rgba(75,112,81,.06)", border: "1px solid rgba(75,112,81,.2)", borderRadius: 12, padding: "16px 20px" }}>
-                    <div style={{ fontSize: 10, color: "#6E9974", letterSpacing: 2.5, textTransform: "uppercase", marginBottom: 12 }}>Positive Signals</div>
+                  <div style={{ background: "rgba(16, 185, 129, 0.08)", border: "1px solid rgba(16, 185, 129, 0.25)", borderRadius: 16, padding: "20px 24px" }}>
+                    <div style={{ fontSize: 11, color: "#10B981", fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 12 }}>Positive Signals</div>
                     {report.positive_signals!.map((p, i) => (
                       <div key={i} style={{ display: "flex", gap: 10, marginBottom: 8 }}>
-                        <span style={{ color: "#6E9974", flexShrink: 0 }}>✓</span>
-                        <div style={{ fontSize: 13, color: "#D9D2C0" }}><strong style={{ color: "#EDE6D6" }}>{p.title}:</strong> {p.description}</div>
+                        <span style={{ color: "#10B981", flexShrink: 0, fontWeight: 800 }}>✓</span>
+                        <div style={{ fontSize: 13, color: "#CBD5E1" }}><strong style={{ color: "#F8FAFC" }}>{p.title}:</strong> {p.description}</div>
                       </div>
                     ))}
                   </div>
