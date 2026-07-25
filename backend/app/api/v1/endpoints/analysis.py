@@ -17,16 +17,18 @@ from fastapi import APIRouter, Depends, File, UploadFile, BackgroundTasks
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import FileTooLarge, UnsupportedFileType, NotFoundError, ForbiddenError
-from app.services.parser.document_parser import extract_text
+from app.services.parser.document_parser import extract_text, check_magic_bytes
 from app.services.parser.resume_heuristic import looks_like_resume
 from app.services.ai.engine import engine
+from app.services.queue.job_store import PersistentJobStore
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
 
-# In-memory job store with timestamp for cleanup
-# Key: job_id, Value: {job data + created_at}
-_jobs: dict[str, dict] = {}
+# Job/report store — Redis-backed when REDIS_URL is configured (survives
+# process restarts), transparent in-memory-only fallback otherwise.
+# Key: job_id -> job status dict, OR "report_{id}" -> full report dict.
+_jobs = PersistentJobStore(get_redis_fn=get_redis)
 
 ALLOWED_MIME = {
     "application/pdf",
@@ -42,13 +44,12 @@ ALLOWED_EXT = {"pdf", "docx"}
 
 
 def _cleanup_old_jobs():
-    """Remove jobs older than 1 hour to prevent memory leak."""
-    cutoff = time.time() - 3600
-    stale = [jid for jid, j in _jobs.items() if j.get("created_at", 0) < cutoff]
-    for jid in stale:
-        _jobs.pop(jid, None)
-    if stale:
-        logger.info(f"Cleaned up {len(stale)} stale jobs")
+    """Trims local-memory entries older than 1 hour. Redis-backed entries
+    (when configured) expire on their own via TTL — this only prevents the
+    process's local dict from growing unbounded over a long uptime."""
+    removed = _jobs.cleanup_stale(max_age_seconds=3600)
+    if removed:
+        logger.info(f"Cleaned up {removed} stale jobs")
 
 
 def _check_rate_limit(redis, user_id: str) -> None:
@@ -95,12 +96,19 @@ def validate_upload(contents: bytes, filename: str, mime: str) -> str:
     # Normalize mime type for parser
     if ext == "pdf" or mime == "application/pdf":
         effective_mime = "application/pdf"
+        fmt = "pdf"
     elif ext == "docx" or "wordprocessingml" in mime:
         effective_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        fmt = "docx"
     elif ext == "pdf":
         effective_mime = "application/pdf"
+        fmt = "pdf"
     else:
         effective_mime = "application/pdf"  # default, parser will validate
+        fmt = "pdf"
+
+    # Validate header magic bytes
+    check_magic_bytes(contents, fmt)
 
     return effective_mime
 
@@ -213,7 +221,7 @@ async def _run_analysis(
 
     def upd(**kwargs):
         if job_id in _jobs:
-            _jobs[job_id].update(kwargs)
+            _jobs[job_id] = {**_jobs[job_id], **kwargs}
 
     async def on_progress(stage: str, pct: int):
         upd(stage=stage, progress=pct, status="running")

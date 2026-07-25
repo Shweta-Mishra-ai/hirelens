@@ -3,37 +3,71 @@
 @tailwind utilities;
 
 :root {
-  --bg: #060F1A;
-  --surf: #0A1525;
-  --card: #0E1C2E;
-  --border: #172840;
-  --blue: #1D6AFF;
-  --blue-l: #4B8DFF;
-  --cyan: #06B6D4;
-  --cyan-l: #22D3EE;
-  --green: #059669;
-  --green-l: #10B981;
-  --amber: #D97706;
-  --amber-l: #FBBF24;
-  --rose: #DC2626;
-  --rose-l: #F87171;
-  --text-pri: #EFF6FF;
-  --text-sec: #94A3B8;
-  --text-mut: #475569;
+  /* ── Case-file identity ──────────────────────────────────────────────
+     Warm ink (not blue-tinted navy) grounds the whole app in a "document
+     examination" feel rather than a generic tech-dashboard one. Verdict
+     colors are deliberately muted/ledger-toned, not neon SaaS accents. */
+  --ink:        #0D0C0A;   /* base background */
+  --ink-raised: #17140F;   /* panels, cards */
+  --ink-line:   #2A251C;   /* borders */
+  --parchment:  #EDE6D6;   /* evidence-quote surface, used sparingly */
+  --parchment-dim: #C9C0AC;
+
+  --stamp-red:    #B14226; /* high risk / rejected — muted brick, not alarm-red */
+  --stamp-red-l:  #D46A4C;
+  --stamp-green:  #4B7051; /* verified / recommended — muted ledger green */
+  --stamp-green-l:#6E9974;
+  --stamp-gold:   #B08931; /* caution / manual review — muted brass */
+  --stamp-gold-l: #D4AC5C;
+  --stamp-blue:   #3E5C76; /* neutral/informational accents */
+  --stamp-blue-l: #6E90AC;
+
+  --text-pri: #EDE6D6;
+  --text-sec: #A79E8C;
+  --text-mut: #6B6355;
+
+  /* legacy aliases kept so not-yet-migrated pages keep working */
+  --bg: var(--ink);
+  --surf: var(--ink-raised);
+  --card: var(--ink-raised);
+  --border: var(--ink-line);
+  --blue: var(--stamp-blue-l);
+  --blue-l: var(--stamp-blue-l);
+  --cyan: var(--stamp-blue-l);
+  --cyan-l: var(--stamp-blue-l);
+  --green: var(--stamp-green);
+  --green-l: var(--stamp-green-l);
+  --amber: var(--stamp-gold);
+  --amber-l: var(--stamp-gold-l);
+  --rose: var(--stamp-red);
+  --rose-l: var(--stamp-red-l);
 }
 
 * { box-sizing: border-box; }
 
 html, body {
-  background: var(--bg);
+  background: var(--ink);
   color: var(--text-pri);
-  font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
+  font-family: var(--font-body), system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, .font-display {
+  font-family: var(--font-display), Georgia, serif;
+}
+
+.font-mono, code, kbd {
+  font-family: var(--font-mono), ui-monospace, monospace;
 }
 
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+::-webkit-scrollbar-thumb { background: var(--ink-line); border-radius: 99px; }
+
+:focus-visible {
+  outline: 2px solid var(--stamp-gold-l);
+  outline-offset: 2px;
+}
 
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(12px); }
@@ -46,6 +80,60 @@ html, body {
   0%, 100% { opacity: .2; transform: scale(.7); }
   50%       { opacity: 1;  transform: scale(1.1); }
 }
+@keyframes stampIn {
+  0%   { opacity: 0; transform: scale(1.4) rotate(var(--stamp-rot, -6deg)); }
+  60%  { opacity: 1; transform: scale(0.94) rotate(var(--stamp-rot, -6deg)); }
+  100% { opacity: 1; transform: scale(1) rotate(var(--stamp-rot, -6deg)); }
+}
 
 .animate-fade-up { animation: fadeUp .3s ease forwards; }
 .animate-spin    { animation: spin 1s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-up, .animate-spin, .stamp { animation: none !important; }
+}
+
+/* ── Signature element: the Verdict Stamp ─────────────────────────────────
+   A rotated, ink-stamped badge — replaces the generic circular score-ring /
+   pill-badge pattern with something that embodies "case file verdict".
+   Use via the <VerdictStamp> component; raw class kept here for CSS-only
+   contexts (e.g. table cells) where a component isn't practical. */
+.stamp {
+  --stamp-rot: -4deg;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-display), Georgia, serif;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 2px solid currentColor;
+  border-radius: 3px;
+  padding: 3px 10px;
+  transform: rotate(var(--stamp-rot));
+  position: relative;
+  animation: stampIn .4s cubic-bezier(.2,.8,.3,1.2) both;
+}
+.stamp::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+/* ── Evidence quote ────────────────────────────────────────────────────
+   Text pulled verbatim from a resume — styled like a highlighted excerpt
+   physically pulled from a document, reinforcing "we cite exact evidence". */
+.evidence-quote {
+  background: var(--parchment);
+  color: #2A2416;
+  font-family: var(--font-display), Georgia, serif;
+  font-style: italic;
+  border-radius: 2px;
+  padding: 2px 8px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}

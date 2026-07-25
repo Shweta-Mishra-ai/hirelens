@@ -144,7 +144,7 @@ async def _call_groq(prompt: str, temperature: float = 0.1, max_tokens: int = 40
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
             json={
-                "model": "llama-3.1-70b-versatile",
+                "model": "llama-3.3-70b-versatile",
                 "messages": [
                     {
                         "role": "system",
@@ -181,7 +181,7 @@ async def _call_anthropic(prompt: str, temperature: float = 0.1, max_tokens: int
                 "Content-Type": "application/json",
             },
             json={
-                "model": "claude-sonnet-4-6",
+                "model": "claude-3-5-sonnet-20241022",
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "system": "You are a resume analysis AI. Always respond with valid JSON only. No markdown, no prose.",
@@ -210,7 +210,7 @@ async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000
     if settings.GEMINI_API_KEY:
         providers.append(("gemini-2.5-flash", _call_gemini))
     if settings.GROQ_API_KEY:
-        providers.append(("groq-llama3.1", _call_groq))
+        providers.append(("groq-gpt-oss-120b", _call_groq))
     if settings.ANTHROPIC_API_KEY:
         providers.append(("claude-sonnet", _call_anthropic))
 
@@ -355,15 +355,23 @@ Return ONLY valid JSON — no markdown, no explanation outside the JSON:
       "skills_consistency": 75,
       "education": 85,
       "project_authenticity": 70,
-      "resume_quality": 80
+      "resume_quality": 80,
+      "content_authenticity": 75
     }},
     "score_rationale": {{
       "timeline": "Employment dates are consistent with no unexplained gaps",
       "skills_consistency": "Most skills appear in job descriptions",
       "education": "Degree from recognized institution with normal duration",
       "project_authenticity": "Projects have specific technical details",
-      "resume_quality": "Well-structured with relevant content"
+      "resume_quality": "Well-structured with relevant content",
+      "content_authenticity": "Writing has specific, individual detail rather than generic filler"
     }}
+  }},
+  "ai_content_analysis": {{
+    "likelihood": "low",
+    "indicators": ["specific AI-generated-writing patterns found, each with a short quote as evidence"],
+    "human_indicators": ["specific signs of authentic, individual, human-written content, each with a short quote"],
+    "note": "1-2 sentence verdict explaining the likelihood rating"
   }},
   "skills_verification": {{
     "verified_by_evidence": ["skills that appear in job/project descriptions"],
@@ -407,6 +415,53 @@ SCORING GUIDE (be realistic — don't default to 70 for everything):
 - 40-54: Multiple red flags needing structured verification
 - 0-39: Serious credibility concerns
 
+AI-GENERATED CONTENT DETECTION (content_authenticity sub-score):
+This resume's bullet points and descriptions were extracted VERBATIM — you are
+reading the candidate's actual wording. Assess how likely it is that this text
+was substantially written or heavily rewritten by an LLM (ChatGPT/similar)
+rather than reflecting the candidate's own authentic description of their work.
+Score 0-100 where 100 = clearly authentic human writing, 0 = clearly AI-generated.
+
+Signals suggesting AI-GENERATED content (lower content_authenticity):
+- Heavy, repeated use of generic corporate buzzwords with no concrete substance
+  ("leveraged", "spearheaded", "orchestrated", "synergized", "played a pivotal role",
+  "results-driven professional", "utilized cutting-edge technologies")
+- Every bullet point follows an identical rigid structure/length with no natural variation
+- Achievements stated as suspiciously round, unexplained metrics with zero context
+  ("increased efficiency by 40%", "improved performance by 200%" — no baseline, no method)
+- Bullet points read like generic job-description templates rather than describing
+  what THIS person specifically did, built, or decided
+- Project descriptions are generic/tutorial-level (basic CRUD apps, "to-do list",
+  textbook examples) but paired with senior-level titles or years of claimed experience
+- Suspiciously perfect, uniform grammar/tone across the entire document with zero
+  personality, informal phrasing, or natural inconsistency a real person's writing has
+- Skill list reads like an exhaustive keyword dump rather than a curated, honest list
+
+Signals suggesting AUTHENTIC human writing (higher content_authenticity):
+- Specific tool versions, internal project names, team sizes, concrete numbers with context
+- Natural inconsistency in bullet length/style across different jobs (real resumes are messier)
+- Mentions of specific challenges, tradeoffs, or decisions made (not just outcomes)
+- Domain-specific detail that would be hard to fabricate generically
+- Minor imperfections in phrasing that suggest an individual voice, not a template
+
+Do NOT punish concise or well-written resumes by default — many strong candidates
+write clearly. Only flag when MULTIPLE AI-pattern signals stack together. Always
+quote the specific text that triggered your judgment in "indicators"/"human_indicators".
+
+IMPORTANT CALIBRATION: Modern AI models (Claude, ChatGPT, DeepSeek, etc.) can be
+prompted to write resume text with NO obvious buzzwords or templated structure —
+a well-prompted AI-written resume can look completely natural. This means:
+- A "low" likelihood rating means "no strong textual red flags found" — it does
+  NOT mean "confirmed human-written." Never imply more certainty than the text
+  evidence actually supports.
+- Writing-style analysis alone is a WEAK, corroborating signal, not a verdict.
+  The strongest evidence of authenticity is independently verifiable real-world
+  fact (a real GitHub account with matching commit history, a real institution) —
+  not prose style. Make this limitation clear in "note" whenever likelihood is "low".
+- Never state or imply "this resume is definitely human-written" or "definitely
+  AI-generated" — always express it as a likelihood with named evidence, exactly
+  as the schema requires.
+
 FLAG RULES:
 - Only flag genuine concerns, not normal career patterns
 - Do NOT flag gaps under 3 months without other issues
@@ -415,6 +470,9 @@ FLAG RULES:
 - DO flag: degrees completed in impossibly short time
 - DO flag: round-number metrics with no baseline ("improved by 300%")
 - DO flag: job titles that jumped too fast (Junior → CTO in 2 years)
+- DO flag: strong multi-signal evidence the resume text was substantially AI-generated
+  rather than written by the candidate (category: "ai_content", cite the specific
+  indicators as evidence)
 - Every flag MUST quote actual text from the resume in 'evidence' field
 
 QUESTIONS: Generate exactly 7-9 interview questions mixing:
@@ -537,9 +595,9 @@ class AnalysisEngine:
         overall = int(cred_raw.get("overall") or 0)
         if overall == 0 and sub_scores:
             weights = {
-                "timeline": 0.30, "skills_consistency": 0.25,
-                "education": 0.20, "project_authenticity": 0.15,
-                "resume_quality": 0.10,
+                "timeline": 0.25, "skills_consistency": 0.20,
+                "education": 0.15, "project_authenticity": 0.15,
+                "resume_quality": 0.10, "content_authenticity": 0.15,
             }
             overall = round(sum(
                 int(sub_scores.get(k) or 70) * w
@@ -583,9 +641,11 @@ class AnalysisEngine:
                     "education":            int(sub_scores.get("education") or 70),
                     "project_authenticity": int(sub_scores.get("project_authenticity") or 70),
                     "resume_quality":       int(sub_scores.get("resume_quality") or 70),
+                    "content_authenticity": int(sub_scores.get("content_authenticity") or 70),
                 },
                 "score_rationale": cred_raw.get("score_rationale") or {},
             },
+            "ai_content_analysis": self._merge_ai_content_analysis(analysis.get("ai_content_analysis")),
             "timeline_gaps":        list(analysis.get("timeline_gaps") or []),
             "flags":                list(analysis.get("flags") or []),
             "positive_signals":     list(analysis.get("positive_signals") or []),
@@ -593,6 +653,18 @@ class AnalysisEngine:
             "summary":              str(analysis.get("summary") or "Analysis complete."),
             "one_liner":            str(analysis.get("one_liner") or ""),
             "recruiter_decision":   None,
+        }
+
+    def _merge_ai_content_analysis(self, raw: dict | None) -> dict:
+        raw = raw or {}
+        likelihood = raw.get("likelihood") or ""
+        if likelihood not in ("low", "medium", "high"):
+            likelihood = "low"  # conservative default — don't accuse without signal
+        return {
+            "likelihood": likelihood,
+            "indicators": [str(x) for x in (raw.get("indicators") or [])][:8],
+            "human_indicators": [str(x) for x in (raw.get("human_indicators") or [])][:8],
+            "note": str(raw.get("note") or ""),
         }
 
     async def match_jd(self, resume_result: dict, jd_text: str) -> dict:

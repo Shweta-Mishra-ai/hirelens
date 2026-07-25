@@ -45,6 +45,57 @@ export function useBulkAnalysis() {
     if (mountedRef.current) setState(s);
   }, []);
 
+  const pollBatch = useCallback(
+    (batchId: string) => {
+      let attempts = 0;
+
+      const pollOnce = async () => {
+        if (!mountedRef.current || !token) {
+          stopPolling();
+          return;
+        }
+        attempts++;
+        if (attempts > MAX_ATTEMPTS) {
+          stopPolling();
+          safeSetState({
+            phase: "error",
+            message: "This batch is taking unusually long. Check your dashboard shortly.",
+          });
+          return;
+        }
+
+        try {
+          const batch = await bulkAPI.status(batchId, token);
+          if (!mountedRef.current) return;
+
+          if (batch.is_done) {
+            stopPolling();
+            safeSetState({ phase: "done", batch });
+          } else {
+            safeSetState({ phase: "processing", batch });
+          }
+        } catch (err) {
+          if (err instanceof APIError && (err.status === 401 || err.status === 404)) {
+            stopPolling();
+            safeSetState({
+              phase: "error",
+              message:
+                err.status === 401
+                  ? "Your session expired. Please log in again."
+                  : "Batch not found. It may have expired.",
+            });
+          }
+          // Transient/network errors: keep polling silently.
+        }
+      };
+
+      return pollOnce().then(() => {
+        pollRef.current = setInterval(pollOnce, POLL_MS);
+      });
+    },
+    [token, stopPolling, safeSetState],
+  );
+
   const upload = useCallback(
     async (files: File[]) => {
       if (!token) {
@@ -69,53 +120,34 @@ export function useBulkAnalysis() {
         return;
       }
 
-      const { batch_id } = uploadRes;
-      let attempts = 0;
-
-      const pollOnce = async () => {
-        if (!mountedRef.current) {
-          stopPolling();
-          return;
-        }
-        attempts++;
-        if (attempts > MAX_ATTEMPTS) {
-          stopPolling();
-          safeSetState({
-            phase: "error",
-            message: "This batch is taking unusually long. Check your dashboard shortly.",
-          });
-          return;
-        }
-
-        try {
-          const batch = await bulkAPI.status(batch_id, token);
-          if (!mountedRef.current) return;
-
-          if (batch.is_done) {
-            stopPolling();
-            safeSetState({ phase: "done", batch });
-          } else {
-            safeSetState({ phase: "processing", batch });
-          }
-        } catch (err) {
-          if (err instanceof APIError && (err.status === 401 || err.status === 404)) {
-            stopPolling();
-            safeSetState({
-              phase: "error",
-              message:
-                err.status === 401
-                  ? "Your session expired. Please log in again."
-                  : "Batch not found. It may have expired.",
-            });
-          }
-          // Transient/network errors: keep polling silently.
-        }
-      };
-
-      await pollOnce();
-      pollRef.current = setInterval(pollOnce, POLL_MS);
+      await pollBatch(uploadRes.batch_id);
     },
-    [token, stopPolling, safeSetState],
+    [token, stopPolling, safeSetState, pollBatch],
+  );
+
+  const uploadFromAts = useCallback(
+    async (csvFile: File) => {
+      if (!token) {
+        safeSetState({ phase: "error", message: "Please log in to import candidates." });
+        return;
+      }
+
+      safeSetState({ phase: "uploading" });
+      stopPolling();
+
+      let importRes: { batch_id: string; skipped_at_parse: { row_num: number; reason: string }[] };
+      try {
+        importRes = await bulkAPI.importFromAts(csvFile, token);
+      } catch (e) {
+        const message =
+          e instanceof APIError ? e.message : "ATS import failed. Please check the CSV and try again.";
+        safeSetState({ phase: "error", message });
+        return;
+      }
+
+      await pollBatch(importRes.batch_id);
+    },
+    [token, stopPolling, safeSetState, pollBatch],
   );
 
   const exportCsv = useCallback(
@@ -146,5 +178,5 @@ export function useBulkAnalysis() {
     safeSetState({ phase: "idle" });
   }, [stopPolling, safeSetState]);
 
-  return { state, upload, exportCsv, exporting, reset };
+  return { state, upload, uploadFromAts, exportCsv, exporting, reset };
 }

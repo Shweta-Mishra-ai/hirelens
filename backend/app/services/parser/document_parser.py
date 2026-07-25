@@ -20,12 +20,24 @@ SUPPORTED_MIME = {
 }
 
 
+def check_magic_bytes(file_bytes: bytes, fmt: str) -> None:
+    """Validate binary header magic bytes to reject spoofed or corrupted files."""
+    if not file_bytes:
+        raise UnsupportedFileType("empty file")
+    if fmt == "pdf":
+        if not file_bytes.startswith(b"%PDF"):
+            raise UnsupportedFileType("invalid PDF file signature (missing %PDF header)")
+    elif fmt == "docx":
+        if not file_bytes.startswith(b"PK\x03\x04"):
+            raise UnsupportedFileType("invalid DOCX file signature (missing ZIP PK header)")
+
+
 def extract_text(file_bytes: bytes, mime_type: str, filename: str = "") -> str:
     """
     Extract plain text from PDF or DOCX bytes.
     
     Raises:
-        UnsupportedFileType: If format not supported
+        UnsupportedFileType: If format not supported or header invalid
         ParseError: If extraction fails or text too short
     """
     if not file_bytes:
@@ -42,6 +54,9 @@ def extract_text(file_bytes: bytes, mime_type: str, filename: str = "") -> str:
 
     if not fmt:
         raise UnsupportedFileType(mime_type or filename or "unknown")
+
+    # Verify magic bytes
+    check_magic_bytes(file_bytes, fmt)
 
     logger.info(f"Parsing {fmt.upper()} | size={len(file_bytes)/1024:.0f}KB | file={filename}")
 

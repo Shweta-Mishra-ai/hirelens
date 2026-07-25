@@ -26,7 +26,11 @@ def is_public_http_url(url: str) -> bool:
         return False
 
     hostname = parsed.hostname.lower()
-    if hostname in ("localhost", "0.0.0.0") or hostname.endswith(".local"):
+    BLOCKED_HOSTNAMES = {
+        "localhost", "0.0.0.0", "169.254.169.254", "metadata.google.internal",
+        "metadata.gcp.internal", "instance-data",
+    }
+    if hostname in BLOCKED_HOSTNAMES or hostname.endswith(".local") or hostname.endswith(".internal"):
         return False
 
     try:

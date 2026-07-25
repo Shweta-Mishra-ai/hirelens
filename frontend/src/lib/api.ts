@@ -6,7 +6,7 @@
  * - Timeout handling
  * - 204 No Content handled correctly
  */
-import type { Report, AnalysisJob, User, BulkUploadResponse, BatchStatus, MatchBatchStatus, VerificationResult } from "@/types";
+import type { Report, AnalysisJob, User, BulkUploadResponse, BatchStatus, MatchBatchStatus, VerificationResult, DuplicateCheckResult, Team, TeamMember, ReportComment, VotesResult } from "@/types";
 
 const BASE =
   (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -159,6 +159,23 @@ export const bulkAPI = {
   status: (batchId: string, token: string) =>
     req<BatchStatus>(`/api/v1/bulk/${batchId}/status`, { token }),
 
+  checkDuplicates: (batchId: string, token: string) =>
+    req<DuplicateCheckResult>(`/api/v1/bulk/${batchId}/duplicates`, { token }),
+
+  importFromAts: (csvFile: File, token: string) => {
+    const form = new FormData();
+    form.append("file", csvFile);
+    return req<{
+      batch_id: string;
+      detected_columns: { name: string | null; email: string | null; resume_url: string | null };
+      total_rows: number;
+      queued: number;
+      skipped_at_parse: { row_num: number; reason: string }[];
+      skipped_at_download: { row_num: number; status: string }[];
+      message: string;
+    }>("/api/v1/ats/import", { method: "POST", body: form, token });
+  },
+
   // Downloads the ranked-candidate CSV as a Blob (fetched with the auth
   // header, since a plain <a href> link can't attach Authorization).
   downloadCsv: async (batchId: string, token: string): Promise<Blob> => {
@@ -216,6 +233,58 @@ export const verifyAPI = {
 
   get: (reportId: string, token: string) =>
     req<VerificationResult>(`/api/v1/verify/${reportId}`, { token }),
+};
+
+// ── Teams (Team Collaboration) ──────────────────────────────────────────────
+export const teamsAPI = {
+  list: (token: string) => req<{ teams: Team[] }>("/api/v1/teams", { token }),
+
+  create: (name: string, token: string) =>
+    req<Team>("/api/v1/teams", { method: "POST", body: JSON.stringify({ name }), token }),
+
+  members: (teamId: string, token: string) =>
+    req<{ members: TeamMember[] }>(`/api/v1/teams/${teamId}/members`, { token }),
+
+  invite: (teamId: string, email: string, token: string) =>
+    req<{ status: string; email?: string }>(`/api/v1/teams/${teamId}/invite`, {
+      method: "POST", body: JSON.stringify({ email }), token,
+    }),
+
+  removeMember: (teamId: string, userId: string, token: string) =>
+    req<{ status: string }>(`/api/v1/teams/${teamId}/members/${userId}`, { method: "DELETE", token }),
+
+  delete: (teamId: string, token: string) =>
+    req<{ status: string }>(`/api/v1/teams/${teamId}`, { method: "DELETE", token }),
+};
+
+// ── Report Collaboration (share, comments, votes) ───────────────────────────
+export const collaborationAPI = {
+  share: (reportId: string, teamId: string, token: string) =>
+    req<{ status: string; team_id: string }>(`/api/v1/reports/${reportId}/share`, {
+      method: "POST", body: JSON.stringify({ team_id: teamId }), token,
+    }),
+
+  unshare: (reportId: string, token: string) =>
+    req<{ status: string }>(`/api/v1/reports/${reportId}/unshare`, { method: "POST", token }),
+
+  listComments: (reportId: string, token: string) =>
+    req<{ comments: ReportComment[] }>(`/api/v1/reports/${reportId}/comments`, { token }),
+
+  addComment: (reportId: string, comment: string, token: string) =>
+    req<ReportComment>(`/api/v1/reports/${reportId}/comments`, {
+      method: "POST", body: JSON.stringify({ comment }), token,
+    }),
+
+  deleteComment: (reportId: string, commentId: string, token: string) =>
+    req<{ status: string }>(`/api/v1/reports/${reportId}/comments/${commentId}`, { method: "DELETE", token }),
+
+  listVotes: (reportId: string, token: string) =>
+    req<VotesResult>(`/api/v1/reports/${reportId}/votes`, { token }),
+
+  vote: (reportId: string, vote: "advance" | "reject" | "maybe", token: string) =>
+    req<{ status: string; vote: string }>(`/api/v1/reports/${reportId}/vote`, {
+      method: "POST", body: JSON.stringify({ vote }), token,
+    }),
 };
 
 // ── Reports ───────────────────────────────────────────────────────────────────
@@ -277,4 +346,10 @@ export const healthAPI = {
     req<{ status: string; version: string; llm_ready: boolean }>(
       "/api/v1/health",
     ),
+  diagnostics: () =>
+    req<{
+      health: { status: string; version: string; env: string; llm_ready: boolean };
+      capacity: { max_supported_users: number; bulk_concurrency: number; rate_limit_per_minute: number; max_file_size_mb: number };
+      metrics: { active_in_memory_jobs: number; in_memory_rate_limit_keys: number; process_memory_mb: number; timestamp: number };
+    }>("/api/v1/health/diagnostics"),
 };

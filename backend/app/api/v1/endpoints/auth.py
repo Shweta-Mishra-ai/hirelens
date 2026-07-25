@@ -15,6 +15,7 @@ from app.core.dependencies import get_db, get_current_user, get_redis
 from app.core.security import create_access_token
 from app.core.exceptions import AuthError, HireLensException
 from app.core.rate_limit import check_rate_limit, get_client_ip
+from app.services.teams.access import accept_pending_invites_for_email
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
@@ -102,6 +103,11 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
             "email": str(user.email),
         })
 
+        try:
+            accept_pending_invites_for_email(db, str(user.id), str(user.email))
+        except Exception as e:
+            logger.warning(f"Invite auto-accept failed during signup for {user.email}: {e}")
+
         return {
             "access_token": token,
             "token_type": "bearer",
@@ -151,6 +157,11 @@ async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=
             "email": str(user.email),
         })
 
+        try:
+            accept_pending_invites_for_email(db, str(user.id), str(user.email))
+        except Exception as e:
+            logger.warning(f"Invite auto-accept failed during login for {user.email}: {e}")
+
         meta = user.user_metadata or {}
         return {
             "access_token": token,
@@ -198,7 +209,12 @@ async def oauth_verify(body: OAuthVerifyRequest, db=Depends(get_db)):
             "sub": str(user.id),
             "email": str(user.email),
         })
-        
+
+        try:
+            accept_pending_invites_for_email(db, str(user.id), str(user.email))
+        except Exception as e:
+            logger.warning(f"Invite auto-accept failed during OAuth login for {user.email}: {e}")
+
         meta = user.user_metadata or {}
         return {
             "access_token": token,

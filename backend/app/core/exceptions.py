@@ -71,3 +71,11 @@ class TooManyBatches(HireLensException):
 class InvalidJobDescription(HireLensException):
     http_status = 422; code = "invalid_job_description"
     message = "Provide a job description as text (min 30 characters) or as a PDF/DOCX/TXT file."
+
+class AllResumesUnreachable(HireLensException):
+    http_status = 422; code = "all_resumes_unreachable"
+    message = "None of the resume URLs in this CSV could be downloaded. Check the file and try again."
+
+class DBRequiredError(HireLensException):
+    http_status = 503; code = "database_required"
+    message = "This feature requires a configured database. Ask your admin to set SUPABASE_URL/SUPABASE_SERVICE_KEY."

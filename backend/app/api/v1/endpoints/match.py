@@ -144,7 +144,7 @@ async def match_upload(
     batch_id = str(uuid.uuid4())
     for jid in job_ids:
         if jid in _jobs:
-            _jobs[jid]["batch_id"] = batch_id
+            _jobs[jid] = {**_jobs[jid], "batch_id": batch_id}
 
     batch_store.create_batch(redis, batch_id, user_id, job_ids, total=len(files))
 

@@ -28,6 +28,7 @@ from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import NotFoundError, ForbiddenError, EmptyBatch, TooManyFiles, TooManyBatches, FileTooLarge
 from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload
 from app.services.queue import batch_store
+from app.services.fraud.duplicate_detection import extract_fingerprint_text, find_duplicate_clusters
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
@@ -118,7 +119,7 @@ async def bulk_upload(
     batch_id = str(uuid.uuid4())
     for jid in job_ids:
         if jid in _jobs:
-            _jobs[jid]["batch_id"] = batch_id
+            _jobs[jid] = {**_jobs[jid], "batch_id": batch_id}
 
     batch_store.create_batch(redis, batch_id, user_id, job_ids, total=len(files))
 
@@ -296,3 +297,74 @@ async def bulk_export_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _fetch_full_report(report_id: str, db) -> dict | None:
+    """Fetches file_name/candidate/score + full report_data (needed to build
+    a duplicate-detection fingerprint from experience bullets/projects)."""
+    if db:
+        try:
+            res = (
+                db.table("reports")
+                .select("id,candidate_name,report_data")
+                .eq("id", report_id)
+                .maybe_single()
+                .execute()
+            )
+            if res.data:
+                return res.data
+        except Exception as e:
+            logger.warning(f"Duplicate-detection DB lookup failed for {report_id}: {e}")
+
+    data = _jobs.get(f"report_{report_id}")
+    if data:
+        cand = data.get("candidate") or {}
+        return {"id": report_id, "candidate_name": cand.get("name") or "Unknown", "report_data": data}
+    return None
+
+
+@router.get("/{batch_id}/duplicates")
+async def bulk_duplicate_check(
+    batch_id: str,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+):
+    """
+    Cross-candidate duplicate/template detection — flags groups of
+    candidates in this batch whose resume content (experience bullets,
+    project descriptions) is suspiciously similar to each other. A single
+    resume's own analysis can never catch this; it only shows up when
+    candidates are compared against one another within a batch.
+
+    High similarity is a signal to look closer, not proof of fraud —
+    legitimate candidates in the same field sometimes describe similar
+    work in similar words.
+    """
+    batch = batch_store.get_batch(redis, batch_id)
+    if not batch:
+        raise NotFoundError(f"Batch '{batch_id}' not found. It may have expired.")
+    if batch["user_id"] != current_user["id"]:
+        raise ForbiddenError()
+
+    status = _build_status_and_ranking(batch, db)
+    items = []
+    for r in status["ranking"]:
+        full = _fetch_full_report(r["report_id"], db)
+        if not full:
+            continue
+        fingerprint = extract_fingerprint_text(full.get("report_data") or {})
+        items.append({"id": r["report_id"], "name": full.get("candidate_name") or r["candidate_name"], "text": fingerprint})
+
+    clusters = find_duplicate_clusters(items)
+
+    return {
+        "batch_id": batch_id,
+        "candidates_compared": len(items),
+        "clusters": clusters,
+        "note": (
+            "High similarity means these candidates' resume content is suspiciously "
+            "alike — possibly the same template/writing service, or the same person "
+            "applying multiple times. Always verify manually before acting on this."
+        ),
+    }

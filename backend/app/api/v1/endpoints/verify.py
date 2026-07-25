@@ -28,6 +28,7 @@ from app.services.verify.github_verify import verify_github, extract_username
 from app.services.verify.education_verify import verify_education
 from app.services.verify.certification_verify import verify_certifications
 from app.services.verify.company_verify import verify_experience_companies
+from app.services.verify.trust_assessment import compute_trust_assessment
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
@@ -63,10 +64,13 @@ def _load_report(report_id: str, user_id: str, db) -> tuple[dict, str]:
     raise NotFoundError(f"Report '{report_id}' not found.")
 
 
-def _persist_verification(report_id: str, user_id: str, report: dict, source: str, db) -> None:
+def _persist_verification(report_id: str, user_id: str, report: dict, source: str, db, top_level_updates: dict | None = None) -> None:
     if source == "db" and db:
         try:
-            db.table("reports").update({"report_data": report}).eq("id", report_id).eq("user_id", user_id).execute()
+            payload = {"report_data": report}
+            if top_level_updates:
+                payload.update(top_level_updates)
+            db.table("reports").update(payload).eq("id", report_id).eq("user_id", user_id).execute()
             return
         except Exception as e:
             logger.warning(f"Failed to persist verification for report {report_id} to DB: {e}")
@@ -76,6 +80,58 @@ def _persist_verification(report_id: str, user_id: str, report: dict, source: st
 
 def _safe(result, fallback):
     return fallback if isinstance(result, BaseException) else result
+
+
+RECOMMENDATION_RANK = {"recommended": 2, "manual_review": 1, "high_risk": 0}
+RANK_TO_RECOMMENDATION = {v: k for k, v in RECOMMENDATION_RANK.items()}
+
+
+def _apply_verification_to_recommendation(report: dict, trust: dict) -> dict | None:
+    """
+    The AI's initial recommendation is set BEFORE verification ever runs —
+    so strong real-world evidence uncovered by verification (e.g. the
+    candidate's claimed GitHub account doesn't exist) previously never fed
+    back into the headline recommendation shown on the dashboard/rankings,
+    even though it's exactly the kind of signal that should change a
+    recruiter's read on a candidate.
+
+    Deliberately asymmetric and conservative:
+    - DOWNGRADE by one level (recommended → manual_review → high_risk) when
+      trust_assessment comes back "low_confidence" — strong negative
+      evidence should be able to override a good AI score.
+    - NEVER auto-upgrade on "high_confidence" — the AI may have flagged
+      genuine concerns (timeline gaps, inconsistent claims) that
+      verification doesn't check at all, and verification passing doesn't
+      resolve those.
+
+    Returns a dict of top-level DB columns to update if a change was made,
+    else None. Also mutates report["credibility"] in place so the JSON blob
+    and the returned report stay consistent with each other.
+    """
+    cred = report.get("credibility") or {}
+    current = cred.get("recommendation", "manual_review")
+    if current not in RECOMMENDATION_RANK:
+        return None
+
+    if trust.get("verdict") != "low_confidence" or not trust.get("evidence_available"):
+        return None
+
+    current_rank = RECOMMENDATION_RANK[current]
+    if current_rank == 0:
+        return None  # already high_risk, nothing lower to downgrade to
+
+    new_recommendation = RANK_TO_RECOMMENDATION[current_rank - 1]
+
+    cred["ai_recommendation"] = cred.get("ai_recommendation", current)  # preserve original, first downgrade only
+    cred["recommendation"] = new_recommendation
+    cred["recommendation_adjusted_by_verification"] = True
+    cred["recommendation_adjustment_reason"] = (
+        "Downgraded from the AI's initial read after public-data verification "
+        "found strong contradicting evidence — see the Verify tab for details."
+    )
+    report["credibility"] = cred
+
+    return {"recommendation": new_recommendation}
 
 
 @router.post("/{report_id}/run")
@@ -118,10 +174,33 @@ async def run_verification(
         if isinstance(res, BaseException):
             logger.warning(f"[verify {report_id}] {label} check failed: {res}")
 
+    trust = compute_trust_assessment(
+        ai_content_analysis=report.get("ai_content_analysis"),
+        verification=verification,
+        overall_score=int((report.get("credibility") or {}).get("overall") or 0),
+    )
+    verification["trust_assessment"] = trust
+    logger.info(f"[verify {report_id}] trust_assessment={trust['verdict']} score={trust['score']}")
+
     report["verification"] = verification
-    _persist_verification(report_id, current_user["id"], report, source, db)
+    top_level_updates = _apply_verification_to_recommendation(report, trust)
+    if top_level_updates:
+        logger.warning(
+            f"[verify {report_id}] recommendation downgraded to "
+            f"'{top_level_updates['recommendation']}' based on verification evidence"
+        )
+    _persist_verification(report_id, current_user["id"], report, source, db, top_level_updates)
 
     logger.info(f"Verification run | report={report_id} user={current_user['id']} github_status={verification['github'].get('status')}")
+
+    verification["recommendation_update"] = (
+        {
+            "new_recommendation": top_level_updates["recommendation"],
+            "ai_recommendation": report["credibility"].get("ai_recommendation"),
+            "reason": report["credibility"].get("recommendation_adjustment_reason"),
+        }
+        if top_level_updates else None
+    )
 
     return verification
 
