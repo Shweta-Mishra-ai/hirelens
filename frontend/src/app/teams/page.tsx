@@ -79,15 +79,29 @@ export default function TeamsPage() {
     }
   };
 
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!token || !selectedTeam || !inviteEmail.trim()) return;
     setInviting(true);
     setInviteSuccess(null);
+    setInviteUrl(null);
     setError(null);
     try {
       const res = await teamsAPI.invite(selectedTeam.id, inviteEmail.trim(), token);
-      setInviteSuccess(res.status === "already_invited" ? "User already invited." : `Invite sent to ${inviteEmail}!`);
+      if (res.status === "already_invited") {
+        setInviteSuccess(`User ${inviteEmail} is already invited.`);
+      } else if (res.email_sent) {
+        setInviteSuccess(`✓ Invitation email successfully sent to ${inviteEmail}!`);
+      } else {
+        setInviteSuccess(`✓ Invite created for ${inviteEmail}!`);
+      }
+
+      if (res.invite_url) {
+        setInviteUrl(res.invite_url);
+      }
+
       setInviteEmail("");
       loadMembers();
     } catch (e) {
@@ -243,7 +257,15 @@ export default function TeamsPage() {
                       {inviting ? "Inviting…" : "Send Invite"}
                     </button>
                   </form>
-                  {inviteSuccess && <div style={{ fontSize: 12, color: "#10B981", marginTop: 8 }}>✓ {inviteSuccess}</div>}
+                  {inviteSuccess && <div style={{ fontSize: 13, color: "#10B981", marginTop: 10, fontWeight: 600 }}>{inviteSuccess}</div>}
+                  {inviteUrl && (
+                    <div style={{ marginTop: 10, padding: "10px 12px", background: "rgba(30,41,59,0.8)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                      <span style={{ fontSize: 11, color: "#94A3B8", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{inviteUrl}</span>
+                      <button onClick={() => { navigator.clipboard.writeText(inviteUrl); alert("Invitation link copied to clipboard!"); }} style={{ padding: "4px 10px", borderRadius: 6, background: "rgba(99,102,241,0.2)", border: "1px solid rgba(99,102,241,0.4)", color: "#818CF8", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+                        📋 Copy Link
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Members List */}

@@ -125,9 +125,18 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
     if not can_manage_team(db, team_id, current_user["id"]):
         raise ForbiddenError("Only team owners or admins can send invites.")
 
+    from app.core.config import settings
+    from app.services.email.sender import send_team_invite_email
+
     invite_id = str(uuid.uuid4())
+    team_name = "HireLens Workspace"
+
     if db:
         try:
+            team_data = db.table("teams").select("name").eq("id", team_id).maybe_single().execute()
+            if team_data and team_data.data:
+                team_name = team_data.data.get("name", team_name)
+
             existing = (
                 db.table("team_invites")
                 .select("id")
@@ -135,7 +144,8 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
                 .execute()
             )
             if existing.data:
-                return {"status": "already_invited"}
+                invite_url = f"{settings.FRONTEND_URL}/signup?invite_email={body.email}&team_id={team_id}"
+                return {"status": "already_invited", "email": body.email, "invite_url": invite_url}
 
             db.table("team_invites").insert({
                 "id": invite_id,
@@ -144,11 +154,32 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
                 "invited_by": current_user["id"],
                 "status": "pending",
             }).execute()
-            return {"status": "invited", "email": body.email}
-        except Exception as e:
-            logger.warning(f"DB invite failed ({e}) — using in-memory fallback")
 
-    # In-memory fallback
+            # Attempt Supabase native admin invite email if available
+            try:
+                if hasattr(db, "auth") and hasattr(db.auth, "admin"):
+                    db.auth.admin.invite_user_by_email(str(body.email))
+            except Exception as e:
+                logger.warning(f"Supabase admin invite email skipped: {e}")
+
+        except Exception as e:
+            logger.warning(f"DB invite insertion error ({e}) — using in-memory store")
+
+    if team_id in _mem_teams:
+        team_name = _mem_teams[team_id].get("name", team_name)
+
+    invite_url = f"{settings.FRONTEND_URL}/signup?invite_email={body.email}&team_id={team_id}"
+    inviter_name = current_user.get("full_name") or current_user.get("email") or "A recruiter"
+
+    # Send real email via Resend / SMTP
+    email_sent = await send_team_invite_email(
+        to_email=str(body.email),
+        team_name=team_name,
+        inviter_name=inviter_name,
+        invite_url=invite_url,
+    )
+
+    # In-memory store mirror
     _mem_team_invites.append({
         "id": invite_id,
         "team_id": team_id,
@@ -156,7 +187,13 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
         "invited_by": current_user["id"],
         "status": "pending",
     })
-    return {"status": "invited", "email": body.email}
+
+    return {
+        "status": "invited",
+        "email": body.email,
+        "email_sent": email_sent,
+        "invite_url": invite_url,
+    }
 
 
 @router.delete("/{team_id}/members/{user_id}")
