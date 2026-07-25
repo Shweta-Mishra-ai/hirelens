@@ -1,7 +1,7 @@
 """HireLens API — Production FastAPI Application"""
 
 from contextlib import asynccontextmanager
-import time, uuid, logging
+import asyncio, time, uuid, logging
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +20,29 @@ logger = logging.getLogger("hirelens")
 
 
 DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production-min-32"
+
+
+# ── Self-ping keep-alive (prevents Render free tier sleep) ──────────────────
+async def _keep_alive_loop():
+    """
+    Pings our own /api/v1/health endpoint every 10 minutes so Render never
+    considers the service idle and spins it down.
+    Only runs in production; development can skip it.
+    """
+    import httpx
+    await asyncio.sleep(30)  # let startup finish first
+    self_url = f"{settings.FRONTEND_URL.replace('hirelens-theta.vercel.app', 'hirelens-backend.onrender.com')}/api/v1/health"
+    # Allow override via BACKEND_URL env var
+    backend_url = getattr(settings, 'BACKEND_URL', None) or self_url
+    ping_url = backend_url.rstrip('/') + '/api/v1/health'
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(ping_url)
+                logger.info(f"Keep-alive ping → {ping_url} [{r.status_code}]")
+        except Exception as e:
+            logger.warning(f"Keep-alive ping failed: {e}")
+        await asyncio.sleep(600)  # 10 minutes
 
 
 @asynccontextmanager
@@ -42,7 +65,16 @@ async def lifespan(app: FastAPI):
                 "to your actual frontend domain(s)."
             )
 
+    # Start keep-alive pinger in production
+    _keep_alive_task = None
+    if settings.is_production:
+        _keep_alive_task = asyncio.create_task(_keep_alive_loop())
+        logger.info("Keep-alive self-ping task started (every 10 min)")
+
     yield
+
+    if _keep_alive_task:
+        _keep_alive_task.cancel()
     logger.info("HireLens API shutting down")
 
 
