@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 20
     ANALYSIS_TIMEOUT_SECONDS: int = 120
 
+    # Email Service Settings (Resend & SMTP)
+    RESEND_API_KEY: str = ""
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = "HireLens <noreply@hirelens.ai>"
+    FRONTEND_URL: str = "https://hirelens-theta.vercel.app"
+
     # Bulk upload (Feature 1)
     BULK_MAX_FILES: int = 50
     BULK_MAX_TOTAL_MB: int = 150            # total batch payload cap (protects free-tier RAM)

@@ -258,7 +258,7 @@ export const teamsAPI = {
     req<{ members: TeamMember[] }>(`/api/v1/teams/${teamId}/members`, { token }),
 
   invite: (teamId: string, email: string, token: string) =>
-    req<{ status: string; email?: string }>(`/api/v1/teams/${teamId}/invite`, {
+    req<{ status: string; email?: string; email_sent?: boolean; invite_url?: string }>(`/api/v1/teams/${teamId}/invite`, {
       method: "POST", body: JSON.stringify({ email }), token,
     }),
 
