@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_FROM_EMAIL: str = "HireLens <noreply@hirelens.ai>"
     FRONTEND_URL: str = "https://hirelens-theta.vercel.app"
+    # Your Render backend URL — set this in Render env vars to enable keep-alive pings
+    BACKEND_URL: str = ""
 
     # Bulk upload (Feature 1)
     BULK_MAX_FILES: int = 50
