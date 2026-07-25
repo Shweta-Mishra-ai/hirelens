@@ -56,3 +56,41 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
         },
         "llm_ready": llm_configured,
     }
+
+
+@router.get("/health/diagnostics", tags=["Health"])
+async def diagnostics(db=Depends(get_db), redis=Depends(get_redis)):
+    """
+    Detailed system diagnostics & load health metrics.
+    Returns metrics on job queues, system limits, and process capacity.
+    """
+    import os, time
+    from app.api.v1.endpoints.analysis import _jobs
+    from app.core.rate_limit import _mem_rate_limit
+
+    h = await health(db, redis)
+    
+    # Process memory estimate
+    mem_mb = 0.0
+    try:
+        import psutil
+        process = psutil.Process(os.getpid())
+        mem_mb = round(process.memory_info().rss / (1024 * 1024), 2)
+    except Exception:
+        pass
+
+    return {
+        "health": h,
+        "capacity": {
+            "max_supported_users": 5000,
+            "bulk_concurrency": settings.BULK_CONCURRENCY,
+            "rate_limit_per_minute": settings.RATE_LIMIT_PER_MINUTE,
+            "max_file_size_mb": settings.MAX_FILE_SIZE_MB,
+        },
+        "metrics": {
+            "active_in_memory_jobs": len(_jobs),
+            "in_memory_rate_limit_keys": len(_mem_rate_limit),
+            "process_memory_mb": mem_mb,
+            "timestamp": time.time(),
+        },
+    }

@@ -2,6 +2,7 @@
 HireLens — Security Hardening Unit Tests
 Run: cd backend && python -m pytest tests/unit/test_security_hardening.py -v
 """
+import pytest
 import sys
 import os
 
@@ -55,11 +56,13 @@ class TestSSRFGuard:
 
 # ── Rate limiting helper ────────────────────────────────────────────────────
 class TestRateLimitHelper:
-    def test_no_redis_is_noop(self):
-        from app.core.rate_limit import check_rate_limit
-        # Should not raise even after "many" calls when redis is None
-        for _ in range(100):
-            check_rate_limit(None, "test-key", limit=5, window_seconds=60)
+    def test_no_redis_in_memory_fallback(self):
+        from app.core.rate_limit import check_rate_limit, RateLimitExceeded
+        key = "test-in-mem-key-unique"
+        for _ in range(5):
+            check_rate_limit(None, key, limit=5, window_seconds=60)
+        with pytest.raises(RateLimitExceeded):
+            check_rate_limit(None, key, limit=5, window_seconds=60)
 
     def test_get_client_ip_uses_forwarded_for(self):
         from app.core.rate_limit import get_client_ip

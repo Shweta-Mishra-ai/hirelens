@@ -63,6 +63,14 @@ export interface SubScores {
   education: number;
   project_authenticity: number;
   resume_quality: number;
+  content_authenticity: number;
+}
+
+export interface AIContentAnalysis {
+  likelihood: "low" | "medium" | "high";
+  indicators: string[];
+  human_indicators: string[];
+  note: string;
 }
 
 export interface Credibility {
@@ -71,6 +79,9 @@ export interface Credibility {
   confidence: "high" | "medium" | "low";
   sub_scores: SubScores;
   score_rationale?: Record<string, string>;
+  ai_recommendation?: Recommendation;
+  recommendation_adjusted_by_verification?: boolean;
+  recommendation_adjustment_reason?: string;
 }
 
 export interface Flag {
@@ -106,6 +117,7 @@ export interface Report {
   id?: string;
   created_at?: string;
   file_name?: string;
+  team_id?: string | null;
   candidate: Candidate;
   skills: Skills;
   experience: Experience[];
@@ -113,6 +125,7 @@ export interface Report {
   projects?: Project[];
   certifications?: string[];
   credibility: Credibility;
+  ai_content_analysis?: AIContentAnalysis;
   timeline_gaps: TimelineGap[];
   flags: Flag[];
   positive_signals: PositiveSignal[];
@@ -249,10 +262,63 @@ export interface ExperienceVerification {
   note?: string;
 }
 
+export interface Team {
+  id: string;
+  name: string;
+  owner_id: string;
+  created_at: string;
+  my_role?: "owner" | "admin" | "member";
+}
+
+export interface TeamMember {
+  user_id: string;
+  role: "owner" | "admin" | "member";
+  joined_at: string;
+}
+
+export interface ReportComment {
+  id: string;
+  report_id: string;
+  user_id: string;
+  comment: string;
+  created_at: string;
+}
+
+export interface VotesResult {
+  votes: { report_id: string; user_id: string; vote: "advance" | "reject" | "maybe" }[];
+  tally: { advance: number; reject: number; maybe: number };
+  my_vote: "advance" | "reject" | "maybe" | null;
+}
+
+export interface DuplicateCluster {
+  similarity: number;
+  members: { id: string; name: string }[];
+}
+
+export interface DuplicateCheckResult {
+  batch_id: string;
+  candidates_compared: number;
+  clusters: DuplicateCluster[];
+  note: string;
+}
+
+export interface TrustAssessment {
+  verdict: "high_confidence" | "moderate_confidence" | "low_confidence" | "insufficient_evidence";
+  score: number;
+  reasoning: string[];
+  evidence_available: boolean;
+}
+
 export interface VerificationResult {
   run_at: string;
   github: GithubVerification;
   education: EducationVerification[];
   certifications: CertificationVerification[];
   experience: ExperienceVerification[];
+  trust_assessment?: TrustAssessment;
+  recommendation_update?: {
+    new_recommendation: Recommendation;
+    ai_recommendation: Recommendation;
+    reason: string;
+  } | null;
 }

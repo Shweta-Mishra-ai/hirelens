@@ -16,8 +16,8 @@ export default function RootPage() {
   }, [token, router]);
 
   return (
-    <div style={{ minHeight: "100vh", background: "#060F1A", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ color: "#94A3B8", fontSize: 14 }}>Loading…</div>
+    <div style={{ minHeight: "100vh", background: "#0D0C0A", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ color: "#A79E8C", fontSize: 14 }}>Loading…</div>
     </div>
   );
 }

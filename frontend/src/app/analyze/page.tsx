@@ -63,15 +63,15 @@ export default function AnalyzePage() {
   const progress = state.phase === "analyzing" ? state.job.progress : state.phase === "complete" ? 100 : 0;
 
   return (
-    <div style={{ minHeight: "100vh", background: "#060F1A" }}>
+    <div style={{ minHeight: "100vh", background: "#0D0C0A" }}>
       {/* Navbar */}
-      <nav style={{ height: 54, borderBottom: "1px solid #172840", display: "flex", alignItems: "center", paddingInline: 24, gap: 16, position: "sticky", top: 0, background: "rgba(6,15,26,.92)", backdropFilter: "blur(14px)", zIndex: 100 }}>
+      <nav style={{ height: 54, borderBottom: "1px solid #2A251C", display: "flex", alignItems: "center", paddingInline: 24, gap: 16, position: "sticky", top: 0, background: "rgba(13,12,10,.92)", backdropFilter: "blur(14px)", zIndex: 100 }}>
         <Link href="/dashboard" style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none" }}>
-          <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#1D6AFF,#06B6D4)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>🔎</div>
-          <span style={{ fontWeight: 900, fontSize: 15, color: "#EFF6FF", letterSpacing: -.4 }}>HireLens</span>
+          <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#3E5C76,#3E5C76)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>🔎</div>
+          <span style={{ fontWeight: 900, fontSize: 15, color: "#EDE6D6", letterSpacing: -.4 }}>HireLens</span>
         </Link>
-        <span style={{ color: "#172840" }}>|</span>
-        <span style={{ fontSize: 13, color: "#64748B" }}>New Analysis</span>
+        <span style={{ color: "#2A251C" }}>|</span>
+        <span style={{ fontSize: 13, color: "#9C9483" }}>New Analysis</span>
       </nav>
 
       <div style={{ maxWidth: 640, margin: "0 auto", padding: "48px 24px" }}>
@@ -80,10 +80,10 @@ export default function AnalyzePage() {
         {state.phase === "idle" && (
           <div className="animate-fade-up">
             <div style={{ marginBottom: 36, textAlign: "center" }}>
-              <h1 style={{ fontSize: 28, fontWeight: 900, color: "#EFF6FF", margin: "0 0 10px", letterSpacing: -1 }}>
+              <h1 style={{ fontSize: 28, fontWeight: 900, color: "#EDE6D6", margin: "0 0 10px", letterSpacing: -1 }}>
                 Analyze a Resume
               </h1>
-              <p style={{ fontSize: 14, color: "#94A3B8", margin: 0, lineHeight: 1.65 }}>
+              <p style={{ fontSize: 14, color: "#A79E8C", margin: 0, lineHeight: 1.65 }}>
                 Upload a real PDF or DOCX. HireLens reads the actual file<br />
                 and returns a full credibility assessment in under 30 seconds.
               </p>
@@ -98,18 +98,18 @@ export default function AnalyzePage() {
                 border: "2px dashed #1E3450",
                 borderRadius: 20, padding: "56px 32px",
                 display: "flex", flexDirection: "column", alignItems: "center", gap: 18,
-                cursor: "pointer", background: "#0A1525", transition: "all .2s", textAlign: "center",
+                cursor: "pointer", background: "#131110", transition: "all .2s", textAlign: "center",
               }}
-              onMouseOver={e => { (e.currentTarget as HTMLElement).style.borderColor = "#1D6AFF"; (e.currentTarget as HTMLElement).style.background = "rgba(29,106,255,0.06)"; }}
-              onMouseOut={e => { (e.currentTarget as HTMLElement).style.borderColor = "#1E3450"; (e.currentTarget as HTMLElement).style.background = "#0A1525"; }}
+              onMouseOver={e => { (e.currentTarget as HTMLElement).style.borderColor = "#3E5C76"; (e.currentTarget as HTMLElement).style.background = "rgba(62,92,118,0.06)"; }}
+              onMouseOut={e => { (e.currentTarget as HTMLElement).style.borderColor = "#1E3450"; (e.currentTarget as HTMLElement).style.background = "#131110"; }}
             >
               <input ref={inputRef} type="file" accept=".pdf,.docx" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
-              <div style={{ width: 72, height: 72, borderRadius: 22, background: "rgba(29,106,255,0.12)", border: "1.5px solid rgba(29,106,255,0.35)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30 }}>📄</div>
+              <div style={{ width: 72, height: 72, borderRadius: 22, background: "rgba(62,92,118,0.12)", border: "1.5px solid rgba(62,92,118,0.35)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30 }}>📄</div>
               <div>
-                <div style={{ fontSize: 17, fontWeight: 700, color: "#EFF6FF", marginBottom: 6 }}>Drop resume here</div>
-                <div style={{ fontSize: 13, color: "#64748B" }}>PDF or DOCX · Max 10MB</div>
+                <div style={{ fontSize: 17, fontWeight: 700, color: "#EDE6D6", marginBottom: 6 }}>Drop resume here</div>
+                <div style={{ fontSize: 13, color: "#9C9483" }}>PDF or DOCX · Max 10MB</div>
               </div>
-              <div style={{ padding: "11px 28px", borderRadius: 12, background: "linear-gradient(135deg,#1D6AFF,#1045C8)", color: "#EFF6FF", fontWeight: 700, fontSize: 14 }}>
+              <div style={{ padding: "11px 28px", borderRadius: 12, background: "linear-gradient(135deg,#3E5C76,#2C4258)", color: "#EDE6D6", fontWeight: 700, fontSize: 14 }}>
                 Choose File
               </div>
             </div>
@@ -122,16 +122,16 @@ export default function AnalyzePage() {
                 ["🚩", "Risk Flags", "Every flag cites source text"],
                 ["💬", "Interview Qs", "Candidate-specific only"],
               ].map(([icon, title, desc]) => (
-                <div key={title as string} style={{ padding: "13px 15px", background: "#0E1C2E", border: "1px solid #172840", borderRadius: 12 }}>
+                <div key={title as string} style={{ padding: "13px 15px", background: "#17140F", border: "1px solid #2A251C", borderRadius: 12 }}>
                   <div style={{ fontSize: 18, marginBottom: 5 }}>{icon}</div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#EFF6FF", marginBottom: 2 }}>{title}</div>
-                  <div style={{ fontSize: 11, color: "#64748B" }}>{desc}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#EDE6D6", marginBottom: 2 }}>{title}</div>
+                  <div style={{ fontSize: 11, color: "#9C9483" }}>{desc}</div>
                 </div>
               ))}
             </div>
 
-            <div style={{ marginTop: 16, padding: "12px 16px", background: "#0E1C2E", border: "1px solid #172840", borderRadius: 12, fontSize: 12, color: "#64748B", lineHeight: 1.6 }}>
-              🛡 <strong style={{ color: "#94A3B8" }}>Privacy notice:</strong> Resume text is processed securely. No data is permanently stored without your consent. HireLens assists recruiters — final hiring decisions always rest with humans.
+            <div style={{ marginTop: 16, padding: "12px 16px", background: "#17140F", border: "1px solid #2A251C", borderRadius: 12, fontSize: 12, color: "#9C9483", lineHeight: 1.6 }}>
+              🛡 <strong style={{ color: "#A79E8C" }}>Privacy notice:</strong> Resume text is processed securely. No data is permanently stored without your consent. HireLens assists recruiters — final hiring decisions always rest with humans.
             </div>
           </div>
         )}
@@ -139,32 +139,32 @@ export default function AnalyzePage() {
         {/* ── UPLOADING ── */}
         {state.phase === "uploading" && (
           <div className="animate-fade-up" style={{ textAlign: "center", padding: "40px 0" }}>
-            <div style={{ width: 56, height: 56, border: "3px solid #172840", borderTopColor: "#1D6AFF", borderRadius: "50%", margin: "0 auto 20px", animation: "spin 1s linear infinite" }} />
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#EFF6FF", marginBottom: 6 }}>Uploading resume…</div>
-            <div style={{ fontSize: 13, color: "#64748B" }}>Sending to HireLens API</div>
+            <div style={{ width: 56, height: 56, border: "3px solid #2A251C", borderTopColor: "#3E5C76", borderRadius: "50%", margin: "0 auto 20px", animation: "spin 1s linear infinite" }} />
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#EDE6D6", marginBottom: 6 }}>Uploading resume…</div>
+            <div style={{ fontSize: 13, color: "#9C9483" }}>Sending to HireLens API</div>
           </div>
         )}
 
         {/* ── ANALYZING ── */}
         {state.phase === "analyzing" && (
           <div className="animate-fade-up">
-            <div style={{ background: "#0E1C2E", border: "1px solid #172840", borderRadius: 20, padding: "32px 36px" }}>
+            <div style={{ background: "#17140F", border: "1px solid #2A251C", borderRadius: 20, padding: "32px 36px" }}>
               <div style={{ marginBottom: 28 }}>
-                <div style={{ fontSize: 16, fontWeight: 700, color: "#EFF6FF", marginBottom: 4 }}>Analyzing resume</div>
-                <div style={{ fontFamily: "monospace", fontSize: 11, color: "#64748B" }}>{state.job.file_name}</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#EDE6D6", marginBottom: 4 }}>Analyzing resume</div>
+                <div style={{ fontFamily: "monospace", fontSize: 11, color: "#9C9483" }}>{state.job.file_name}</div>
               </div>
 
               {/* Live status */}
-              <div style={{ padding: "12px 16px", background: "#0A1525", border: "1px solid #1E3450", borderRadius: 10, marginBottom: 24, display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ padding: "12px 16px", background: "#131110", border: "1px solid #1E3450", borderRadius: 10, marginBottom: 24, display: "flex", alignItems: "center", gap: 12 }}>
                 <div style={{ display: "flex", gap: 4 }}>
                   {[0, 1, 2].map(i => (
-                    <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#4B8DFF", animation: `pulse-dot ${1.1 + i * 0.15}s ${i * 0.15}s ease-in-out infinite` }} />
+                    <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#6E90AC", animation: `pulse-dot ${1.1 + i * 0.15}s ${i * 0.15}s ease-in-out infinite` }} />
                   ))}
                 </div>
-                <span style={{ fontSize: 13, color: "#CBD5E1" }}>
+                <span style={{ fontSize: 13, color: "#D9D2C0" }}>
                   {STAGES.find(s => s.key === state.job.stage)?.label || state.job.stage}
                 </span>
-                <span style={{ marginLeft: "auto", fontFamily: "monospace", fontSize: 12, color: "#4B8DFF" }}>{progress}%</span>
+                <span style={{ marginLeft: "auto", fontFamily: "monospace", fontSize: 12, color: "#6E90AC" }}>{progress}%</span>
               </div>
 
               {/* Steps */}
@@ -177,14 +177,14 @@ export default function AnalyzePage() {
                       <div style={{
                         width: 24, height: 24, borderRadius: 7, flexShrink: 0,
                         display: "flex", alignItems: "center", justifyContent: "center",
-                        background: done ? "rgba(5,150,105,.15)" : active ? "rgba(29,106,255,.15)" : "transparent",
-                        border: `1.5px solid ${done ? "#059669" : active ? "#4B8DFF" : "#172840"}`,
+                        background: done ? "rgba(75,112,81,.15)" : active ? "rgba(62,92,118,.15)" : "transparent",
+                        border: `1.5px solid ${done ? "#4B7051" : active ? "#6E90AC" : "#2A251C"}`,
                         fontSize: 11, transition: "all .3s",
                       }}>
-                        {done ? <span style={{ color: "#10B981", fontWeight: 800 }}>✓</span>
-                               : <span style={{ color: active ? "#4B8DFF" : "#475569" }}>{i + 1}</span>}
+                        {done ? <span style={{ color: "#6E9974", fontWeight: 800 }}>✓</span>
+                               : <span style={{ color: active ? "#6E90AC" : "#6B6355" }}>{i + 1}</span>}
                       </div>
-                      <span style={{ fontSize: 12, color: done ? "#10B981" : active ? "#EFF6FF" : "#475569", fontWeight: active ? 600 : 400, transition: "color .3s" }}>
+                      <span style={{ fontSize: 12, color: done ? "#6E9974" : active ? "#EDE6D6" : "#6B6355", fontWeight: active ? 600 : 400, transition: "color .3s" }}>
                         {s.label}
                       </span>
                     </div>
@@ -193,8 +193,8 @@ export default function AnalyzePage() {
               </div>
 
               {/* Progress bar */}
-              <div style={{ marginTop: 24, height: 3, background: "#172840", borderRadius: 99 }}>
-                <div style={{ height: "100%", background: "linear-gradient(90deg,#1D6AFF,#22D3EE)", borderRadius: 99, width: `${Math.max(4, progress)}%`, transition: "width .6s ease" }} />
+              <div style={{ marginTop: 24, height: 3, background: "#2A251C", borderRadius: 99 }}>
+                <div style={{ height: "100%", background: "linear-gradient(90deg,#3E5C76,#6E90AC)", borderRadius: 99, width: `${Math.max(4, progress)}%`, transition: "width .6s ease" }} />
               </div>
             </div>
           </div>
@@ -203,11 +203,11 @@ export default function AnalyzePage() {
         {/* ── ERROR ── */}
         {state.phase === "error" && (
           <div className="animate-fade-up" style={{ textAlign: "center" }}>
-            <div style={{ background: "#0E1C2E", border: "1px solid rgba(220,38,38,.3)", borderRadius: 20, padding: "44px 32px" }}>
+            <div style={{ background: "#17140F", border: "1px solid rgba(177,66,38,.3)", borderRadius: 20, padding: "44px 32px" }}>
               <div style={{ fontSize: 40, marginBottom: 16 }}>⚠</div>
-              <div style={{ fontSize: 17, fontWeight: 700, color: "#EFF6FF", marginBottom: 10 }}>Analysis Failed</div>
-              <div style={{ fontSize: 13, color: "#94A3B8", lineHeight: 1.65, marginBottom: 28 }}>{state.message}</div>
-              <button onClick={reset} style={{ padding: "11px 28px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#1D6AFF,#1045C8)", color: "#EFF6FF", fontWeight: 700, fontSize: 14, fontFamily: "inherit" }}>
+              <div style={{ fontSize: 17, fontWeight: 700, color: "#EDE6D6", marginBottom: 10 }}>Analysis Failed</div>
+              <div style={{ fontSize: 13, color: "#A79E8C", lineHeight: 1.65, marginBottom: 28 }}>{state.message}</div>
+              <button onClick={reset} style={{ padding: "11px 28px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#3E5C76,#2C4258)", color: "#EDE6D6", fontWeight: 700, fontSize: 14, fontFamily: "inherit" }}>
                 Try Again
               </button>
             </div>

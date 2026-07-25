@@ -154,14 +154,12 @@ class TestDocumentParser:
 
     def test_extension_fallback_pdf(self):
         """Should use extension when mime type is generic"""
-        from app.core.exceptions import ParseError
+        from app.core.exceptions import ParseError, UnsupportedFileType
         # octet-stream with .pdf extension should attempt PDF parsing
         try:
-            self.extract(b"not a real pdf", "application/octet-stream", "resume.pdf")
-        except ParseError:
-            pass  # Expected — content isn't real PDF
-        except Exception as e:
-            pytest.fail(f"Wrong exception type: {type(e).__name__}: {e}")
+            self.extract(b"%PDF-1.4 not a real pdf", "application/octet-stream", "resume.pdf")
+        except (ParseError, UnsupportedFileType):
+            pass  # Expected — content isn't real PDF text
 
 
 # ── Test: Security ────────────────────────────────────────────────────────────

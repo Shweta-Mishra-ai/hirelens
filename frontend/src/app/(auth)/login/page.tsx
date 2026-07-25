@@ -60,10 +60,10 @@ export default function LoginPage() {
   };
 
   const S = {
-    page: { minHeight: "100vh", background: "#060F1A", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 },
-    card: { background: "#0E1C2E", border: "1px solid #172840", borderRadius: 18, padding: "32px 28px", width: "100%", maxWidth: 420 },
-    inp: { width: "100%", padding: "11px 14px", background: "#0A1525", border: "1px solid #172840", borderRadius: 10, color: "#EFF6FF", fontSize: 14, outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const },
-    lbl: { display: "block", fontSize: 11, fontWeight: 700, color: "#64748B", marginBottom: 6, letterSpacing: 1 },
+    page: { minHeight: "100vh", background: "#0D0C0A", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 },
+    card: { background: "#17140F", border: "1px solid #2A251C", borderRadius: 18, padding: "32px 28px", width: "100%", maxWidth: 420 },
+    inp: { width: "100%", padding: "11px 14px", background: "#131110", border: "1px solid #2A251C", borderRadius: 10, color: "#EDE6D6", fontSize: 14, outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const },
+    lbl: { display: "block", fontSize: 11, fontWeight: 700, color: "#9C9483", marginBottom: 6, letterSpacing: 1 },
   };
 
   return (
@@ -71,15 +71,15 @@ export default function LoginPage() {
       <div style={{ width: "100%", maxWidth: 420 }}>
         <div style={{ textAlign: "center", marginBottom: 36 }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 11, background: "linear-gradient(135deg,#1D6AFF,#06B6D4)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🔎</div>
-            <span style={{ fontSize: 22, fontWeight: 900, color: "#EFF6FF", letterSpacing: -1 }}>HireLens</span>
+            <div style={{ width: 38, height: 38, borderRadius: 11, background: "linear-gradient(135deg,#3E5C76,#3E5C76)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🔎</div>
+            <span style={{ fontSize: 22, fontWeight: 900, color: "#EDE6D6", letterSpacing: -1 }}>HireLens</span>
           </div>
-          <p style={{ color: "#94A3B8", fontSize: 14, margin: 0 }}>AI Recruiter Intelligence</p>
+          <p style={{ color: "#A79E8C", fontSize: 14, margin: 0 }}>AI Recruiter Intelligence</p>
         </div>
         <div style={S.card}>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#EFF6FF", margin: "0 0 24px", letterSpacing: -.5 }}>Sign in</h1>
+          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#EDE6D6", margin: "0 0 24px", letterSpacing: -.5 }}>Sign in</h1>
           {error && (
-            <div style={{ padding: "12px 14px", background: "rgba(220,38,38,0.1)", border: "1px solid rgba(220,38,38,0.3)", borderRadius: 10, color: "#F87171", fontSize: 13, marginBottom: 20 }}>
+            <div style={{ padding: "12px 14px", background: "rgba(177,66,38,0.1)", border: "1px solid rgba(177,66,38,0.3)", borderRadius: 10, color: "#D46A4C", fontSize: 13, marginBottom: 20 }}>
               {error}
             </div>
           )}
@@ -92,15 +92,15 @@ export default function LoginPage() {
               <label style={S.lbl as React.CSSProperties}>PASSWORD</label>
               <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" style={S.inp} autoComplete="current-password" />
             </div>
-            <button type="submit" disabled={isLoading} style={{ width: "100%", padding: "12px", borderRadius: 11, background: isLoading ? "#172840" : "linear-gradient(135deg,#1D6AFF,#1045C8)", border: "none", color: isLoading ? "#475569" : "#EFF6FF", fontWeight: 700, fontSize: 14, cursor: isLoading ? "not-allowed" : "pointer", fontFamily: "inherit", marginTop: 4 }}>
+            <button type="submit" disabled={isLoading} style={{ width: "100%", padding: "12px", borderRadius: 11, background: isLoading ? "#2A251C" : "linear-gradient(135deg,#3E5C76,#2C4258)", border: "none", color: isLoading ? "#6B6355" : "#EDE6D6", fontWeight: 700, fontSize: 14, cursor: isLoading ? "not-allowed" : "pointer", fontFamily: "inherit", marginTop: 4 }}>
               {isLoading ? "Signing in…" : "Sign In"}
             </button>
           </form>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "20px 0" }}>
-            <div style={{ flex: 1, height: 1, background: "#172840" }} />
-            <span style={{ fontSize: 11, color: "#64748B", fontWeight: 700, letterSpacing: 1 }}>OR</span>
-            <div style={{ flex: 1, height: 1, background: "#172840" }} />
+            <div style={{ flex: 1, height: 1, background: "#2A251C" }} />
+            <span style={{ fontSize: 11, color: "#9C9483", fontWeight: 700, letterSpacing: 1 }}>OR</span>
+            <div style={{ flex: 1, height: 1, background: "#2A251C" }} />
           </div>
 
           <button
@@ -111,8 +111,8 @@ export default function LoginPage() {
               padding: "11px",
               borderRadius: 11,
               background: "none",
-              border: "1px solid #172840",
-              color: "#EFF6FF",
+              border: "1px solid #2A251C",
+              color: "#EDE6D6",
               fontWeight: 600,
               fontSize: 14,
               cursor: isLoading ? "not-allowed" : "pointer",
@@ -123,8 +123,8 @@ export default function LoginPage() {
               gap: 10,
               transition: "all .15s",
             }}
-            onMouseOver={e => { (e.currentTarget as HTMLElement).style.borderColor = "#1D6AFF"; (e.currentTarget as HTMLElement).style.background = "rgba(29,106,255,0.06)"; }}
-            onMouseOut={e => { (e.currentTarget as HTMLElement).style.borderColor = "#172840"; (e.currentTarget as HTMLElement).style.background = "none"; }}
+            onMouseOver={e => { (e.currentTarget as HTMLElement).style.borderColor = "#3E5C76"; (e.currentTarget as HTMLElement).style.background = "rgba(62,92,118,0.06)"; }}
+            onMouseOut={e => { (e.currentTarget as HTMLElement).style.borderColor = "#2A251C"; (e.currentTarget as HTMLElement).style.background = "none"; }}
           >
             <svg width="18" height="18" viewBox="0 0 18 18">
               <path fill="#EA4335" d="M9 3.6c1.6 0 3 .6 4.1 1.6l3-3C14.3.9 11.9 0 9 0 5.5 0 2.4 2 1 5l3.2 2.5C5 5.2 6.8 3.6 9 3.6z"/>
@@ -135,8 +135,8 @@ export default function LoginPage() {
             Continue with Google
           </button>
 
-          <p style={{ textAlign: "center", fontSize: 13, color: "#64748B", marginTop: 20, marginBottom: 0 }}>
-            No account? <Link href="/signup" style={{ color: "#4B8DFF", textDecoration: "none", fontWeight: 600 }}>Create one free</Link>
+          <p style={{ textAlign: "center", fontSize: 13, color: "#9C9483", marginTop: 20, marginBottom: 0 }}>
+            No account? <Link href="/signup" style={{ color: "#6E90AC", textDecoration: "none", fontWeight: 600 }}>Create one free</Link>
           </p>
         </div>
       </div>

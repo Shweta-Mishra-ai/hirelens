@@ -16,6 +16,7 @@ from typing import Literal
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import NotFoundError, ForbiddenError
 from app.api.v1.endpoints.analysis import _jobs  # in-memory fallback store
+from app.services.teams.access import user_can_access_report
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
@@ -247,7 +248,8 @@ async def get_report(
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Fetch a complete analysis report by ID."""
+    """Fetch a complete analysis report by ID — visible to its owner or any
+    member of the team it's been shared with."""
     # ── Try Supabase first ────────────────────────────────────────────────────
     if db:
         try:
@@ -261,8 +263,7 @@ async def get_report(
 
             if result.data:
                 row = result.data
-                # Authorization check
-                if row["user_id"] != current_user["id"]:
+                if not user_can_access_report(db, row, current_user["id"]):
                     raise ForbiddenError()
 
                 # Merge report_data with top-level fields
@@ -270,6 +271,7 @@ async def get_report(
                 report["id"] = report_id
                 report["created_at"] = row.get("created_at")
                 report["file_name"] = row.get("file_name") or report.get("file_name", "")
+                report["team_id"] = row.get("team_id")
                 return report
 
         except ForbiddenError:

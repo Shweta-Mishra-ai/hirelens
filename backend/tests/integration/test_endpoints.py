@@ -66,10 +66,21 @@ class TestAuthGuardsOnProtectedEndpoints:
         ("get", "/api/v1/reports"),
         ("get", "/api/v1/reports/export.csv"),
         ("post", "/api/v1/bulk/upload"),
+        ("get", "/api/v1/bulk/some-id/duplicates"),
+        ("post", "/api/v1/ats/import"),
         ("post", "/api/v1/match/upload"),
         ("post", "/api/v1/verify/some-id/run"),
         ("get", "/api/v1/verify/some-id"),
         ("post", "/api/v1/analysis/upload"),
+        ("get", "/api/v1/teams"),
+        ("post", "/api/v1/teams"),
+        ("get", "/api/v1/teams/some-id/members"),
+        ("post", "/api/v1/teams/some-id/invite"),
+        ("post", "/api/v1/reports/some-id/share"),
+        ("get", "/api/v1/reports/some-id/comments"),
+        ("post", "/api/v1/reports/some-id/comments"),
+        ("get", "/api/v1/reports/some-id/votes"),
+        ("post", "/api/v1/reports/some-id/vote"),
     ])
     def test_rejects_without_token(self, client, method, path):
         res = getattr(client, method)(path)
@@ -138,9 +149,35 @@ class TestNotFoundHandling:
         )
         assert res.status_code == 404
 
+    def test_bulk_duplicates_nonexistent_batch_returns_404(self, client, auth_token):
+        res = client.get(
+            "/api/v1/bulk/does-not-exist/duplicates",
+            headers={"Authorization": f"Bearer {auth_token}"},
+        )
+        assert res.status_code == 404
+
     def test_unknown_route_returns_404(self, client):
         res = client.get("/api/v1/this-route-does-not-exist")
         assert res.status_code == 404
+
+
+class TestTeamsRequireDatabase:
+    """No Supabase configured in the test env → team endpoints should return
+    a clear 503, never a raw 500 or crash, since teams have no meaningful
+    in-memory fallback."""
+
+    def test_create_team_without_db_returns_503(self, client, auth_token):
+        res = client.post(
+            "/api/v1/teams",
+            headers={"Authorization": f"Bearer {auth_token}"},
+            json={"name": "My Team"},
+        )
+        assert res.status_code == 503
+        assert res.json()["error"] == "database_required"
+
+    def test_list_teams_without_db_returns_503(self, client, auth_token):
+        res = client.get("/api/v1/teams", headers={"Authorization": f"Bearer {auth_token}"})
+        assert res.status_code == 503
 
 
 class TestErrorResponseShape:

@@ -35,27 +35,27 @@ class TestExtractUsername:
         assert self.extract("not a username at all") is None
 
 
-# ── GitHub: skill/language matching ─────────────────────────────────────────
-class TestSkillLanguageMatch:
+# ── GitHub: skill/evidence matching ─────────────────────────────────────────
+class TestSkillEvidenceMatch:
     def setup_method(self):
-        from app.services.verify.github_verify import _skill_matches_language
-        self.match = _skill_matches_language
+        from app.services.verify.github_verify import _skill_matches_evidence
+        self.match = _skill_matches_evidence
 
     def test_exact_match_case_insensitive(self):
-        assert self.match("Python", "python") is True
+        assert self.match("Python", {"python"}) is True
 
     def test_substring_match(self):
-        assert self.match("JavaScript", "javascript") is True
+        assert self.match("JavaScript", {"javascript"}) is True
 
-    def test_alias_match_typescript(self):
-        assert self.match("TypeScript", "TypeScript") is True
+    def test_matches_against_topic_or_description_term(self):
+        assert self.match("Kubernetes", {"kubernetes", "helm charts"}) is True
 
     def test_no_match(self):
-        assert self.match("Kubernetes", "Python") is False
+        assert self.match("Kubernetes", {"python"}) is False
 
     def test_empty_strings(self):
-        assert self.match("", "Python") is False
-        assert self.match("Python", "") is False
+        assert self.match("", {"python"}) is False
+        assert self.match("Python", set()) is False
 
 
 # ── Company: domain guessing ────────────────────────────────────────────────
@@ -121,30 +121,88 @@ class TestVerifyGithubMocked:
         assert result["status"] == "not_found"
 
     @pytest.mark.asyncio
-    async def test_verified_skill_from_matching_language(self, monkeypatch):
+    async def test_verified_skill_from_full_language_breakdown(self, monkeypatch):
+        """Proves the FULL per-repo language breakdown is used, not just each
+        repo's single primary language — a Docker skill hidden inside a
+        Python-primary repo should still be found."""
         from app.services.verify import github_verify
 
         class ProfileResponse:
             status_code = 200
             is_success = True
-            def json(self): return {"public_repos": 5, "html_url": "https://github.com/dev", "created_at": "2019-01-01T00:00:00Z", "avatar_url": "x"}
+            def json(self): return {"public_repos": 2, "html_url": "https://github.com/dev", "created_at": "2019-01-01T00:00:00Z", "avatar_url": "x"}
 
         class ReposResponse:
             status_code = 200
             is_success = True
-            def json(self): return [{"language": "Python"}, {"language": "Python"}, {"language": "HTML"}]
+            def json(self):
+                return [
+                    {"name": "api-service", "language": "Python", "fork": False, "topics": ["backend"], "description": "REST API"},
+                    {"name": "ml-pipeline", "language": "Python", "fork": False, "topics": [], "description": ""},
+                ]
+
+        class LanguagesResponse:
+            status_code = 200
+            is_success = True
+            def __init__(self, langs): self._langs = langs
+            def json(self): return self._langs
 
         class FakeClient:
             async def __aenter__(self): return self
             async def __aexit__(self, *a): return False
             async def get(self, url, **kwargs):
-                return ProfileResponse() if url.endswith("/dev") or "repos" not in url else ReposResponse()
+                if url.endswith("/dev"):
+                    return ProfileResponse()
+                if url.endswith("/repos"):
+                    return ReposResponse()
+                if "api-service/languages" in url:
+                    # Docker is hidden here — NOT the repo's primary language
+                    return LanguagesResponse({"Python": 40000, "Dockerfile": 500})
+                if "ml-pipeline/languages" in url:
+                    return LanguagesResponse({"Python": 90000, "Jupyter Notebook": 12000})
+                return LanguagesResponse({})
 
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
-        result = await github_verify.verify_github("dev", ["Python", "Kubernetes"])
+        result = await github_verify.verify_github("dev", ["Python", "Docker", "Kubernetes"])
         assert result["status"] == "verified"
         assert "Python" in result["verified_skills"]
+        assert "Docker" in result["verified_skills"], "Docker was hidden inside a Python-primary repo — full language breakdown should still catch it"
         assert "Kubernetes" in result["unverified_skills"]
+
+    @pytest.mark.asyncio
+    async def test_topic_evidence_matches_skill_not_in_any_language(self, monkeypatch):
+        """A skill like 'Kubernetes' often shows up as a repo TOPIC, not a language."""
+        from app.services.verify import github_verify
+
+        class ProfileResponse:
+            status_code = 200
+            is_success = True
+            def json(self): return {"public_repos": 1, "html_url": "x", "created_at": "2020-01-01T00:00:00Z", "avatar_url": "x"}
+
+        class ReposResponse:
+            status_code = 200
+            is_success = True
+            def json(self):
+                return [{"name": "infra", "language": "HCL", "fork": False, "topics": ["kubernetes", "terraform"], "description": ""}]
+
+        class LanguagesResponse:
+            status_code = 200
+            is_success = True
+            def json(self): return {"HCL": 5000}
+
+        class FakeClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, **kwargs):
+                if url.endswith("/dev2"):
+                    return ProfileResponse()
+                if url.endswith("/repos"):
+                    return ReposResponse()
+                return LanguagesResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
+        result = await github_verify.verify_github("dev2", ["Kubernetes"])
+        assert "Kubernetes" in result["verified_skills"]
 
 
 # ── Education: mocked registry lookup ───────────────────────────────────────
@@ -178,6 +236,59 @@ class TestVerifyEducationMocked:
         result = await education_verify.verify_education([{"institution": "MIT"}])
         assert result[0]["status"] == "verified"
         assert result[0]["domain"] == "mit.edu"
+
+    @pytest.mark.asyncio
+    async def test_retries_with_expanded_abbreviation_when_raw_name_fails(self, monkeypatch):
+        """'IIT Delhi' should retry as 'Indian Institute of Technology Delhi'
+        when the raw abbreviation finds nothing — this is the exact case that
+        was silently failing before."""
+        from app.services.verify import education_verify
+
+        class EmptyResponse:
+            is_success = True
+            content = b"[]"
+            def json(self): return []
+
+        class MatchResponse:
+            is_success = True
+            content = b"[...]"
+            def json(self): return [{"name": "Indian Institute of Technology Delhi", "country": "India", "domains": ["iitd.ac.in"]}]
+
+        calls = []
+
+        class FakeClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, params=None, **kwargs):
+                calls.append(params["name"])
+                if "indian institute of technology" in params["name"].lower():
+                    return MatchResponse()
+                return EmptyResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
+        result = await education_verify.verify_education([{"institution": "IIT Delhi"}])
+        assert result[0]["status"] == "verified"
+        assert result[0]["domain"] == "iitd.ac.in"
+        assert len(calls) > 1, "should have retried with a broadened query, not given up after one miss"
+
+    @pytest.mark.asyncio
+    async def test_not_found_after_exhausting_all_retry_variants(self, monkeypatch):
+        from app.services.verify import education_verify
+
+        class EmptyResponse:
+            is_success = True
+            content = b"[]"
+            def json(self): return []
+
+        class FakeClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, **kwargs): return EmptyResponse()
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: FakeClient())
+        result = await education_verify.verify_education([{"institution": "Totally Fictional University XYZ"}])
+        assert result[0]["status"] == "not_found"
+        assert "does NOT necessarily mean" in result[0]["note"]
 
 
 # ── Ranking / merge safety in verify.py orchestrator ────────────────────────
