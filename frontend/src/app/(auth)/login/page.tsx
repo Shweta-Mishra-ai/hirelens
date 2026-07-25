@@ -1,145 +1,180 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
+import { authAPI, APIError } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, oauthLogin, isLoading, error, clearError } = useAuthStore();
-  const [email, setEmail] = useState("");
+  const setAuth = useAuthStore((s) => s.setAuth);
+  const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState<string | null>(null);
 
-  // Listen for Supabase auth state change (like redirect from OAuth)
-  useEffect(() => {
-    // Check active session on mount
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.access_token && !isLoading && !useAuthStore.getState().token) {
-        oauthLogin(session.access_token);
-      }
-    });
+  // Forgot password modal state
+  const [showForgotModal, setShowForgotModal] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotMsg, setForgotMsg] = useState<string | null>(null);
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === "SIGNED_IN" && session?.access_token) {
-        try {
-          await oauthLogin(session.access_token);
-          router.replace("/dashboard");
-        } catch (e) {
-          console.error("Google Sign-In failed:", e);
-        }
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, [oauthLogin, router, isLoading]);
-
-  async function handleSubmit(e: React.FormEvent) {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    clearError();
+    if (!email.trim() || !password) return;
+    setLoading(true);
+    setError(null);
     try {
-      await login(email, password);
+      const res = await authAPI.login(email.trim(), password);
+      setAuth(res.access_token, res.user);
       router.replace("/dashboard");
-    } catch { /* shown via store */ }
-  }
-
-  const handleGoogleLogin = async () => {
-    clearError();
-    try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo: window.location.origin + "/login",
-        },
-      });
-      if (error) throw error;
-    } catch (e: any) {
-      console.error(e);
-      alert(e.message || "Google Sign-in failed");
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Login failed. Check your credentials.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const S = {
-    page: { minHeight: "100vh", background: "#0D0C0A", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 },
-    card: { background: "#17140F", border: "1px solid #2A251C", borderRadius: 18, padding: "32px 28px", width: "100%", maxWidth: 420 },
-    inp: { width: "100%", padding: "11px 14px", background: "#131110", border: "1px solid #2A251C", borderRadius: 10, color: "#EDE6D6", fontSize: 14, outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const },
-    lbl: { display: "block", fontSize: 11, fontWeight: 700, color: "#9C9483", marginBottom: 6, letterSpacing: 1 },
+  const handleGoogleLogin = async () => {
+    if (!supabase) {
+      setError("Supabase is not configured. Please use email & password.");
+      return;
+    }
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: `${window.location.origin}/dashboard` },
+    });
+    if (error) setError(error.message);
+  };
+
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!forgotEmail.trim()) return;
+    setForgotLoading(true);
+    setForgotMsg(null);
+    try {
+      const res = await authAPI.forgotPassword(forgotEmail.trim());
+      setForgotMsg(res.message);
+    } catch (e) {
+      setForgotMsg("Could not send password reset email. Try again later.");
+    } finally {
+      setForgotLoading(false);
+    }
   };
 
   return (
-    <div style={S.page as React.CSSProperties}>
-      <div style={{ width: "100%", maxWidth: 420 }}>
-        <div style={{ textAlign: "center", marginBottom: 36 }}>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 11, background: "linear-gradient(135deg,#3E5C76,#3E5C76)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🔎</div>
-            <span style={{ fontSize: 22, fontWeight: 900, color: "#EDE6D6", letterSpacing: -1 }}>HireLens</span>
-          </div>
-          <p style={{ color: "#A79E8C", fontSize: 14, margin: 0 }}>AI Recruiter Intelligence</p>
+    <div style={{ minHeight: "100vh", background: "#0B0F17", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div className="animate-fade-up" style={{
+        width: "100%", maxWidth: 440,
+        background: "rgba(30, 41, 59, 0.7)", backdropFilter: "blur(16px)",
+        border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 24, padding: "40px 36px",
+        boxShadow: "0 12px 40px -10px rgba(0,0,0,0.6)"
+      }}>
+        {/* Brand */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 28 }}>
+          <div style={{
+            width: 38, height: 38, borderRadius: 12,
+            background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 20, boxShadow: "0 0 20px rgba(99,102,241,0.4)"
+          }}>🔎</div>
+          <span style={{ fontWeight: 800, fontSize: 24, color: "#F8FAFC", letterSpacing: -0.6 }}>HireLens</span>
         </div>
-        <div style={S.card}>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#EDE6D6", margin: "0 0 24px", letterSpacing: -.5 }}>Sign in</h1>
-          {error && (
-            <div style={{ padding: "12px 14px", background: "rgba(177,66,38,0.1)", border: "1px solid rgba(177,66,38,0.3)", borderRadius: 10, color: "#D46A4C", fontSize: 13, marginBottom: 20 }}>
-              {error}
-            </div>
-          )}
-          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div>
-              <label style={S.lbl as React.CSSProperties}>EMAIL</label>
-              <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="recruiter@company.com" style={S.inp} autoComplete="email" />
-            </div>
-            <div>
-              <label style={S.lbl as React.CSSProperties}>PASSWORD</label>
-              <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" style={S.inp} autoComplete="current-password" />
-            </div>
-            <button type="submit" disabled={isLoading} style={{ width: "100%", padding: "12px", borderRadius: 11, background: isLoading ? "#2A251C" : "linear-gradient(135deg,#3E5C76,#2C4258)", border: "none", color: isLoading ? "#6B6355" : "#EDE6D6", fontWeight: 700, fontSize: 14, cursor: isLoading ? "not-allowed" : "pointer", fontFamily: "inherit", marginTop: 4 }}>
-              {isLoading ? "Signing in…" : "Sign In"}
-            </button>
-          </form>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "20px 0" }}>
-            <div style={{ flex: 1, height: 1, background: "#2A251C" }} />
-            <span style={{ fontSize: 11, color: "#9C9483", fontWeight: 700, letterSpacing: 1 }}>OR</span>
-            <div style={{ flex: 1, height: 1, background: "#2A251C" }} />
+        <h1 style={{ fontSize: 22, fontWeight: 800, color: "#F8FAFC", textAlign: "center", margin: "0 0 6px" }}>Sign in to HireLens</h1>
+        <p style={{ fontSize: 13, color: "#94A3B8", textAlign: "center", margin: "0 0 28px" }}>AI Candidate Credibility Intelligence</p>
+
+        {error && (
+          <div style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)", color: "#EF4444", fontSize: 13, marginBottom: 20 }}>
+            ⚠️ {error}
+          </div>
+        )}
+
+        {/* Google OAuth */}
+        <button onClick={handleGoogleLogin} style={{
+          width: "100%", padding: "11px 16px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.1)",
+          background: "rgba(15, 23, 42, 0.6)", color: "#F8FAFC", fontWeight: 600, fontSize: 13,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 10, cursor: "pointer", marginBottom: 20
+        }}>
+          <span>🌐</span> Sign in with Google
+        </button>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+          <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.08)" }} />
+          <span style={{ fontSize: 12, color: "#64748B" }}>or email</span>
+          <div style={{ flex: 1, height: 1, background: "rgba(255,255,255,0.08)" }} />
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#CBD5E1", marginBottom: 6 }}>Email address</label>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              placeholder="recruiter@company.com"
+              style={{ width: "100%", boxSizing: "border-box", padding: "11px 14px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, color: "#F8FAFC", fontSize: 13, outline: "none" }}
+            />
           </div>
 
-          <button
-            onClick={handleGoogleLogin}
-            disabled={isLoading}
-            style={{
-              width: "100%",
-              padding: "11px",
-              borderRadius: 11,
-              background: "none",
-              border: "1px solid #2A251C",
-              color: "#EDE6D6",
-              fontWeight: 600,
-              fontSize: 14,
-              cursor: isLoading ? "not-allowed" : "pointer",
-              fontFamily: "inherit",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 10,
-              transition: "all .15s",
-            }}
-            onMouseOver={e => { (e.currentTarget as HTMLElement).style.borderColor = "#3E5C76"; (e.currentTarget as HTMLElement).style.background = "rgba(62,92,118,0.06)"; }}
-            onMouseOut={e => { (e.currentTarget as HTMLElement).style.borderColor = "#2A251C"; (e.currentTarget as HTMLElement).style.background = "none"; }}
-          >
-            <svg width="18" height="18" viewBox="0 0 18 18">
-              <path fill="#EA4335" d="M9 3.6c1.6 0 3 .6 4.1 1.6l3-3C14.3.9 11.9 0 9 0 5.5 0 2.4 2 1 5l3.2 2.5C5 5.2 6.8 3.6 9 3.6z"/>
-              <path fill="#4285F4" d="M17.6 9.2c0-.6 0-1.2-.1-1.8H9v3.4h4.8c-.2 1.1-.8 2-1.8 2.6l2.8 2.2c1.7-1.6 2.8-3.9 2.8-6.4z"/>
-              <path fill="#FBBC05" d="M4.2 10.5C4 9.9 3.9 9.3 3.9 8.7s.1-1.2.3-1.8L1 4.4C.3 5.7 0 7.2 0 8.7s.3 3 1 4.3l3.2-2.5z"/>
-              <path fill="#34A853" d="M9 18c2.4 0 4.5-.8 6-2.2l-2.8-2.2c-.8.6-1.9.9-3.2.9-2.2 0-4-1.6-4.8-3.8L1 13.2C2.4 16 5.5 18 9 18z"/>
-            </svg>
-            Continue with Google
-          </button>
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#CBD5E1" }}>Password</label>
+              <button type="button" onClick={() => setShowForgotModal(true)} style={{ background: "none", border: "none", color: "#818CF8", fontSize: 12, cursor: "pointer", padding: 0 }}>
+                Forgot password?
+              </button>
+            </div>
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="••••••••"
+              style={{ width: "100%", boxSizing: "border-box", padding: "11px 14px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, color: "#F8FAFC", fontSize: 13, outline: "none" }}
+            />
+          </div>
 
-          <p style={{ textAlign: "center", fontSize: 13, color: "#9C9483", marginTop: 20, marginBottom: 0 }}>
-            No account? <Link href="/signup" style={{ color: "#6E90AC", textDecoration: "none", fontWeight: 600 }}>Create one free</Link>
-          </p>
+          <button type="submit" disabled={loading} style={{
+            width: "100%", padding: "12px", borderRadius: 12, border: "none",
+            background: "linear-gradient(135deg, #6366F1, #4F46E5)", color: "#FFFFFF",
+            fontWeight: 700, fontSize: 14, cursor: "pointer", marginTop: 4
+          }}>
+            {loading ? "Signing in…" : "Sign In"}
+          </button>
+        </form>
+
+        <div style={{ marginTop: 24, textAlign: "center", fontSize: 13, color: "#94A3B8" }}>
+          Don&apos;t have an account?{" "}
+          <Link href="/signup" style={{ color: "#818CF8", fontWeight: 600, textDecoration: "none" }}>Sign up</Link>
         </div>
       </div>
+
+      {/* Forgot Password Modal */}
+      {showForgotModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(8px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 20 }}>
+          <div style={{ width: "100%", maxWidth: 400, background: "#1E293B", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 20, padding: 28 }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: 18, color: "#F8FAFC" }}>Reset Your Password</h3>
+            <p style={{ margin: "0 0 20px", fontSize: 13, color: "#94A3B8" }}>Enter your registered email and we&apos;ll send reset instructions.</p>
+            <form onSubmit={handleForgotSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <input
+                type="email"
+                required
+                value={forgotEmail}
+                onChange={e => setForgotEmail(e.target.value)}
+                placeholder="recruiter@company.com"
+                style={{ padding: "10px 14px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, color: "#F8FAFC", fontSize: 13, outline: "none" }}
+              />
+              {forgotMsg && <div style={{ fontSize: 12, color: "#10B981" }}>{forgotMsg}</div>}
+              <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+                <button type="button" onClick={() => setShowForgotModal(false)} style={{ flex: 1, padding: "10px", borderRadius: 10, background: "rgba(15,23,42,0.6)", border: "1px solid rgba(255,255,255,0.08)", color: "#CBD5E1", fontSize: 13, cursor: "pointer" }}>Close</button>
+                <button type="submit" disabled={forgotLoading} style={{ flex: 1, padding: "10px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", border: "none", color: "#FFF", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>{forgotLoading ? "Sending…" : "Send Email"}</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

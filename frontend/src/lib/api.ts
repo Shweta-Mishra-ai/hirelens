@@ -127,6 +127,18 @@ export const authAPI = {
       "/api/v1/auth/oauth-verify",
       { method: "POST", body: JSON.stringify({ access_token: accessToken }) },
     ),
+
+  forgotPassword: (email: string) =>
+    req<{ status: string; message: string }>("/api/v1/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  resetPassword: (accessToken: string, newPassword: string) =>
+    req<{ status: string; message: string }>("/api/v1/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ access_token: accessToken, new_password: newPassword }),
+    }),
 };
 
 // ── Analysis ──────────────────────────────────────────────────────────────────

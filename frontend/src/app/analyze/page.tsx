@@ -1,21 +1,22 @@
 "use client";
 import { useEffect, useCallback, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
 import { useAnalysis } from "@/hooks/useAnalysis";
 
 const STAGES = [
-  { key: "queued",     label: "Preparing upload" },
-  { key: "parsing",   label: "Extracting document text" },
-  { key: "extracting", label: "Parsing resume structure" },
+  { key: "queued",     label: "Preparing document upload" },
+  { key: "parsing",   label: "Extracting raw document text & structure" },
+  { key: "extracting", label: "Parsing work history, skills & timeline" },
   { key: "analyzing", label: "Running Deep Decision Intelligence Analysis" },
-  { key: "complete",  label: "Building your report" },
+  { key: "complete",  label: "Building report" },
 ];
 
 export default function AnalyzePage() {
   const router   = useRouter();
-  const { token, hasHydrated } = useAuthStore();
+  const pathname = usePathname();
+  const { user, token, logout, hasHydrated } = useAuthStore();
   const { state, analyze, reset } = useAnalysis();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -23,7 +24,6 @@ export default function AnalyzePage() {
     if (hasHydrated && !token) router.replace("/login");
   }, [hasHydrated, token, router]);
 
-  // Auto-navigate when complete
   useEffect(() => {
     if (state.phase === "complete" && state.report?.id) {
       router.push(`/report/${state.report.id}`);
@@ -62,129 +62,213 @@ export default function AnalyzePage() {
 
   const progress = state.phase === "analyzing" ? state.job.progress : state.phase === "complete" ? 100 : 0;
 
+  const NAV_LINKS = [
+    { href: "/dashboard", label: "Dashboard", icon: "📊" },
+    { href: "/analyze", label: "Analyze", icon: "⚡" },
+    { href: "/bulk", label: "Bulk Upload", icon: "🗂️" },
+    { href: "/match", label: "JD Match", icon: "🎯" },
+    { href: "/teams", label: "Teams", icon: "👥" },
+  ];
+
   return (
-    <div style={{ minHeight: "100vh", background: "#0D0C0A" }}>
+    <div style={{ minHeight: "100vh", background: "#0B0F17", color: "#F8FAFC" }}>
       {/* Navbar */}
-      <nav style={{ height: 54, borderBottom: "1px solid #2A251C", display: "flex", alignItems: "center", paddingInline: 24, gap: 16, position: "sticky", top: 0, background: "rgba(13,12,10,.92)", backdropFilter: "blur(14px)", zIndex: 100 }}>
-        <Link href="/dashboard" style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none" }}>
-          <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#3E5C76,#3E5C76)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>🔎</div>
-          <span style={{ fontWeight: 900, fontSize: 15, color: "#EDE6D6", letterSpacing: -.4 }}>HireLens</span>
+      <nav style={{
+        height: 64, borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+        display: "flex", alignItems: "center", paddingInline: 28, gap: 24,
+        position: "sticky", top: 0, background: "rgba(11, 15, 23, 0.85)",
+        backdropFilter: "blur(16px)", zIndex: 100
+      }}>
+        <Link href="/dashboard" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 10,
+            background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 16, boxShadow: "0 0 16px rgba(99,102,241,0.4)"
+          }}>🔎</div>
+          <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
         </Link>
-        <span style={{ color: "#2A251C" }}>|</span>
-        <span style={{ fontSize: 13, color: "#9C9483" }}>New Analysis</span>
+
+        {/* Tab Pills */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(30, 41, 59, 0.5)", padding: 4, borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)" }}>
+          {NAV_LINKS.map(link => {
+            const active = pathname === link.href;
+            return (
+              <Link key={link.href} href={link.href} style={{
+                padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
+                color: active ? "#F8FAFC" : "#94A3B8",
+                background: active ? "rgba(99, 102, 241, 0.25)" : "transparent",
+                border: active ? "1px solid rgba(99, 102, 241, 0.4)" : "1px solid transparent",
+                textDecoration: "none", transition: "all 0.15s ease",
+                display: "flex", alignItems: "center", gap: 6,
+              }}>
+                <span>{link.icon}</span>
+                <span>{link.label}</span>
+              </Link>
+            );
+          })}
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 12px", borderRadius: 99, background: "rgba(30,41,59,0.6)", border: "1px solid rgba(255,255,255,0.08)" }}>
+            <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
+              {user?.full_name ? user.full_name[0].toUpperCase() : "U"}
+            </div>
+            <span style={{ fontSize: 12, color: "#CBD5E1", fontWeight: 500 }}>{user?.email}</span>
+          </div>
+          <button onClick={() => { logout(); router.replace("/login"); }}
+            style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(30,41,59,0.4)", color: "#94A3B8", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+            Sign Out
+          </button>
+        </div>
       </nav>
 
-      <div style={{ maxWidth: 640, margin: "0 auto", padding: "48px 24px" }}>
+      {/* Main Container */}
+      <div style={{ maxWidth: 680, margin: "0 auto", padding: "48px 24px" }}>
 
         {/* ── IDLE: Upload form ── */}
         {state.phase === "idle" && (
           <div className="animate-fade-up">
-            <div style={{ marginBottom: 36, textAlign: "center" }}>
-              <h1 style={{ fontSize: 28, fontWeight: 900, color: "#EDE6D6", margin: "0 0 10px", letterSpacing: -1 }}>
-                Analyze a Resume
+            <div style={{ marginBottom: 32, textAlign: "center" }}>
+              <h1 style={{ fontSize: 32, fontWeight: 800, color: "#F8FAFC", margin: "0 0 12px", letterSpacing: -0.8 }}>
+                Analyze Candidate Resume
               </h1>
-              <p style={{ fontSize: 14, color: "#A79E8C", margin: 0, lineHeight: 1.65 }}>
-                Upload a real PDF or DOCX. HireLens reads the actual file<br />
-                and returns a full credibility assessment in under 30 seconds.
+              <p style={{ fontSize: 15, color: "#94A3B8", margin: 0, lineHeight: 1.6 }}>
+                Upload a real PDF or DOCX file. HireLens parses the actual content<br />
+                and returns a deep credibility assessment in under 30 seconds.
               </p>
             </div>
 
-            {/* Drop zone */}
+            {/* Glassmorphic Drop zone */}
             <div
               onDragOver={e => e.preventDefault()}
               onDrop={onDrop}
               onClick={() => inputRef.current?.click()}
               style={{
-                border: "2px dashed #1E3450",
-                borderRadius: 20, padding: "56px 32px",
-                display: "flex", flexDirection: "column", alignItems: "center", gap: 18,
-                cursor: "pointer", background: "#131110", transition: "all .2s", textAlign: "center",
+                border: "2px dashed rgba(99, 102, 241, 0.4)",
+                borderRadius: 24, padding: "56px 36px",
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 20,
+                cursor: "pointer", background: "rgba(30, 41, 59, 0.5)",
+                backdropFilter: "blur(16px)",
+                transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)", textAlign: "center",
+                boxShadow: "0 8px 32px -8px rgba(0,0,0,0.5)",
               }}
-              onMouseOver={e => { (e.currentTarget as HTMLElement).style.borderColor = "#3E5C76"; (e.currentTarget as HTMLElement).style.background = "rgba(62,92,118,0.06)"; }}
-              onMouseOut={e => { (e.currentTarget as HTMLElement).style.borderColor = "#1E3450"; (e.currentTarget as HTMLElement).style.background = "#131110"; }}
+              onMouseOver={e => {
+                (e.currentTarget as HTMLElement).style.borderColor = "#6366F1";
+                (e.currentTarget as HTMLElement).style.background = "rgba(99, 102, 241, 0.1)";
+                (e.currentTarget as HTMLElement).style.boxShadow = "0 12px 40px -8px rgba(99,102,241,0.25)";
+              }}
+              onMouseOut={e => {
+                (e.currentTarget as HTMLElement).style.borderColor = "rgba(99, 102, 241, 0.4)";
+                (e.currentTarget as HTMLElement).style.background = "rgba(30, 41, 59, 0.5)";
+                (e.currentTarget as HTMLElement).style.boxShadow = "0 8px 32px -8px rgba(0,0,0,0.5)";
+              }}
             >
               <input ref={inputRef} type="file" accept=".pdf,.docx" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
-              <div style={{ width: 72, height: 72, borderRadius: 22, background: "rgba(62,92,118,0.12)", border: "1.5px solid rgba(62,92,118,0.35)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30 }}>📄</div>
+              
+              <div style={{
+                width: 76, height: 76, borderRadius: 24,
+                background: "linear-gradient(135deg, rgba(99,102,241,0.2), rgba(139,92,246,0.2))",
+                border: "1.5px solid rgba(99,102,241,0.4)",
+                display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32,
+                boxShadow: "0 0 24px rgba(99,102,241,0.25)"
+              }}>📄</div>
+
               <div>
-                <div style={{ fontSize: 17, fontWeight: 700, color: "#EDE6D6", marginBottom: 6 }}>Drop resume here</div>
-                <div style={{ fontSize: 13, color: "#9C9483" }}>PDF or DOCX · Max 10MB</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: "#F8FAFC", marginBottom: 6 }}>Drop resume file here</div>
+                <div style={{ fontSize: 13, color: "#94A3B8" }}>Supports PDF or DOCX · Max 10MB</div>
               </div>
-              <div style={{ padding: "11px 28px", borderRadius: 12, background: "linear-gradient(135deg,#3E5C76,#2C4258)", color: "#EDE6D6", fontWeight: 700, fontSize: 14 }}>
-                Choose File
+
+              <div style={{
+                padding: "12px 32px", borderRadius: 12,
+                background: "linear-gradient(135deg, #6366F1, #4F46E5)",
+                color: "#FFFFFF", fontWeight: 700, fontSize: 14,
+                boxShadow: "0 4px 16px rgba(99,102,241,0.35)"
+              }}>
+                Choose Resume File
               </div>
             </div>
 
-            {/* Feature chips */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 20 }}>
+            {/* Feature Cards Grid */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 24 }}>
               {[
-                ["⚡", "Deep Analysis", "Frontier-class semantic engine"],
-                ["📊", "Credibility Score", "Evidence-linked 0–100"],
-                ["🚩", "Risk Flags", "Every flag cites source text"],
-                ["💬", "Interview Qs", "Candidate-specific only"],
+                ["⚡", "Deep Decision Engine", "Frontier-class semantic intelligence"],
+                ["📊", "Credibility Score", "Evidence-linked 0–100 rating"],
+                ["🚩", "Risk Flags", "Cites exact candidate text"],
+                ["💬", "Custom Interview Qs", "Targeted probe questions"],
               ].map(([icon, title, desc]) => (
-                <div key={title as string} style={{ padding: "13px 15px", background: "#17140F", border: "1px solid #2A251C", borderRadius: 12 }}>
-                  <div style={{ fontSize: 18, marginBottom: 5 }}>{icon}</div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#EDE6D6", marginBottom: 2 }}>{title}</div>
-                  <div style={{ fontSize: 11, color: "#9C9483" }}>{desc}</div>
+                <div key={title as string} style={{
+                  padding: "16px 18px", background: "rgba(30, 41, 59, 0.6)",
+                  border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 16
+                }}>
+                  <div style={{ fontSize: 20, marginBottom: 6 }}>{icon}</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#F8FAFC", marginBottom: 2 }}>{title}</div>
+                  <div style={{ fontSize: 12, color: "#94A3B8" }}>{desc}</div>
                 </div>
               ))}
             </div>
 
-            <div style={{ marginTop: 16, padding: "12px 16px", background: "#17140F", border: "1px solid #2A251C", borderRadius: 12, fontSize: 12, color: "#9C9483", lineHeight: 1.6 }}>
-              🛡 <strong style={{ color: "#A79E8C" }}>Privacy notice:</strong> Resume text is processed securely. No data is permanently stored without your consent. HireLens assists recruiters — final hiring decisions always rest with humans.
+            <div style={{ marginTop: 20, padding: "14px 18px", background: "rgba(30, 41, 59, 0.4)", border: "1px solid rgba(255, 255, 255, 0.06)", borderRadius: 14, fontSize: 12, color: "#94A3B8", lineHeight: 1.6 }}>
+              🛡️ <strong style={{ color: "#CBD5E1" }}>Privacy & Compliance Notice:</strong> Resume data is processed securely and protected under enterprise encryption standards.
             </div>
           </div>
         )}
 
         {/* ── UPLOADING ── */}
         {state.phase === "uploading" && (
-          <div className="animate-fade-up" style={{ textAlign: "center", padding: "40px 0" }}>
-            <div style={{ width: 56, height: 56, border: "3px solid #2A251C", borderTopColor: "#3E5C76", borderRadius: "50%", margin: "0 auto 20px", animation: "spin 1s linear infinite" }} />
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#EDE6D6", marginBottom: 6 }}>Uploading resume…</div>
-            <div style={{ fontSize: 13, color: "#9C9483" }}>Sending to HireLens API</div>
+          <div className="animate-fade-up" style={{ textAlign: "center", padding: "48px 0" }}>
+            <div style={{ width: 60, height: 60, border: "4px solid rgba(255,255,255,0.1)", borderTopColor: "#6366F1", borderRadius: "50%", margin: "0 auto 24px" }} className="animate-spin" />
+            <div style={{ fontSize: 18, fontWeight: 700, color: "#F8FAFC", marginBottom: 6 }}>Uploading resume…</div>
+            <div style={{ fontSize: 14, color: "#94A3B8" }}>Sending to HireLens API</div>
           </div>
         )}
 
         {/* ── ANALYZING ── */}
         {state.phase === "analyzing" && (
           <div className="animate-fade-up">
-            <div style={{ background: "#17140F", border: "1px solid #2A251C", borderRadius: 20, padding: "32px 36px" }}>
+            <div style={{
+              background: "rgba(30, 41, 59, 0.7)", backdropFilter: "blur(16px)",
+              border: "1px solid rgba(99, 102, 241, 0.3)", borderRadius: 24, padding: "36px 40px",
+              boxShadow: "0 12px 40px -10px rgba(0,0,0,0.6)"
+            }}>
               <div style={{ marginBottom: 28 }}>
-                <div style={{ fontSize: 16, fontWeight: 700, color: "#EDE6D6", marginBottom: 4 }}>Analyzing resume</div>
-                <div style={{ fontFamily: "monospace", fontSize: 11, color: "#9C9483" }}>{state.job.file_name}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: "#F8FAFC", marginBottom: 4 }}>Analyzing Candidate Resume</div>
+                <div style={{ fontFamily: "monospace", fontSize: 12, color: "#818CF8" }}>{state.job.file_name}</div>
               </div>
 
-              {/* Live status */}
-              <div style={{ padding: "12px 16px", background: "#131110", border: "1px solid #1E3450", borderRadius: 10, marginBottom: 24, display: "flex", alignItems: "center", gap: 12 }}>
+              {/* Live status bar */}
+              <div style={{ padding: "14px 18px", background: "rgba(15, 23, 42, 0.6)", border: "1px solid rgba(99, 102, 241, 0.3)", borderRadius: 14, marginBottom: 28, display: "flex", alignItems: "center", gap: 12 }}>
                 <div style={{ display: "flex", gap: 4 }}>
                   {[0, 1, 2].map(i => (
-                    <div key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "#6E90AC", animation: `pulse-dot ${1.1 + i * 0.15}s ${i * 0.15}s ease-in-out infinite` }} />
+                    <div key={i} style={{ width: 7, height: 7, borderRadius: "50%", background: "#6366F1", animation: `pulse-dot ${1.1 + i * 0.15}s ${i * 0.15}s ease-in-out infinite` }} />
                   ))}
                 </div>
-                <span style={{ fontSize: 13, color: "#D9D2C0" }}>
+                <span style={{ fontSize: 14, color: "#F8FAFC", fontWeight: 600 }}>
                   {STAGES.find(s => s.key === state.job.stage)?.label || state.job.stage}
                 </span>
-                <span style={{ marginLeft: "auto", fontFamily: "monospace", fontSize: 12, color: "#6E90AC" }}>{progress}%</span>
+                <span style={{ marginLeft: "auto", fontFamily: "monospace", fontSize: 13, color: "#818CF8", fontWeight: 700 }}>{progress}%</span>
               </div>
 
-              {/* Steps */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {/* Stage Steps */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {STAGES.map((s, i) => {
                   const done   = i < stageIdx;
                   const active = i === stageIdx;
                   return (
-                    <div key={s.key} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div key={s.key} style={{ display: "flex", alignItems: "center", gap: 12 }}>
                       <div style={{
-                        width: 24, height: 24, borderRadius: 7, flexShrink: 0,
+                        width: 26, height: 26, borderRadius: 8, flexShrink: 0,
                         display: "flex", alignItems: "center", justifyContent: "center",
-                        background: done ? "rgba(75,112,81,.15)" : active ? "rgba(62,92,118,.15)" : "transparent",
-                        border: `1.5px solid ${done ? "#4B7051" : active ? "#6E90AC" : "#2A251C"}`,
-                        fontSize: 11, transition: "all .3s",
+                        background: done ? "rgba(16, 185, 129, 0.15)" : active ? "rgba(99, 102, 241, 0.2)" : "transparent",
+                        border: `1.5px solid ${done ? "#10B981" : active ? "#6366F1" : "rgba(255,255,255,0.1)"}`,
+                        fontSize: 12, transition: "all 0.3s",
                       }}>
-                        {done ? <span style={{ color: "#6E9974", fontWeight: 800 }}>✓</span>
-                               : <span style={{ color: active ? "#6E90AC" : "#6B6355" }}>{i + 1}</span>}
+                        {done ? <span style={{ color: "#10B981", fontWeight: 800 }}>✓</span>
+                               : <span style={{ color: active ? "#818CF8" : "#64748B" }}>{i + 1}</span>}
                       </div>
-                      <span style={{ fontSize: 12, color: done ? "#6E9974" : active ? "#EDE6D6" : "#6B6355", fontWeight: active ? 600 : 400, transition: "color .3s" }}>
+                      <span style={{ fontSize: 13, color: done ? "#10B981" : active ? "#F8FAFC" : "#64748B", fontWeight: active ? 600 : 400 }}>
                         {s.label}
                       </span>
                     </div>
@@ -193,8 +277,8 @@ export default function AnalyzePage() {
               </div>
 
               {/* Progress bar */}
-              <div style={{ marginTop: 24, height: 3, background: "#2A251C", borderRadius: 99 }}>
-                <div style={{ height: "100%", background: "linear-gradient(90deg,#3E5C76,#6E90AC)", borderRadius: 99, width: `${Math.max(4, progress)}%`, transition: "width .6s ease" }} />
+              <div style={{ marginTop: 28, height: 4, background: "rgba(255,255,255,0.08)", borderRadius: 99 }}>
+                <div style={{ height: "100%", background: "linear-gradient(90deg, #6366F1, #8B5CF6)", borderRadius: 99, width: `${Math.max(5, progress)}%`, transition: "width 0.6s ease" }} />
               </div>
             </div>
           </div>
@@ -203,11 +287,11 @@ export default function AnalyzePage() {
         {/* ── ERROR ── */}
         {state.phase === "error" && (
           <div className="animate-fade-up" style={{ textAlign: "center" }}>
-            <div style={{ background: "#17140F", border: "1px solid rgba(177,66,38,.3)", borderRadius: 20, padding: "44px 32px" }}>
-              <div style={{ fontSize: 40, marginBottom: 16 }}>⚠</div>
-              <div style={{ fontSize: 17, fontWeight: 700, color: "#EDE6D6", marginBottom: 10 }}>Analysis Failed</div>
-              <div style={{ fontSize: 13, color: "#A79E8C", lineHeight: 1.65, marginBottom: 28 }}>{state.message}</div>
-              <button onClick={reset} style={{ padding: "11px 28px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg,#3E5C76,#2C4258)", color: "#EDE6D6", fontWeight: 700, fontSize: 14, fontFamily: "inherit" }}>
+            <div style={{ background: "rgba(30, 41, 59, 0.7)", border: "1px solid rgba(239, 68, 68, 0.4)", borderRadius: 24, padding: "48px 36px" }}>
+              <div style={{ fontSize: 44, marginBottom: 16 }}>⚠️</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: "#F8FAFC", marginBottom: 10 }}>Analysis Failed</div>
+              <div style={{ fontSize: 14, color: "#94A3B8", lineHeight: 1.6, marginBottom: 28 }}>{state.message}</div>
+              <button onClick={reset} style={{ padding: "12px 32px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #6366F1, #4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 14 }}>
                 Try Again
               </button>
             </div>
@@ -215,13 +299,6 @@ export default function AnalyzePage() {
         )}
 
       </div>
-
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes pulse-dot { 0%,100%{opacity:.2;transform:scale(.7)} 50%{opacity:1;transform:scale(1.1)} }
-        .animate-fade-up { animation: fadeUp .3s ease forwards; }
-        @keyframes fadeUp { from{opacity:0;transform:translateY(10px)} to{opacity:1;transform:none} }
-      `}</style>
     </div>
   );
 }

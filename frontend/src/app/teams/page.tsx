@@ -1,35 +1,27 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
 import { teamsAPI, APIError } from "@/lib/api";
 import type { Team, TeamMember } from "@/types";
 
-function roleBadge(role: string) {
-  const m: Record<string, { label: string; color: string }> = {
-    owner: { label: "Owner", color: "#D4AC5C" },
-    admin: { label: "Admin", color: "#6E90AC" },
-    member: { label: "Member", color: "#9C9483" },
-  };
-  return m[role] || m.member;
-}
-
 export default function TeamsPage() {
   const router = useRouter();
-  const { token, hasHydrated } = useAuthStore();
+  const pathname = usePathname();
+  const { user, token, logout, hasHydrated } = useAuthStore();
   const [teams, setTeams] = useState<Team[]>([]);
+  const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
+  const [members, setMembers] = useState<TeamMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
   const [newTeamName, setNewTeamName] = useState("");
   const [creating, setCreating] = useState(false);
 
-  const [selected, setSelected] = useState<Team | null>(null);
-  const [members, setMembers] = useState<TeamMember[]>([]);
-  const [membersLoading, setMembersLoading] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteStatus, setInviteStatus] = useState<string | null>(null);
   const [inviting, setInviting] = useState(false);
+  const [inviteSuccess, setInviteSuccess] = useState<string | null>(null);
 
   useEffect(() => {
     if (hasHydrated && !token) router.replace("/login");
@@ -42,41 +34,44 @@ export default function TeamsPage() {
     try {
       const res = await teamsAPI.list(token);
       setTeams(res.teams);
+      if (res.teams.length > 0 && !selectedTeam) {
+        setSelectedTeam(res.teams[0]);
+      }
     } catch (e) {
-      if (e instanceof APIError && e.status === 503) {
-        setError("Team collaboration isn't set up on this server yet — ask your admin to configure the database.");
+      if (e instanceof APIError && e.status === 401) {
+        logout(); router.replace("/login");
       } else {
         setError("Could not load teams.");
       }
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, logout, router, selectedTeam]);
 
   useEffect(() => { loadTeams(); }, [loadTeams]);
 
-  const loadMembers = useCallback(async (team: Team) => {
-    if (!token) return;
-    setSelected(team);
-    setMembersLoading(true);
-    setInviteStatus(null);
+  const loadMembers = useCallback(async () => {
+    if (!token || !selectedTeam) return;
     try {
-      const res = await teamsAPI.members(team.id, token);
+      const res = await teamsAPI.members(selectedTeam.id, token);
       setMembers(res.members);
-    } catch {
-      setMembers([]);
-    } finally {
-      setMembersLoading(false);
+    } catch (e) {
+      console.warn("Could not load team members:", e);
     }
-  }, [token]);
+  }, [token, selectedTeam]);
 
-  const createTeam = async () => {
+  useEffect(() => { loadMembers(); }, [loadMembers]);
+
+  const handleCreateTeam = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (!token || !newTeamName.trim()) return;
     setCreating(true);
+    setError(null);
     try {
-      const team = await teamsAPI.create(newTeamName.trim(), token);
+      const newTeam = await teamsAPI.create(newTeamName.trim(), token);
       setNewTeamName("");
-      setTeams((prev) => [...prev, team]);
+      setTeams(prev => [...prev, newTeam]);
+      setSelectedTeam(newTeam);
     } catch (e) {
       setError(e instanceof APIError ? e.message : "Could not create team.");
     } finally {
@@ -84,155 +79,204 @@ export default function TeamsPage() {
     }
   };
 
-  const sendInvite = async () => {
-    if (!token || !selected || !inviteEmail.trim()) return;
+  const handleInvite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token || !selectedTeam || !inviteEmail.trim()) return;
     setInviting(true);
-    setInviteStatus(null);
+    setInviteSuccess(null);
+    setError(null);
     try {
-      const res = await teamsAPI.invite(selected.id, inviteEmail.trim(), token);
-      setInviteStatus(
-        res.status === "already_invited"
-          ? "Already invited — they'll join automatically next time they log in."
-          : `Invited ${inviteEmail}. They'll join automatically the next time they log in or sign up with that email.`
-      );
+      const res = await teamsAPI.invite(selectedTeam.id, inviteEmail.trim(), token);
+      setInviteSuccess(res.status === "already_invited" ? "User already invited." : `Invite sent to ${inviteEmail}!`);
       setInviteEmail("");
+      loadMembers();
     } catch (e) {
-      setInviteStatus(e instanceof APIError ? e.message : "Could not send invite.");
+      setError(e instanceof APIError ? e.message : "Could not send invite.");
     } finally {
       setInviting(false);
     }
   };
 
-  const removeMember = async (userId: string) => {
-    if (!token || !selected) return;
-    try {
-      await teamsAPI.removeMember(selected.id, userId, token);
-      setMembers((prev) => prev.filter((m) => m.user_id !== userId));
-    } catch (e) {
-      setInviteStatus(e instanceof APIError ? e.message : "Could not remove member.");
-    }
-  };
+  const NAV_LINKS = [
+    { href: "/dashboard", label: "Dashboard", icon: "📊" },
+    { href: "/analyze", label: "Analyze", icon: "⚡" },
+    { href: "/bulk", label: "Bulk Upload", icon: "🗂️" },
+    { href: "/match", label: "JD Match", icon: "🎯" },
+    { href: "/teams", label: "Teams", icon: "👥" },
+  ];
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0D0C0A" }}>
-      <nav style={{ height: 54, borderBottom: "1px solid #2A251C", display: "flex", alignItems: "center", paddingInline: 24, gap: 16, position: "sticky", top: 0, background: "rgba(13,12,10,.92)", backdropFilter: "blur(14px)", zIndex: 100 }}>
-        <Link href="/dashboard" style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none" }}>
-          <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#3E5C76,#6E90AC)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>🔎</div>
-          <span style={{ fontWeight: 900, fontSize: 15, color: "#EDE6D6", letterSpacing: -.4 }}>HireLens</span>
+    <div style={{ minHeight: "100vh", background: "#0B0F17", color: "#F8FAFC" }}>
+      {/* Navbar */}
+      <nav style={{
+        height: 64, borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+        display: "flex", alignItems: "center", paddingInline: 28, gap: 24,
+        position: "sticky", top: 0, background: "rgba(11, 15, 23, 0.85)",
+        backdropFilter: "blur(16px)", zIndex: 100
+      }}>
+        <Link href="/dashboard" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 10,
+            background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 16, boxShadow: "0 0 16px rgba(99,102,241,0.4)"
+          }}>🔎</div>
+          <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
         </Link>
-        <span style={{ color: "#2A251C" }}>|</span>
-        <span style={{ fontSize: 13, color: "#9C9483" }}>Teams</span>
+
+        {/* Tab Pills */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(30, 41, 59, 0.5)", padding: 4, borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)" }}>
+          {NAV_LINKS.map(link => {
+            const active = pathname === link.href;
+            return (
+              <Link key={link.href} href={link.href} style={{
+                padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
+                color: active ? "#F8FAFC" : "#94A3B8",
+                background: active ? "rgba(99, 102, 241, 0.25)" : "transparent",
+                border: active ? "1px solid rgba(99, 102, 241, 0.4)" : "1px solid transparent",
+                textDecoration: "none", transition: "all 0.15s ease",
+                display: "flex", alignItems: "center", gap: 6,
+              }}>
+                <span>{link.icon}</span>
+                <span>{link.label}</span>
+              </Link>
+            );
+          })}
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 12px", borderRadius: 99, background: "rgba(30,41,59,0.6)", border: "1px solid rgba(255,255,255,0.08)" }}>
+            <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
+              {user?.full_name ? user.full_name[0].toUpperCase() : "U"}
+            </div>
+            <span style={{ fontSize: 12, color: "#CBD5E1", fontWeight: 500 }}>{user?.email}</span>
+          </div>
+          <button onClick={() => { logout(); router.replace("/login"); }}
+            style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(30,41,59,0.4)", color: "#94A3B8", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+            Sign Out
+          </button>
+        </div>
       </nav>
 
-      <div style={{ maxWidth: 880, margin: "0 auto", padding: "32px 20px 80px" }}>
-        <h1 className="font-display" style={{ fontSize: 24, fontWeight: 600, color: "#EDE6D6", marginBottom: 6 }}>Teams</h1>
-        <p style={{ fontSize: 13, color: "#9C9483", marginBottom: 24 }}>
-          Share candidate reports with teammates, comment, and vote together instead of screening solo.
-        </p>
+      {/* Main Container */}
+      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "36px 24px 80px" }}>
+        
+        <div style={{ marginBottom: 32 }}>
+          <h1 style={{ fontSize: 30, fontWeight: 800, color: "#F8FAFC", margin: "0 0 8px", letterSpacing: -0.7 }}>
+            Team Collaboration & Workspaces
+          </h1>
+          <p style={{ fontSize: 14, color: "#94A3B8", margin: 0 }}>
+            Collaborate with fellow recruiters, share candidate evaluation reports, and vote on hiring decisions together.
+          </p>
+        </div>
 
         {error && (
-          <div style={{ padding: "12px 16px", background: "rgba(177,66,38,.08)", border: "1px solid rgba(177,66,38,.3)", borderRadius: 6, fontSize: 13, color: "#D46A4C", marginBottom: 20 }}>
-            {error}
+          <div style={{ padding: "12px 16px", borderRadius: 12, background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)", color: "#EF4444", fontSize: 13, marginBottom: 24 }}>
+            ⚠️ {error}
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-          {/* Left: team list + create */}
-          <div style={{ flex: "1 1 280px" }}>
-            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-              <input
-                value={newTeamName}
-                onChange={(e) => setNewTeamName(e.target.value)}
-                placeholder="New team name"
-                style={{ flex: 1, padding: "9px 12px", background: "#131110", border: "1px solid #2A251C", borderRadius: 6, color: "#EDE6D6", fontSize: 13, fontFamily: "inherit", outline: "none" }}
-              />
-              <button
-                onClick={createTeam}
-                disabled={creating || !newTeamName.trim()}
-                style={{ padding: "9px 16px", borderRadius: 6, border: "none", background: "#3E5C76", color: "#EDE6D6", fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: creating ? 0.6 : 1, whiteSpace: "nowrap" }}
-              >
-                + Create
-              </button>
+        <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: 24 }}>
+          
+          {/* Left Column: Create Team & Team List */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+            
+            {/* Create Team Card */}
+            <div style={{ background: "rgba(30, 41, 59, 0.6)", backdropFilter: "blur(16px)", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 20, padding: 20 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#F8FAFC", marginBottom: 12 }}>+ Create New Team</div>
+              <form onSubmit={handleCreateTeam} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <input
+                  type="text"
+                  value={newTeamName}
+                  onChange={e => setNewTeamName(e.target.value)}
+                  placeholder="Team Name (e.g. Engineering Hiring)"
+                  style={{ padding: "10px 12px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, color: "#F8FAFC", fontSize: 13, outline: "none" }}
+                />
+                <button type="submit" disabled={creating || !newTeamName.trim()} style={{ padding: "10px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 13, border: "none", cursor: newTeamName.trim() ? "pointer" : "default", opacity: newTeamName.trim() ? 1 : 0.5 }}>
+                  {creating ? "Creating…" : "Create Team Workspace"}
+                </button>
+              </form>
             </div>
 
-            {loading ? (
-              <div style={{ fontSize: 13, color: "#6B6355" }}>Loading…</div>
-            ) : teams.length === 0 ? (
-              <div style={{ fontSize: 13, color: "#6B6355" }}>No teams yet — create one to start collaborating.</div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {teams.map((t) => (
-                  <button
-                    key={t.id}
-                    onClick={() => loadMembers(t)}
-                    style={{
-                      textAlign: "left", padding: "12px 14px", borderRadius: 6, cursor: "pointer",
-                      border: `1px solid ${selected?.id === t.id ? "#6E90AC" : "#2A251C"}`,
-                      background: selected?.id === t.id ? "rgba(62,92,118,.1)" : "#131110",
-                      fontFamily: "inherit",
-                    }}
-                  >
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#EDE6D6" }}>{t.name}</div>
-                    {t.my_role && <div style={{ fontSize: 10, color: roleBadge(t.my_role).color, marginTop: 2, textTransform: "uppercase", letterSpacing: 0.5 }}>{roleBadge(t.my_role).label}</div>}
-                  </button>
-                ))}
-              </div>
-            )}
+            {/* Teams List */}
+            <div style={{ background: "rgba(30, 41, 59, 0.6)", backdropFilter: "blur(16px)", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 20, padding: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#CBD5E1", marginBottom: 12 }}>Your Teams ({teams.length})</div>
+              {loading && <div style={{ fontSize: 13, color: "#94A3B8" }}>Loading teams…</div>}
+              {!loading && teams.length === 0 && (
+                <div style={{ fontSize: 13, color: "#94A3B8" }}>No teams yet. Create one above to start collaborating!</div>
+              )}
+              {!loading && teams.map(t => (
+                <div key={t.id} onClick={() => setSelectedTeam(t)} style={{ padding: "12px 14px", borderRadius: 12, background: selectedTeam?.id === t.id ? "rgba(99,102,241,0.2)" : "rgba(15,23,42,0.4)", border: `1px solid ${selectedTeam?.id === t.id ? "rgba(99,102,241,0.4)" : "rgba(255,255,255,0.05)"}`, cursor: "pointer", marginBottom: 8, transition: "all 0.15s ease" }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC" }}>{t.name}</div>
+                  <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 2 }}>Role: {t.my_role || "member"}</div>
+                </div>
+              ))}
+            </div>
+
           </div>
 
-          {/* Right: selected team members + invite */}
-          <div style={{ flex: "2 1 400px" }}>
-            {!selected ? (
-              <div style={{ padding: 40, textAlign: "center", border: "1px dashed #2A251C", borderRadius: 6, color: "#6B6355", fontSize: 13 }}>
-                Select a team to view members and invite teammates.
-              </div>
-            ) : (
-              <div style={{ background: "#17140F", border: "1px solid #2A251C", borderRadius: 6, padding: "18px 20px" }}>
-                <div className="font-display" style={{ fontSize: 16, fontWeight: 600, color: "#EDE6D6", marginBottom: 14 }}>{selected.name}</div>
-
-                {(selected.my_role === "owner" || selected.my_role === "admin") && (
-                  <div style={{ marginBottom: 18 }}>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <input
-                        value={inviteEmail}
-                        onChange={(e) => setInviteEmail(e.target.value)}
-                        placeholder="teammate@company.com"
-                        style={{ flex: 1, padding: "9px 12px", background: "#131110", border: "1px solid #2A251C", borderRadius: 6, color: "#EDE6D6", fontSize: 13, fontFamily: "inherit", outline: "none" }}
-                      />
-                      <button
-                        onClick={sendInvite}
-                        disabled={inviting || !inviteEmail.trim()}
-                        style={{ padding: "9px 16px", borderRadius: 6, border: "1px solid #2A251C", background: "#131110", color: "#D9D2C0", fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}
-                      >
-                        Invite
-                      </button>
-                    </div>
-                    {inviteStatus && <div style={{ fontSize: 12, color: "#9C9483", marginTop: 8, lineHeight: 1.6 }}>{inviteStatus}</div>}
+          {/* Right Column: Selected Team Details & Members */}
+          <div style={{ background: "rgba(30, 41, 59, 0.6)", backdropFilter: "blur(16px)", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 20, padding: 28 }}>
+            {selectedTeam ? (
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: "#F8FAFC" }}>{selectedTeam.name}</h2>
+                    <span style={{ fontSize: 12, color: "#818CF8", fontWeight: 600 }}>Your Role: {selectedTeam.my_role || "Owner"}</span>
                   </div>
-                )}
+                </div>
 
-                <div style={{ fontSize: 10, color: "#6B6355", letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>Members</div>
-                {membersLoading ? (
-                  <div style={{ fontSize: 13, color: "#6B6355" }}>Loading…</div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {members.map((m) => (
-                      <div key={m.user_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", background: "#131110", borderRadius: 6 }}>
-                        <span style={{ fontSize: 12, color: "#D9D2C0", fontFamily: "monospace" }}>{m.user_id.slice(0, 8)}…</span>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                          <span style={{ fontSize: 11, color: roleBadge(m.role).color, textTransform: "uppercase", letterSpacing: 0.5 }}>{roleBadge(m.role).label}</span>
-                          {(selected.my_role === "owner" || selected.my_role === "admin") && m.role !== "owner" && (
-                            <button onClick={() => removeMember(m.user_id)} style={{ background: "none", border: "none", color: "#D46A4C", cursor: "pointer", fontSize: 12 }}>Remove</button>
-                          )}
+                {/* Invite Teammate */}
+                <div style={{ background: "rgba(15,23,42,0.6)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 16, padding: 20, marginBottom: 24 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC", marginBottom: 8 }}>Invite Teammate</div>
+                  <form onSubmit={handleInvite} style={{ display: "flex", gap: 10 }}>
+                    <input
+                      type="email"
+                      value={inviteEmail}
+                      onChange={e => setInviteEmail(e.target.value)}
+                      placeholder="colleague@company.com"
+                      style={{ flex: 1, padding: "10px 14px", background: "rgba(30,41,59,0.7)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, color: "#F8FAFC", fontSize: 13, outline: "none" }}
+                    />
+                    <button type="submit" disabled={inviting || !inviteEmail.trim()} style={{ padding: "10px 20px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer" }}>
+                      {inviting ? "Inviting…" : "Send Invite"}
+                    </button>
+                  </form>
+                  {inviteSuccess && <div style={{ fontSize: 12, color: "#10B981", marginTop: 8 }}>✓ {inviteSuccess}</div>}
+                </div>
+
+                {/* Members List */}
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC", marginBottom: 12 }}>Team Members ({members.length})</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {members.map(m => (
+                    <div key={m.user_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "rgba(15,23,42,0.4)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 12 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
+                          👤
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "#F8FAFC" }}>{m.user_id}</div>
+                          <div style={{ fontSize: 11, color: "#94A3B8" }}>Joined: {new Date(m.joined_at).toLocaleDateString()}</div>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                )}
+                      <span style={{ padding: "3px 10px", borderRadius: 99, background: "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.3)", color: "#818CF8", fontSize: 11, fontWeight: 600, textTransform: "capitalize" }}>
+                        {m.role}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+              </div>
+            ) : (
+              <div style={{ padding: 48, textAlign: "center", color: "#94A3B8" }}>
+                Select a team from the left or create a new team workspace.
               </div>
             )}
           </div>
+
         </div>
+
       </div>
     </div>
   );
