@@ -3,80 +3,124 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
+import { authAPI, APIError } from "@/lib/api";
 
 export default function SignupPage() {
-  const router = useRouter();
-  const { signup, isLoading, error, clearError, requiresEmailConfirmation } = useAuthStore();
-  const [form, setForm] = useState({ email: "", password: "", fullName: "", company: "" });
+  const router   = useRouter();
+  const setAuth  = useAuthStore((s) => s.setAuth);
 
-  function setF(k: string, v: string) { setForm((p) => ({ ...p, [k]: v })); }
+  const [fullName, setFullName] = useState("");
+  const [company, setCompany]   = useState("");
+  const [email, setEmail]       = useState("");
+  const [password, setPassword] = useState("");
 
-  async function handleSubmit(e: React.FormEvent) {
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState<string | null>(null);
+  const [pendingConfirmEmail, setPendingConfirmEmail] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    clearError();
+    if (!fullName.trim() || !email.trim() || !password) return;
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
     try {
-      const result = await signup(form.email, form.password, form.fullName, form.company || undefined);
-      if (!result.requiresEmailConfirmation) router.replace("/dashboard");
-    } catch { /* shown via store */ }
-  }
+      const res = await authAPI.signup({
+        full_name: fullName.trim(),
+        company: company.trim() || undefined,
+        email: email.trim(),
+        password,
+      });
 
-  if (requiresEmailConfirmation) {
-    return (
-      <div style={{ minHeight: "100vh", background: "#0D0C0A", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <div style={{ background: "#17140F", border: "1px solid #2A251C", borderRadius: 18, padding: "40px 32px", textAlign: "center", maxWidth: 420, width: "100%" }}>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>📧</div>
-          <h2 style={{ fontSize: 20, fontWeight: 800, color: "#EDE6D6", marginBottom: 12 }}>Check your email</h2>
-          <p style={{ color: "#A79E8C", fontSize: 14, lineHeight: 1.7, marginBottom: 24 }}>
-            We sent a confirmation link to <strong style={{ color: "#EDE6D6" }}>{form.email}</strong>. Click it, then log in.
-          </p>
-          <Link href="/login" style={{ display: "block", padding: "12px", borderRadius: 11, background: "linear-gradient(135deg,#3E5C76,#2C4258)", color: "#EDE6D6", fontWeight: 700, fontSize: 14, textDecoration: "none" }}>
-            Go to Login
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  const S = {
-    page: { minHeight: "100vh", background: "#0D0C0A", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 },
-    card: { background: "#17140F", border: "1px solid #2A251C", borderRadius: 18, padding: "32px 28px" },
-    inp: { width: "100%", padding: "11px 14px", background: "#131110", border: "1px solid #2A251C", borderRadius: 10, color: "#EDE6D6", fontSize: 14, outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const },
-    lbl: { display: "block", fontSize: 11, fontWeight: 700, color: "#9C9483", marginBottom: 6, letterSpacing: 1 },
-    btn: { width: "100%", padding: "12px", borderRadius: 11, background: "linear-gradient(135deg,#3E5C76,#2C4258)", border: "none", color: "#EDE6D6", fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "inherit", marginTop: 4 },
+      if (res.requires_email_confirmation || !res.access_token) {
+        setPendingConfirmEmail(email.trim());
+      } else {
+        setAuth(res.access_token, res.user);
+        router.replace("/dashboard");
+      }
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Registration failed. Try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
-    <div style={S.page as React.CSSProperties}>
-      <div style={{ width: "100%", maxWidth: 420 }}>
-        <div style={{ textAlign: "center", marginBottom: 36 }}>
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 11, background: "linear-gradient(135deg,#3E5C76,#3E5C76)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>🔎</div>
-            <span style={{ fontSize: 22, fontWeight: 900, color: "#EDE6D6", letterSpacing: -1 }}>HireLens</span>
+    <div style={{ minHeight: "100vh", background: "#0B0F17", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div className="animate-fade-up" style={{
+        width: "100%", maxWidth: 460,
+        background: "rgba(30, 41, 59, 0.7)", backdropFilter: "blur(16px)",
+        border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 24, padding: "40px 36px",
+        boxShadow: "0 12px 40px -10px rgba(0,0,0,0.6)"
+      }}>
+        {/* Brand */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginBottom: 24 }}>
+          <div style={{
+            width: 38, height: 38, borderRadius: 12,
+            background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 20, boxShadow: "0 0 20px rgba(99,102,241,0.4)"
+          }}>🔎</div>
+          <span style={{ fontWeight: 800, fontSize: 24, color: "#F8FAFC", letterSpacing: -0.6 }}>HireLens</span>
+        </div>
+
+        {pendingConfirmEmail ? (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 44, marginBottom: 16 }}>📧</div>
+            <h2 style={{ fontSize: 20, fontWeight: 800, color: "#F8FAFC", marginBottom: 10 }}>Check Your Inbox</h2>
+            <p style={{ fontSize: 14, color: "#94A3B8", lineHeight: 1.6, marginBottom: 24 }}>
+              We sent a confirmation link to <strong style={{ color: "#F8FAFC" }}>{pendingConfirmEmail}</strong>. Please confirm your email to activate your account.
+            </p>
+            <Link href="/login" style={{ display: "inline-block", padding: "10px 24px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
+              Back to Login
+            </Link>
           </div>
-        </div>
-        <div style={S.card}>
-          <h1 style={{ fontSize: 20, fontWeight: 800, color: "#EDE6D6", margin: "0 0 24px" }}>Create account</h1>
-          {error && <div style={{ padding: "12px 14px", background: "rgba(177,66,38,0.1)", border: "1px solid rgba(177,66,38,0.3)", borderRadius: 10, color: "#D46A4C", fontSize: 13, marginBottom: 20 }}>{error}</div>}
-          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {([
-              ["FULL NAME", "fullName", "text", "Priya Sharma", true],
-              ["WORK EMAIL", "email", "email", "priya@company.com", true],
-              ["COMPANY (OPTIONAL)", "company", "text", "Acme Corp", false],
-              ["PASSWORD (MIN 8 CHARS)", "password", "password", "••••••••", true],
-            ] as [string, string, string, string, boolean][]).map(([lbl, key, type, ph, req]) => (
-              <div key={key}>
-                <label style={S.lbl as React.CSSProperties}>{lbl}</label>
-                <input type={type} required={req} value={form[key as keyof typeof form]} onChange={e => setF(key, e.target.value)} placeholder={ph} style={S.inp} />
+        ) : (
+          <>
+            <h1 style={{ fontSize: 22, fontWeight: 800, color: "#F8FAFC", textAlign: "center", margin: "0 0 6px" }}>Create Recruiter Account</h1>
+            <p style={{ fontSize: 13, color: "#94A3B8", textAlign: "center", margin: "0 0 24px" }}>Start examining candidate credibility</p>
+
+            {error && (
+              <div style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)", color: "#EF4444", fontSize: 13, marginBottom: 20 }}>
+                ⚠️ {error}
               </div>
-            ))}
-            <button type="submit" disabled={isLoading} style={{ ...S.btn, background: isLoading ? "#2A251C" : "linear-gradient(135deg,#3E5C76,#2C4258)", cursor: isLoading ? "not-allowed" : "pointer", color: isLoading ? "#6B6355" : "#EDE6D6" }}>
-              {isLoading ? "Creating account…" : "Create Account"}
-            </button>
-          </form>
-          <p style={{ textAlign: "center", fontSize: 13, color: "#9C9483", marginTop: 20 }}>
-            Already have an account? <Link href="/login" style={{ color: "#6E90AC", textDecoration: "none", fontWeight: 600 }}>Sign in</Link>
-          </p>
-        </div>
+            )}
+
+            <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#CBD5E1", marginBottom: 4 }}>Full Name</label>
+                <input type="text" required value={fullName} onChange={e => setFullName(e.target.value)} placeholder="Jane Doe" style={{ width: "100%", boxSizing: "border-box", padding: "10px 14px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, color: "#F8FAFC", fontSize: 13, outline: "none" }} />
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#CBD5E1", marginBottom: 4 }}>Company / Organization (Optional)</label>
+                <input type="text" value={company} onChange={e => setCompany(e.target.value)} placeholder="Acme HR Corp" style={{ width: "100%", boxSizing: "border-box", padding: "10px 14px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, color: "#F8FAFC", fontSize: 13, outline: "none" }} />
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#CBD5E1", marginBottom: 4 }}>Work Email</label>
+                <input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="recruiter@company.com" style={{ width: "100%", boxSizing: "border-box", padding: "10px 14px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, color: "#F8FAFC", fontSize: 13, outline: "none" }} />
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#CBD5E1", marginBottom: 4 }}>Password (min 8 chars)</label>
+                <input type="password" required value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••" style={{ width: "100%", boxSizing: "border-box", padding: "10px 14px", background: "rgba(15,23,42,0.7)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, color: "#F8FAFC", fontSize: 13, outline: "none" }} />
+              </div>
+
+              <button type="submit" disabled={loading} style={{ width: "100%", padding: "12px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #6366F1, #4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 14, cursor: "pointer", marginTop: 6 }}>
+                {loading ? "Creating Account…" : "Create Account"}
+              </button>
+            </form>
+
+            <div style={{ marginTop: 24, textAlign: "center", fontSize: 13, color: "#94A3B8" }}>
+              Already have an account?{" "}
+              <Link href="/login" style={{ color: "#818CF8", fontWeight: 600, textDecoration: "none" }}>Sign in</Link>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

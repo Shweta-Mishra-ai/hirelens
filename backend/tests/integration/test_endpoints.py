@@ -161,23 +161,22 @@ class TestNotFoundHandling:
         assert res.status_code == 404
 
 
-class TestTeamsRequireDatabase:
-    """No Supabase configured in the test env → team endpoints should return
-    a clear 503, never a raw 500 or crash, since teams have no meaningful
-    in-memory fallback."""
+class TestTeamsInMemorySupport:
+    """Teams support in-memory fallback when database is not configured."""
 
-    def test_create_team_without_db_returns_503(self, client, auth_token):
+    def test_create_team_without_db(self, client, auth_token):
         res = client.post(
             "/api/v1/teams",
             headers={"Authorization": f"Bearer {auth_token}"},
             json={"name": "My Team"},
         )
-        assert res.status_code == 503
-        assert res.json()["error"] == "database_required"
+        assert res.status_code == 200
+        assert res.json()["name"] == "My Team"
 
-    def test_list_teams_without_db_returns_503(self, client, auth_token):
+    def test_list_teams_without_db(self, client, auth_token):
         res = client.get("/api/v1/teams", headers={"Authorization": f"Bearer {auth_token}"})
-        assert res.status_code == 503
+        assert res.status_code == 200
+        assert "teams" in res.json()
 
 
 class TestErrorResponseShape:

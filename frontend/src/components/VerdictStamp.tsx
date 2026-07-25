@@ -1,20 +1,15 @@
 "use client";
+
 /**
- * VerdictStamp — HireLens's signature visual element.
- *
- * Every other resume-screening tool shows a score as a circular progress
- * ring or a soft pill badge. HireLens is a *credibility examination* tool —
- * so its verdict reads like an ink stamp on a case file: rotated, bordered,
- * decisive. Used consistently wherever a recommendation is shown: report
- * headers, dashboard rows, ranking tables.
+ * VerdictStamp / VerdictChip — Modern, sleek status indicator chips.
  */
 
 export type VerdictKind = "recommended" | "manual_review" | "high_risk";
 
-const VERDICT_META: Record<VerdictKind, { label: string; color: string; rotation: string }> = {
-  recommended:   { label: "Recommended",     color: "var(--stamp-green-l)", rotation: "-3deg" },
-  manual_review: { label: "Needs Review",    color: "var(--stamp-gold-l)",  rotation: "-5deg" },
-  high_risk:     { label: "High Risk",       color: "var(--stamp-red-l)",  rotation: "-2deg" },
+const VERDICT_META: Record<VerdictKind, { label: string; color: string; bg: string; border: string; dot: string }> = {
+  recommended:   { label: "Recommended",  color: "#10B981", bg: "rgba(16, 185, 129, 0.12)", border: "rgba(16, 185, 129, 0.3)", dot: "#10B981" },
+  manual_review: { label: "Needs Review", color: "#F59E0B", bg: "rgba(245, 158, 11, 0.12)", border: "rgba(245, 158, 11, 0.3)", dot: "#F59E0B" },
+  high_risk:     { label: "High Risk",    color: "#EF4444", bg: "rgba(239, 68, 68, 0.12)",  border: "rgba(239, 68, 68, 0.3)",  dot: "#EF4444" },
 };
 
 export function verdictFromRecommendation(rec: string): VerdictKind {
@@ -29,50 +24,33 @@ export function VerdictStamp({
   verdict: VerdictKind;
   size?: "sm" | "md" | "lg";
 }) {
-  const meta = VERDICT_META[verdict];
-  const fontSize = size === "lg" ? 15 : size === "sm" ? 10 : 12;
-  const padding = size === "lg" ? "6px 16px" : size === "sm" ? "2px 8px" : "3px 10px";
+  const meta = VERDICT_META[verdict] || VERDICT_META.manual_review;
+  const fontSize = size === "lg" ? 13 : size === "sm" ? 10 : 11;
+  const padding = size === "lg" ? "6px 14px" : size === "sm" ? "2px 8px" : "4px 11px";
 
-  return (
-    <span
-      className="stamp"
-      style={
-        {
-          "--stamp-rot": meta.rotation,
-          color: meta.color,
-          fontSize,
-          padding,
-        } as React.CSSProperties
-      }
-    >
-      {meta.label}
-    </span>
-  );
-}
-
-/** Compact inline variant for dense table rows — same identity, no rotation
- * animation replay per-row (keeps long lists calm rather than busy). */
-export function VerdictChip({ verdict }: { verdict: VerdictKind }) {
-  const meta = VERDICT_META[verdict];
   return (
     <span
       style={{
         display: "inline-flex",
         alignItems: "center",
-        fontFamily: "var(--font-display), Georgia, serif",
-        fontWeight: 700,
-        fontSize: 10,
-        letterSpacing: "0.05em",
-        textTransform: "uppercase",
+        gap: 6,
         color: meta.color,
-        border: `1.5px solid ${meta.color}`,
-        borderRadius: 3,
-        padding: "2px 8px",
-        transform: `rotate(${meta.rotation})`,
+        background: meta.bg,
+        border: `1px solid ${meta.border}`,
+        borderRadius: 9999,
+        fontSize,
+        padding,
+        fontWeight: 600,
+        letterSpacing: "0.025em",
         whiteSpace: "nowrap",
       }}
     >
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: meta.dot, boxShadow: `0 0 8px ${meta.dot}` }} />
       {meta.label}
     </span>
   );
+}
+
+export function VerdictChip({ verdict }: { verdict: VerdictKind }) {
+  return <VerdictStamp verdict={verdict} size="sm" />;
 }

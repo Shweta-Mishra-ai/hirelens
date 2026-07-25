@@ -497,15 +497,15 @@ export default function ReportPage() {
   }, [tab, loadDiscussData]);
 
   if (loading) return (
-    <div style={{ minHeight: "100vh", background: "#0D0C0A", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ color: "#9C9483", fontSize: 14 }}>Loading report…</div>
+    <div style={{ minHeight: "100vh", background: "#0B0F17", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ color: "#94A3B8", fontSize: 14 }}>Loading report…</div>
     </div>
   );
 
   if (error || !report) return (
-    <div style={{ minHeight: "100vh", background: "#0D0C0A", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
-      <div style={{ color: "#D46A4C", fontSize: 14 }}>{error || "Report not found."}</div>
-      <Link href="/dashboard" style={{ color: "#6E90AC", fontSize: 13 }}>← Back to Dashboard</Link>
+    <div style={{ minHeight: "100vh", background: "#0B0F17", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+      <div style={{ color: "#EF4444", fontSize: 14 }}>{error || "Report not found."}</div>
+      <Link href="/dashboard" style={{ color: "#818CF8", fontSize: 13 }}>← Back to Dashboard</Link>
     </div>
   );
 
@@ -527,19 +527,29 @@ export default function ReportPage() {
   ];
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0D0C0A" }}>
+    <div style={{ minHeight: "100vh", background: "#0B0F17", color: "#F8FAFC" }}>
       <style>{`@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}.fu{animation:fadeUp .3s ease}`}</style>
 
       {/* Navbar */}
-      <nav style={{ height: 54, borderBottom: "1px solid #2A251C", display: "flex", alignItems: "center", paddingInline: 24, gap: 16, position: "sticky", top: 0, background: "rgba(6,15,26,.92)", backdropFilter: "blur(14px)", zIndex: 100 }}>
-        <Link href="/dashboard" style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none" }}>
-          <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#3E5C76,#3E5C76)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>🔎</div>
-          <span style={{ fontWeight: 900, fontSize: 15, color: "#EDE6D6", letterSpacing: -.4 }}>HireLens</span>
+      <nav style={{
+        height: 64, borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
+        display: "flex", alignItems: "center", paddingInline: 28, gap: 16,
+        position: "sticky", top: 0, background: "rgba(11, 15, 23, 0.85)",
+        backdropFilter: "blur(16px)", zIndex: 100
+      }}>
+        <Link href="/dashboard" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 10,
+            background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 16, boxShadow: "0 0 16px rgba(99,102,241,0.4)"
+          }}>🔎</div>
+          <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
         </Link>
-        <span style={{ color: "#2A251C" }}>|</span>
-        <span style={{ fontSize: 13, color: "#9C9483" }}>Report</span>
+        <span style={{ color: "rgba(255,255,255,0.15)" }}>|</span>
+        <span style={{ fontSize: 13, color: "#94A3B8" }}>Candidate Intelligence Report</span>
         <div style={{ flex: 1 }} />
-        <Link href="/analyze" style={{ padding: "6px 16px", borderRadius: 8, background: "linear-gradient(135deg,#3E5C76,#2C4258)", color: "#EDE6D6", fontWeight: 600, fontSize: 12, textDecoration: "none" }}>
+        <Link href="/analyze" style={{ padding: "8px 18px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
           + New Analysis
         </Link>
       </nav>

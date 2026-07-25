@@ -19,6 +19,7 @@ interface AuthStore {
   requiresEmailConfirmation: boolean;
   hasHydrated: boolean;
   setHasHydrated: (v: boolean) => void;
+  setAuth: (token: string | null, user: User | null) => void;
   login: (email: string, password: string) => Promise<void>;
   signup: (
     email: string,
@@ -41,6 +42,7 @@ export const useAuthStore = create<AuthStore>()(
       requiresEmailConfirmation: false,
       hasHydrated: false,
       setHasHydrated: (v) => set({ hasHydrated: v }),
+      setAuth: (token, user) => set({ token, user, isLoading: false, error: null }),
 
       login: async (email, password) => {
         set({ isLoading: true, error: null });
