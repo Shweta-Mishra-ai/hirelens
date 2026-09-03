@@ -3,7 +3,7 @@
 import logging
 from fastapi import APIRouter, Depends
 from app.core.config import settings
-from app.core.dependencies import get_db, get_redis
+from app.core.dependencies import get_db, get_redis, get_current_user
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
@@ -59,10 +59,18 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
 
 
 @router.get("/health/diagnostics", tags=["Health"])
-async def diagnostics(db=Depends(get_db), redis=Depends(get_redis)):
+async def diagnostics(
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+):
     """
     Detailed system diagnostics & load health metrics.
     Returns metrics on job queues, system limits, and process capacity.
+
+    Requires authentication — this exposes internal process memory, active
+    job counts, and rate-limit internals, which is reconnaissance-useful
+    information and should never be reachable anonymously.
     """
     import os, time
     from app.api.v1.endpoints.analysis import _jobs

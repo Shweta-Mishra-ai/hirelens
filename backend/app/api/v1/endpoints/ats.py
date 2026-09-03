@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import EmptyBatch, TooManyBatches, HireLensException, AllResumesUnreachable
-from app.api.v1.endpoints.analysis import _jobs, validate_upload
+from app.api.v1.endpoints.analysis import _jobs, validate_upload, _check_rate_limit
 from app.api.v1.endpoints.bulk import _run_batch
 from app.services.parser.csv_import import parse_ats_csv
 from app.services.verify.ssrf_guard import is_public_http_url
@@ -41,15 +41,59 @@ class ResumeDownloadError(HireLensException):
     code = "resume_download_failed"
 
 
+# Redirect hops allowed before giving up — matches certification_verify.py's
+# MAX_REDIRECT_HOPS so both SSRF-safe fetchers behave consistently.
+_MAX_REDIRECT_HOPS = 3
+
+
 async def _download_resume(client: httpx.AsyncClient, url: str) -> bytes:
-    if not is_public_http_url(url):
-        raise ResumeDownloadError(f"Refusing to fetch a non-public/unsafe URL: {url[:80]}")
-    r = await client.get(url, follow_redirects=True)
-    if not r.is_success:
-        raise ResumeDownloadError(f"Download failed with status {r.status_code}")
-    if len(r.content) > MAX_DOWNLOAD_MB * 1024 * 1024:
-        raise ResumeDownloadError(f"File exceeds {MAX_DOWNLOAD_MB}MB limit")
-    return r.content
+    """
+    Downloads a resume URL from an ATS-exported CSV, re-validating the SSRF
+    guard on every redirect hop rather than just the original URL.
+
+    This used to call `client.get(url, follow_redirects=True)` after a
+    single is_public_http_url() check on the ORIGINAL url — httpx would
+    then silently follow any number of redirects, including one pointing
+    at a cloud metadata endpoint (e.g. 169.254.169.254) or an internal
+    service, without ever re-checking where it actually ended up. A
+    malicious/compromised host only has to return a safe-looking URL on
+    the first request and a 302 on the follow-up. This mirrors the
+    correct pattern already used in certification_verify.py's
+    _safe_fetch(): follow_redirects=False + a manual loop that re-runs the
+    guard on every Location header before following it.
+
+    Also streams and aborts as soon as MAX_DOWNLOAD_MB is exceeded, rather
+    than buffering the full response body first and checking len()
+    afterward — the previous version's size check ran only AFTER the
+    complete body had already been read into memory, so it didn't actually
+    bound memory use against a server returning far more than the cap.
+    """
+    current_url = url
+    max_bytes = MAX_DOWNLOAD_MB * 1024 * 1024
+
+    for _ in range(_MAX_REDIRECT_HOPS + 1):
+        if not is_public_http_url(current_url):
+            raise ResumeDownloadError(f"Refusing to fetch a non-public/unsafe URL: {current_url[:80]}")
+
+        async with client.stream("GET", current_url, follow_redirects=False) as r:
+            if r.is_redirect:
+                location = r.headers.get("location")
+                if not location:
+                    raise ResumeDownloadError("Redirect response had no Location header")
+                current_url = str(httpx.URL(current_url).join(location))
+                continue
+
+            if not r.is_success:
+                raise ResumeDownloadError(f"Download failed with status {r.status_code}")
+
+            chunks = bytearray()
+            async for chunk in r.aiter_bytes():
+                chunks.extend(chunk)
+                if len(chunks) > max_bytes:
+                    raise ResumeDownloadError(f"File exceeds {MAX_DOWNLOAD_MB}MB limit")
+            return bytes(chunks)
+
+    raise ResumeDownloadError(f"Too many redirects (max {_MAX_REDIRECT_HOPS}) fetching resume URL")
 
 
 def _filename_for_row(row: dict) -> str:
@@ -73,6 +117,15 @@ async def ats_import(
     to poll (same endpoints as /api/v1/bulk/{batch_id}/status etc).
     """
     user_id = current_user["id"]
+
+    # This endpoint had NO rate limiting at all before this fix — every
+    # other expensive upload path (analysis, bulk, match) at least called
+    # _check_rate_limit, even though that function itself had its own bug
+    # (see the C-06 fix in analysis.py). ATS import can trigger up to
+    # BULK_MAX_FILES downloads + full analyses per call, so it's at least
+    # as expensive as bulk upload and needs the same guard.
+    _check_rate_limit(redis, user_id)
+
     contents = await file.read()
     if not contents:
         raise EmptyBatch()

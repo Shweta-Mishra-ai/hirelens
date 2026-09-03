@@ -21,7 +21,7 @@ export default function BulkUploadPage() {
   const router = useRouter();
   const pathname = usePathname();
   const { user, token, logout, hasHydrated } = useAuthStore();
-  const { state, upload, exportCsv, exporting, reset } = useBulkAnalysis();
+  const { state, upload, exportCsv, exporting, exportError, reset } = useBulkAnalysis();
   const inputRef = useRef<HTMLInputElement>(null);
   const [pending, setPending] = useState<File[]>([]);
   const [pickError, setPickError] = useState<string | null>(null);
@@ -234,19 +234,24 @@ export default function BulkUploadPage() {
                   <div style={{ fontSize: 18, fontWeight: 700, color: "#F8FAFC", marginBottom: 4 }}>Batch Progress</div>
                   <div style={{ fontSize: 13, color: "#94A3B8" }}>{batch.complete} of {batch.total} resumes analyzed</div>
                 </div>
-                <div style={{ display: "flex", gap: 10 }}>
-                  {state.phase === "done" && (
-                    <>
-                      <button onClick={() => checkDuplicates(batch.batch_id)} disabled={dupLoading} style={{ padding: "8px 16px", borderRadius: 10, background: "rgba(99,102,241,0.2)", border: "1px solid rgba(99,102,241,0.4)", color: "#818CF8", fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
-                        {dupLoading ? "Checking…" : "🔍 Check Duplicates"}
-                      </button>
-                      <button onClick={() => exportCsv(batch.batch_id)} disabled={exporting} style={{ padding: "8px 16px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 12, border: "none", cursor: "pointer" }}>
-                        {exporting ? "Exporting…" : "⬇ Export Batch CSV"}
-                      </button>
-                      <button onClick={() => { reset(); setPending([]); }} style={{ padding: "8px 16px", borderRadius: 10, background: "rgba(30,41,59,0.8)", border: "1px solid rgba(255,255,255,0.1)", color: "#CBD5E1", fontSize: 12, cursor: "pointer" }}>
-                        New Batch
-                      </button>
-                    </>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    {state.phase === "done" && (
+                      <>
+                        <button onClick={() => checkDuplicates(batch.batch_id)} disabled={dupLoading} style={{ padding: "8px 16px", borderRadius: 10, background: "rgba(99,102,241,0.2)", border: "1px solid rgba(99,102,241,0.4)", color: "#818CF8", fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
+                          {dupLoading ? "Checking…" : "🔍 Check Duplicates"}
+                        </button>
+                        <button onClick={() => exportCsv(batch.batch_id)} disabled={exporting} style={{ padding: "8px 16px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 12, border: "none", cursor: "pointer" }}>
+                          {exporting ? "Exporting…" : "⬇ Export Batch CSV"}
+                        </button>
+                        <button onClick={() => { reset(); setPending([]); }} style={{ padding: "8px 16px", borderRadius: 10, background: "rgba(30,41,59,0.8)", border: "1px solid rgba(255,255,255,0.1)", color: "#CBD5E1", fontSize: 12, cursor: "pointer" }}>
+                          New Batch
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {exportError && (
+                    <div style={{ fontSize: 11, color: "#F87171" }}>{exportError}</div>
                   )}
                 </div>
               </div>
@@ -285,9 +290,9 @@ export default function BulkUploadPage() {
                   <div style={{ fontSize: 14, fontWeight: 800, color: "#64748B", width: 24 }}>#{i + 1}</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC" }}>{c.candidate_name || "Unknown"}</div>
-                    <div style={{ fontSize: 12, color: "#94A3B8", fontFamily: "monospace" }}>{c.file_name}</div>
+                    <div style={{ fontSize: 12, color: "#94A3B8", fontFamily: "var(--font-mono), monospace" }}>{c.file_name}</div>
                   </div>
-                  <div style={{ fontSize: 20, fontWeight: 900, color: scoreColor(c.overall_score), fontFamily: "monospace" }}>{c.overall_score}</div>
+                  <div style={{ fontSize: 20, fontWeight: 900, color: scoreColor(c.overall_score), fontFamily: "var(--font-mono), monospace" }}>{c.overall_score}</div>
                   <VerdictChip verdict={verdictFromRecommendation(c.recommendation)} />
                   <Link href={`/report/${c.report_id}`} style={{ padding: "6px 14px", borderRadius: 8, background: "rgba(99,102,241,0.15)", color: "#818CF8", fontSize: 12, fontWeight: 600, textDecoration: "none" }}>
                     View Report →

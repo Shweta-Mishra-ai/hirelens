@@ -269,12 +269,12 @@ export default function JdMatchPage() {
                       <div style={{ fontSize: 14, fontWeight: 800, color: "#64748B", width: 24 }}>#{i + 1}</div>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontSize: 15, fontWeight: 700, color: "#F8FAFC" }}>{c.candidate_name || "Unknown Candidate"}</div>
-                        <div style={{ fontSize: 12, color: "#94A3B8", fontFamily: "monospace" }}>{c.file_name}</div>
+                        <div style={{ fontSize: 12, color: "#94A3B8", fontFamily: "var(--font-mono), monospace" }}>{c.file_name}</div>
                       </div>
 
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <span style={{ fontSize: 11, color: "#94A3B8" }}>Match Score</span>
-                        <span style={{ fontSize: 20, fontWeight: 900, color: matchColor(c.match_score), fontFamily: "monospace" }}>{c.match_score}%</span>
+                        <span style={{ fontSize: 20, fontWeight: 900, color: matchColor(c.match_score), fontFamily: "var(--font-mono), monospace" }}>{c.match_score}%</span>
                       </div>
 
                       <span style={{ padding: "4px 12px", borderRadius: 99, background: badge.bg, border: `1px solid ${badge.border}`, color: badge.color, fontSize: 11, fontWeight: 700 }}>

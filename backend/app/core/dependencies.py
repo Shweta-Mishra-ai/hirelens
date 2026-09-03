@@ -12,22 +12,29 @@ from app.core.config import settings
 logger = logging.getLogger("hirelens")
 
 
-# ── Supabase DB — fresh client per request (thread-safe) ─────────────────────
+# ── Supabase DB — pooled singleton client (thread-safe) ─────────────────────
+_supabase_client = None
+
 def get_db():
     """
     Returns Supabase client or None.
     Supabase Python v2 client is synchronous — do NOT await its methods.
-    Use .execute() directly (no await).
+    Use .execute() directly (no await). Reuses a singleton instance for high-concurrency performance.
     """
+    global _supabase_client
     if not (settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY):
         logger.warning("Supabase not configured — DB unavailable")
         return None
+    if _supabase_client is not None:
+        return _supabase_client
     try:
         from supabase import create_client
-        return create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
+        _supabase_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
+        return _supabase_client
     except Exception as e:
         logger.error(f"Supabase client creation failed: {e}")
         return None
+
 
 
 # ── Redis — optional, graceful degradation ────────────────────────────────────

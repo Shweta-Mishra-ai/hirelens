@@ -57,8 +57,18 @@ def _load_report(report_id: str, user_id: str, db) -> tuple[dict, str]:
         except Exception as e:
             logger.warning(f"DB fetch failed for report {report_id}: {e}")
 
+    # In-memory fallback path. This MUST enforce the same ownership check as
+    # the DB path above — reports written here are stamped with
+    # `_owner_user_id` at creation time (see analysis.py's _run_analysis).
+    # A report with no owner stamp at all (shouldn't happen for anything
+    # written after this fix, but may exist from an older in-flight job)
+    # is treated as inaccessible rather than open-to-anyone, since "we
+    # can't tell who owns this" must fail closed, not open.
     data = _jobs.get(f"report_{report_id}")
     if data:
+        owner = data.get("_owner_user_id")
+        if owner is None or owner != user_id:
+            raise ForbiddenError()
         return data, "memory"
 
     raise NotFoundError(f"Report '{report_id}' not found.")
@@ -75,6 +85,15 @@ def _persist_verification(report_id: str, user_id: str, report: dict, source: st
         except Exception as e:
             logger.warning(f"Failed to persist verification for report {report_id} to DB: {e}")
     # Always mirror to in-memory too, so it's available even if the DB write above failed.
+    #
+    # Defensively (re-)stamp the owner here regardless of `source`. If this
+    # report originally came from the DB (source == "db") and the DB write
+    # just failed, this dict has never had `_owner_user_id` set — without
+    # this line, it would land in `_jobs` unstamped, which the in-memory
+    # read path in this file and in reports.py both treat as "nobody owns
+    # this" and therefore refuse to serve to anyone. Stamping it here keeps
+    # it accessible to its actual owner instead of orphaning it.
+    report["_owner_user_id"] = user_id
     _jobs[f"report_{report_id}"] = report
 
 

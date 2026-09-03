@@ -23,6 +23,7 @@ export function useBulkAnalysis() {
   const token = useAuthStore((s) => s.token);
   const [state, setState] = useState<BulkState>({ phase: "idle" });
   const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
 
@@ -154,6 +155,7 @@ export function useBulkAnalysis() {
     async (batchId: string) => {
       if (!token) return;
       setExporting(true);
+      setExportError(null);
       try {
         const blob = await bulkAPI.downloadCsv(batchId, token);
         const url = URL.createObjectURL(blob);
@@ -164,8 +166,11 @@ export function useBulkAnalysis() {
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
-      } catch {
-        // Surface via toast at the call site if desired; keep hook silent-safe.
+      } catch (e) {
+        // Previously silent — a failed export looked identical to a
+        // successful one (button just stopped loading). Now surfaced
+        // so the UI can show it instead of pretending nothing happened.
+        setExportError(e instanceof APIError ? e.message : "Could not export CSV. Please try again.");
       } finally {
         setExporting(false);
       }
@@ -178,5 +183,5 @@ export function useBulkAnalysis() {
     safeSetState({ phase: "idle" });
   }, [stopPolling, safeSetState]);
 
-  return { state, upload, uploadFromAts, exportCsv, exporting, reset };
+  return { state, upload, uploadFromAts, exportCsv, exporting, exportError, reset };
 }

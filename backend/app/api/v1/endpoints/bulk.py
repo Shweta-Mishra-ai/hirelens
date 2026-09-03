@@ -21,10 +21,13 @@ import uuid
 import asyncio
 import logging
 from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File
+from pydantic import BaseModel, Field
+from typing import Literal
 from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.rate_limit import check_rate_limit
 from app.core.exceptions import NotFoundError, ForbiddenError, EmptyBatch, TooManyFiles, TooManyBatches, FileTooLarge
 from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload
 from app.services.queue import batch_store
@@ -321,6 +324,104 @@ def _fetch_full_report(report_id: str, db) -> dict | None:
         cand = data.get("candidate") or {}
         return {"id": report_id, "candidate_name": cand.get("name") or "Unknown", "report_data": data}
     return None
+
+
+class NotifyOverride(BaseModel):
+    subject: str = Field(..., min_length=1, max_length=200)
+    body: str = Field(..., min_length=1, max_length=10_000)
+
+
+class BulkNotifyRequest(BaseModel):
+    """
+    One-click send: pass only `decision` and every completed candidate in
+    the batch is emailed the default template for that decision.
+    Per-candidate overrides let a recruiter customize a specific person's
+    message without leaving the "send all" flow — anything not listed in
+    `overrides` still goes out with the default template.
+    """
+    decision: Literal["advance", "schedule_followup", "reject"]
+    overrides: dict[str, NotifyOverride] = Field(default_factory=dict, max_length=500)  # report_id -> override
+
+
+@router.post("/{batch_id}/notify-all")
+async def bulk_notify_all(
+    batch_id: str,
+    body: BulkNotifyRequest,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+):
+    """
+    Sends a decision-notification email to every candidate in this batch
+    who (a) completed analysis and (b) has an email address on file.
+    Defaults to the standard template for `decision`; any report_id present
+    in `overrides` uses that custom subject/body instead.
+
+    This never touches the saved `recruiter_decision` on each report — it
+    only sends email. Recording a decision and notifying the candidate
+    remain two independent actions, same as the single-report flow.
+
+    Rate-limited per user (not per batch): this can trigger dozens or
+    hundreds of real emails in one call, so a double-click or retry loop
+    must not be able to re-blast an entire batch repeatedly.
+    """
+    from app.services.email.sender import build_decision_email, send_candidate_decision_email
+
+    # body.decision is already constrained to the three valid values by
+    # NotifyOverride's Literal type (Pydantic returns 422 automatically
+    # for anything else) — no manual re-check needed here.
+    check_rate_limit(redis, f"notify-all:{current_user['id']}", settings.NOTIFY_RATE_LIMIT_PER_MINUTE)
+
+    batch = batch_store.get_batch(redis, batch_id)
+    if not batch:
+        raise NotFoundError(f"Batch '{batch_id}' not found. It may have expired.")
+    if batch["user_id"] != current_user["id"]:
+        raise ForbiddenError()
+
+    status = _build_status_and_ranking(batch, db)
+    sender_name = current_user.get("full_name") or current_user.get("email") or "The Hiring Team"
+
+    results = []
+    for r in status["ranking"]:
+        report_id = r["report_id"]
+        full = _fetch_full_report(report_id, db)
+        candidate = (full.get("report_data") or {}).get("candidate") if full else None
+        candidate_email = (candidate or {}).get("email")
+        candidate_name = r.get("candidate_name") or "Candidate"
+
+        if not candidate_email:
+            results.append({"report_id": report_id, "candidate_name": candidate_name, "email_sent": False, "reason": "no_email_on_file"})
+            continue
+
+        override = body.overrides.get(report_id)
+        if override:
+            subject, msg_body = override.subject, override.body
+        else:
+            draft = build_decision_email(body.decision, candidate_name, sender_name, "HireLens")
+            subject, msg_body = draft["subject"], draft["body"]
+
+        sent = await send_candidate_decision_email(to_email=str(candidate_email), subject=subject, body=msg_body)
+        results.append({"report_id": report_id, "candidate_name": candidate_name, "email_sent": sent, "reason": None if sent else "provider_unavailable"})
+
+        if db:
+            try:
+                db.table("reports").update({
+                    "candidate_notified_at": "now()",
+                    "candidate_notified_decision": body.decision,
+                }).eq("id", report_id).execute()
+            except Exception as e:
+                logger.warning(f"Could not record bulk notification timestamp for {report_id}: {e}")
+
+    sent_count = sum(1 for x in results if x["email_sent"])
+    logger.info(f"Bulk notify | batch={batch_id} decision={body.decision} sent={sent_count}/{len(results)}")
+
+    return {
+        "batch_id": batch_id,
+        "decision": body.decision,
+        "total_candidates": len(results),
+        "emails_sent": sent_count,
+        "results": results,
+    }
 
 
 @router.get("/{batch_id}/duplicates")
