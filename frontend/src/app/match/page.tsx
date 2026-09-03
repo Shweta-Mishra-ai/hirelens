@@ -4,6 +4,19 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
 import { useJdMatch } from "@/hooks/useJdMatch";
+import {
+  Search,
+  LayoutDashboard,
+  Zap,
+  Files,
+  Target,
+  Users,
+  FileText,
+  AlertCircle,
+  Check,
+  X,
+  Download,
+} from "lucide-react";
 import type { MatchVerdict } from "@/types";
 
 const MAX_FILES = 50;
@@ -99,11 +112,11 @@ export default function JdMatchPage() {
   const batch = state.phase === "processing" || state.phase === "done" ? state.batch : null;
 
   const NAV_LINKS = [
-    { href: "/dashboard", label: "Dashboard", icon: "📊" },
-    { href: "/analyze", label: "Analyze", icon: "⚡" },
-    { href: "/bulk", label: "Bulk Upload", icon: "🗂️" },
-    { href: "/match", label: "JD Match", icon: "🎯" },
-    { href: "/teams", label: "Teams", icon: "👥" },
+    { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={14} /> },
+    { href: "/analyze", label: "Analyze", icon: <Zap size={14} /> },
+    { href: "/bulk", label: "Bulk Upload", icon: <Files size={14} /> },
+    { href: "/match", label: "JD Match", icon: <Target size={14} /> },
+    { href: "/teams", label: "Teams", icon: <Users size={14} /> },
   ];
 
   return (
@@ -120,8 +133,8 @@ export default function JdMatchPage() {
             width: 32, height: 32, borderRadius: 10,
             background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 16, boxShadow: "0 0 16px rgba(99,102,241,0.4)"
-          }}>🔎</div>
+            boxShadow: "0 0 16px rgba(99,102,241,0.4)"
+          }}><Search size={16} color="#FFFFFF" strokeWidth={2.5} /></div>
           <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
         </Link>
 
@@ -133,12 +146,12 @@ export default function JdMatchPage() {
               <Link key={link.href} href={link.href} style={{
                 padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
                 color: active ? "#F8FAFC" : "#94A3B8",
-                background: active ? "rgba(99, 102, 241, 0.25)" : "transparent",
+                background: active ? "rgba(99, 102, 241, 0.2)" : "transparent",
                 border: active ? "1px solid rgba(99, 102, 241, 0.4)" : "1px solid transparent",
-                textDecoration: "none", transition: "all 0.15s ease",
-                display: "flex", alignItems: "center", gap: 6,
+                display: "flex", alignItems: "center", gap: 7, textDecoration: "none",
+                transition: "all 0.15s ease",
               }}>
-                <span>{link.icon}</span>
+                <span style={{ display: "inline-flex", alignItems: "center" }}>{link.icon}</span>
                 <span>{link.label}</span>
               </Link>
             );
@@ -196,7 +209,9 @@ export default function JdMatchPage() {
               ) : (
                 <div onClick={() => jdInputRef.current?.click()} style={{ border: "2px dashed rgba(99,102,241,0.4)", borderRadius: 16, padding: "48px 24px", textAlign: "center", cursor: "pointer", background: "rgba(15, 23, 42, 0.5)" }}>
                   <input ref={jdInputRef} type="file" accept=".pdf,.docx,.txt" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) pickJdFile(f); }} />
-                  <div style={{ fontSize: 28, marginBottom: 8 }}>📄</div>
+                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+                    <FileText size={28} color="#818CF8" />
+                  </div>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC" }}>{jdFile ? jdFile.name : "Upload JD document"}</div>
                   <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 4 }}>PDF, DOCX, or TXT up to {JD_MAX_MB}MB</div>
                   {jdFileError && <div style={{ fontSize: 12, color: "#EF4444", marginTop: 8 }}>{jdFileError}</div>}
@@ -210,7 +225,9 @@ export default function JdMatchPage() {
               
               <div onClick={() => inputRef.current?.click()} style={{ border: "2px dashed rgba(99,102,241,0.4)", borderRadius: 16, padding: "36px 24px", textAlign: "center", cursor: "pointer", background: "rgba(15, 23, 42, 0.5)", marginBottom: 16 }}>
                 <input ref={inputRef} type="file" multiple accept=".pdf,.docx" style={{ display: "none" }} onChange={(e) => { if (e.target.files?.length) addFiles(e.target.files); }} />
-                <div style={{ fontSize: 28, marginBottom: 8 }}>🎯</div>
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+                  <Target size={28} color="#818CF8" />
+                </div>
                 <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC" }}>Drop resumes to match</div>
                 <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 4 }}>PDF or DOCX up to {MAX_FILES} files</div>
               </div>
@@ -228,7 +245,12 @@ export default function JdMatchPage() {
                 </div>
               )}
 
-              {pickError && <div style={{ fontSize: 12, color: "#EF4444", marginBottom: 12 }}>⚠️ {pickError}</div>}
+              {pickError && (
+                <div style={{ fontSize: 12, color: "#EF4444", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                  <AlertCircle size={14} style={{ flexShrink: 0 }} />
+                  <span>{pickError}</span>
+                </div>
+              )}
 
               <button onClick={startAnalysis} disabled={pending.length === 0} style={{ width: "100%", padding: "12px 24px", borderRadius: 12, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 14, border: "none", cursor: pending.length ? "pointer" : "default", opacity: pending.length ? 1 : 0.5 }}>
                 Run JD Match Analysis
@@ -247,8 +269,9 @@ export default function JdMatchPage() {
                 <div style={{ fontSize: 13, color: "#94A3B8" }}>{batch.complete} of {batch.total} candidates evaluated</div>
               </div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button onClick={() => exportCsv(batch.batch_id)} disabled={exporting} style={{ padding: "10px 20px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer" }}>
-                  {exporting ? "Exporting…" : "⬇ Export Match CSV"}
+                <button onClick={() => exportCsv(batch.batch_id)} disabled={exporting} style={{ padding: "10px 20px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                  <Download size={14} />
+                  <span>{exporting ? "Exporting…" : "Export Match CSV"}</span>
                 </button>
                 <button onClick={() => { reset(); setPending([]); setJdText(""); setJdFile(null); }} style={{ padding: "10px 20px", borderRadius: 10, background: "rgba(30,41,59,0.8)", border: "1px solid rgba(255,255,255,0.1)", color: "#CBD5E1", fontSize: 13, cursor: "pointer" }}>
                   New JD Match
@@ -292,8 +315,9 @@ export default function JdMatchPage() {
                           <div style={{ fontSize: 12, fontWeight: 700, color: "#10B981", marginBottom: 8 }}>Matching Skills ({(c.matching_skills || []).length})</div>
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                             {(c.matching_skills || []).map((s: string, idx: number) => (
-                              <span key={idx} style={{ padding: "3px 10px", borderRadius: 6, background: "rgba(16,185,129,0.15)", color: "#10B981", fontSize: 11, fontWeight: 600 }}>
-                                ✓ {s}
+                              <span key={idx} style={{ padding: "3px 10px", borderRadius: 6, background: "rgba(16,185,129,0.15)", color: "#10B981", fontSize: 11, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                <Check size={11} strokeWidth={3} />
+                                <span>{s}</span>
                               </span>
                             ))}
                           </div>
@@ -302,8 +326,9 @@ export default function JdMatchPage() {
                           <div style={{ fontSize: 12, fontWeight: 700, color: "#EF4444", marginBottom: 8 }}>Missing Skills ({(c.missing_skills || []).length})</div>
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                             {(c.missing_skills || []).map((s: string, idx: number) => (
-                              <span key={idx} style={{ padding: "3px 10px", borderRadius: 6, background: "rgba(239,68,68,0.15)", color: "#EF4444", fontSize: 11, fontWeight: 600 }}>
-                                ✕ {s}
+                              <span key={idx} style={{ padding: "3px 10px", borderRadius: 6, background: "rgba(239,68,68,0.15)", color: "#EF4444", fontSize: 11, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                <X size={11} strokeWidth={3} />
+                                <span>{s}</span>
                               </span>
                             ))}
                           </div>

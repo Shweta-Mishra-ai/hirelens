@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
 import { authAPI, APIError } from "@/lib/api";
+import { Search, AlertCircle, Mail } from "lucide-react";
 
 export default function SignupPage() {
   const router   = useRouter();
@@ -69,14 +70,16 @@ export default function SignupPage() {
             width: 38, height: 38, borderRadius: 12,
             background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 20, boxShadow: "0 0 20px rgba(99,102,241,0.4)"
-          }}>🔎</div>
+            boxShadow: "0 0 20px rgba(99,102,241,0.4)"
+          }}><Search size={20} color="#FFFFFF" strokeWidth={2.5} /></div>
           <span style={{ fontWeight: 800, fontSize: 24, color: "#F8FAFC", letterSpacing: -0.6 }}>HireLens</span>
         </div>
 
         {pendingConfirmEmail ? (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 44, marginBottom: 16 }}>📧</div>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+              <Mail size={44} color="#818CF8" />
+            </div>
             <h2 style={{ fontSize: 20, fontWeight: 800, color: "#F8FAFC", marginBottom: 10 }}>Check Your Inbox</h2>
             <p style={{ fontSize: 14, color: "#94A3B8", lineHeight: 1.6, marginBottom: 24 }}>
               We sent a confirmation link to <strong style={{ color: "#F8FAFC" }}>{pendingConfirmEmail}</strong>. Please confirm your email to activate your account.
@@ -91,8 +94,9 @@ export default function SignupPage() {
             <p style={{ fontSize: 13, color: "#94A3B8", textAlign: "center", margin: "0 0 24px" }}>Start examining candidate credibility</p>
 
             {error && (
-              <div style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)", color: "#EF4444", fontSize: 13, marginBottom: 20 }}>
-                ⚠️ {error}
+              <div style={{ padding: "12px 14px", borderRadius: 10, background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)", color: "#EF4444", fontSize: 13, marginBottom: 20, display: "flex", alignItems: "center", gap: 8 }}>
+                <AlertCircle size={15} style={{ flexShrink: 0 }} />
+                <span>{error}</span>
               </div>
             )}
 

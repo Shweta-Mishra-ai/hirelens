@@ -4,6 +4,18 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
 import { teamsAPI, APIError } from "@/lib/api";
+import {
+  Search,
+  LayoutDashboard,
+  Zap,
+  Files,
+  Target,
+  Users,
+  AlertCircle,
+  Copy,
+  User as UserIcon,
+  Check,
+} from "lucide-react";
 import type { Team, TeamMember } from "@/types";
 
 export default function TeamsPage() {
@@ -93,9 +105,9 @@ export default function TeamsPage() {
       if (res.status === "already_invited") {
         setInviteSuccess(`User ${inviteEmail} is already invited.`);
       } else if (res.email_sent) {
-        setInviteSuccess(`✓ Invitation email successfully sent to ${inviteEmail}!`);
+        setInviteSuccess(`Invitation email successfully sent to ${inviteEmail}!`);
       } else {
-        setInviteSuccess(`✓ Invite created for ${inviteEmail}!`);
+        setInviteSuccess(`Invite created for ${inviteEmail}!`);
       }
 
       if (res.invite_url) {
@@ -112,11 +124,11 @@ export default function TeamsPage() {
   };
 
   const NAV_LINKS = [
-    { href: "/dashboard", label: "Dashboard", icon: "📊" },
-    { href: "/analyze", label: "Analyze", icon: "⚡" },
-    { href: "/bulk", label: "Bulk Upload", icon: "🗂️" },
-    { href: "/match", label: "JD Match", icon: "🎯" },
-    { href: "/teams", label: "Teams", icon: "👥" },
+    { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={14} /> },
+    { href: "/analyze", label: "Analyze", icon: <Zap size={14} /> },
+    { href: "/bulk", label: "Bulk Upload", icon: <Files size={14} /> },
+    { href: "/match", label: "JD Match", icon: <Target size={14} /> },
+    { href: "/teams", label: "Teams", icon: <Users size={14} /> },
   ];
 
   return (
@@ -133,8 +145,8 @@ export default function TeamsPage() {
             width: 32, height: 32, borderRadius: 10,
             background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 16, boxShadow: "0 0 16px rgba(99,102,241,0.4)"
-          }}>🔎</div>
+            boxShadow: "0 0 16px rgba(99,102,241,0.4)"
+          }}><Search size={16} color="#FFFFFF" strokeWidth={2.5} /></div>
           <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
         </Link>
 
@@ -146,12 +158,12 @@ export default function TeamsPage() {
               <Link key={link.href} href={link.href} style={{
                 padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
                 color: active ? "#F8FAFC" : "#94A3B8",
-                background: active ? "rgba(99, 102, 241, 0.25)" : "transparent",
+                background: active ? "rgba(99, 102, 241, 0.2)" : "transparent",
                 border: active ? "1px solid rgba(99, 102, 241, 0.4)" : "1px solid transparent",
-                textDecoration: "none", transition: "all 0.15s ease",
-                display: "flex", alignItems: "center", gap: 6,
+                display: "flex", alignItems: "center", gap: 7, textDecoration: "none",
+                transition: "all 0.15s ease",
               }}>
-                <span>{link.icon}</span>
+                <span style={{ display: "inline-flex", alignItems: "center" }}>{link.icon}</span>
                 <span>{link.label}</span>
               </Link>
             );
@@ -187,8 +199,9 @@ export default function TeamsPage() {
         </div>
 
         {error && (
-          <div style={{ padding: "12px 16px", borderRadius: 12, background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)", color: "#EF4444", fontSize: 13, marginBottom: 24 }}>
-            ⚠️ {error}
+          <div style={{ padding: "12px 16px", borderRadius: 12, background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)", color: "#EF4444", fontSize: 13, marginBottom: 24, display: "flex", alignItems: "center", gap: 8 }}>
+            <AlertCircle size={15} style={{ flexShrink: 0 }} />
+            <span>{error}</span>
           </div>
         )}
 
@@ -257,12 +270,18 @@ export default function TeamsPage() {
                       {inviting ? "Inviting…" : "Send Invite"}
                     </button>
                   </form>
-                  {inviteSuccess && <div style={{ fontSize: 13, color: "#10B981", marginTop: 10, fontWeight: 600 }}>{inviteSuccess}</div>}
+                  {inviteSuccess && (
+                    <div style={{ fontSize: 13, color: "#10B981", marginTop: 10, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                      <Check size={14} />
+                      <span>{inviteSuccess}</span>
+                    </div>
+                  )}
                   {inviteUrl && (
                     <div style={{ marginTop: 10, padding: "10px 12px", background: "rgba(30,41,59,0.8)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                       <span style={{ fontSize: 11, color: "#94A3B8", fontFamily: "var(--font-mono), monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{inviteUrl}</span>
-                      <button onClick={() => { navigator.clipboard.writeText(inviteUrl); alert("Invitation link copied to clipboard!"); }} style={{ padding: "4px 10px", borderRadius: 6, background: "rgba(99,102,241,0.2)", border: "1px solid rgba(99,102,241,0.4)", color: "#818CF8", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
-                        📋 Copy Link
+                      <button onClick={() => { navigator.clipboard.writeText(inviteUrl); alert("Invitation link copied to clipboard!"); }} style={{ padding: "4px 10px", borderRadius: 6, background: "rgba(99,102,241,0.2)", border: "1px solid rgba(99,102,241,0.4)", color: "#818CF8", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+                        <Copy size={12} />
+                        <span>Copy Link</span>
                       </button>
                     </div>
                   )}
@@ -274,8 +293,8 @@ export default function TeamsPage() {
                   {members.map(m => (
                     <div key={m.user_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", background: "rgba(15,23,42,0.4)", border: "1px solid rgba(255,255,255,0.05)", borderRadius: 12 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
-                          👤
+                        <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <UserIcon size={14} color="#FFF" />
                         </div>
                         <div>
                           <div style={{ fontSize: 13, fontWeight: 600, color: "#F8FAFC" }}>{m.user_id}</div>

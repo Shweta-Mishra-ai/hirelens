@@ -6,6 +6,24 @@ import { useAuthStore } from "@/store/auth";
 import { reportsAPI, verifyAPI, teamsAPI, collaborationAPI, copilotAPI, APIError } from "@/lib/api";
 import type { Report, Flag, Decision, VerificationResult, Team, ReportComment, VotesResult } from "@/types";
 import { VerdictStamp, verdictFromRecommendation, type VerdictKind } from "@/components/VerdictStamp";
+import {
+  Search,
+  CheckCircle2,
+  AlertTriangle,
+  HelpCircle,
+  Cpu,
+  UserCheck,
+  Star,
+  Check,
+  Mail,
+  Edit2,
+  FileText,
+  Shield,
+  Send,
+  Clock,
+  Minus,
+  X as XIcon,
+} from "lucide-react";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function scoreColor(n: number) {
@@ -25,52 +43,52 @@ function sevInfo(s: string) {
 }
 
 // ── Verify Tab: status → badge maps ─────────────────────────────────────────
-type StatusBadge = { icon: string; label: string; color: string };
+type StatusBadge = { icon: ReactNode; label: string; color: string };
 
 const GITHUB_STATUS_MAP: Record<string, StatusBadge> = {
-  verified:            { icon: "✓", label: "Verified",         color: "#10B981" },
-  partial:             { icon: "◐", label: "Partial Match",    color: "#F59E0B" },
-  no_public_activity:  { icon: "○", label: "No Public Repos",  color: "#94A3B8" },
-  not_found:           { icon: "✕", label: "Account Not Found", color: "#EF4444" },
-  no_username:         { icon: "—", label: "No Username",      color: "#94A3B8" },
-  rate_limited:        { icon: "⚠", label: "Rate Limited",     color: "#F59E0B" },
-  error:               { icon: "⚠", label: "Check Failed",     color: "#F59E0B" },
+  verified:            { icon: <Check size={13} strokeWidth={3} />, label: "Verified",         color: "#10B981" },
+  partial:             { icon: <Clock size={13} />,                 label: "Partial Match",    color: "#F59E0B" },
+  no_public_activity:  { icon: <Minus size={13} />,                 label: "No Public Repos",  color: "#94A3B8" },
+  not_found:           { icon: <XIcon size={13} strokeWidth={3} />, label: "Account Not Found", color: "#EF4444" },
+  no_username:         { icon: <Minus size={13} />,                 label: "No Username",      color: "#94A3B8" },
+  rate_limited:        { icon: <AlertTriangle size={13} />,         label: "Rate Limited",     color: "#F59E0B" },
+  error:               { icon: <AlertTriangle size={13} />,         label: "Check Failed",     color: "#F59E0B" },
 };
 
 const EDU_STATUS_MAP: Record<string, StatusBadge> = {
-  verified:  { icon: "✓", label: "Verified",     color: "#10B981" },
-  not_found: { icon: "?", label: "Not in Registry", color: "#F59E0B" },
-  skipped:   { icon: "—", label: "Skipped",      color: "#94A3B8" },
-  error:     { icon: "⚠", label: "Check Failed", color: "#F59E0B" },
+  verified:  { icon: <Check size={13} strokeWidth={3} />, label: "Verified",        color: "#10B981" },
+  not_found: { icon: <HelpCircle size={13} />,            label: "Not in Registry", color: "#F59E0B" },
+  skipped:   { icon: <Minus size={13} />,                 label: "Skipped",         color: "#94A3B8" },
+  error:     { icon: <AlertTriangle size={13} />,         label: "Check Failed",    color: "#F59E0B" },
 };
 
 const CERT_STATUS_MAP: Record<string, StatusBadge> = {
-  verified_via_link:               { icon: "✓", label: "Verified",         color: "#10B981" },
-  link_reachable_name_not_confirmed: { icon: "◐", label: "Link Works, Name Unconfirmed", color: "#F59E0B" },
-  link_unreachable:                { icon: "✕", label: "Link Unreachable", color: "#EF4444" },
-  no_link_provided:                { icon: "—", label: "No Link on Resume", color: "#94A3B8" },
-  error:                            { icon: "⚠", label: "Check Failed",     color: "#F59E0B" },
+  verified_via_link:                 { icon: <Check size={13} strokeWidth={3} />, label: "Verified",                  color: "#10B981" },
+  link_reachable_name_not_confirmed: { icon: <Clock size={13} />,                 label: "Link Works, Name Unconfirmed", color: "#F59E0B" },
+  link_unreachable:                  { icon: <XIcon size={13} strokeWidth={3} />, label: "Link Unreachable",          color: "#EF4444" },
+  no_link_provided:                  { icon: <Minus size={13} />,                 label: "No Link on Resume",         color: "#94A3B8" },
+  error:                             { icon: <AlertTriangle size={13} />,         label: "Check Failed",              color: "#F59E0B" },
 };
 
 const EXP_STATUS_MAP: Record<string, StatusBadge> = {
-  domain_found:     { icon: "✓", label: "Website Found",     color: "#10B981" },
-  domain_not_found: { icon: "?", label: "Website Not Found", color: "#F59E0B" },
-  skipped:          { icon: "—", label: "Skipped",           color: "#94A3B8" },
+  domain_found:     { icon: <Check size={13} strokeWidth={3} />, label: "Website Found",     color: "#10B981" },
+  domain_not_found: { icon: <HelpCircle size={13} />,            label: "Website Not Found", color: "#F59E0B" },
+  skipped:          { icon: <Minus size={13} />,                 label: "Skipped",           color: "#94A3B8" },
 };
 
 function TrustAssessmentCard({ trust }: { trust: { verdict: string; score: number; reasoning: string[]; evidence_available: boolean } }) {
-  const m: Record<string, { label: string; color: string; bg: string; border: string; icon: string }> = {
-    high_confidence:      { label: "High Confidence — Evidence Supports This Resume", color: "#10B981", bg: "rgba(16,185,129,0.08)",  border: "rgba(16,185,129,0.3)",  icon: "✓" },
-    moderate_confidence:  { label: "Moderate Confidence",                             color: "#F59E0B", bg: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.3)", icon: "◐" },
-    low_confidence:       { label: "Low Confidence — Recommend Closer Review",        color: "#EF4444", bg: "rgba(239,68,68,0.08)",  border: "rgba(239,68,68,0.3)",  icon: "⚠" },
-    insufficient_evidence:{ label: "Insufficient Evidence to Assess",                 color: "#94A3B8", bg: "rgba(148,163,184,0.08)",border: "rgba(148,163,184,0.3)",icon: "?" },
+  const m: Record<string, { label: string; color: string; bg: string; border: string; icon: ReactNode }> = {
+    high_confidence:      { label: "High Confidence — Evidence Supports This Resume", color: "#10B981", bg: "rgba(16,185,129,0.08)",  border: "rgba(16,185,129,0.3)",  icon: <CheckCircle2 size={20} color="#10B981" /> },
+    moderate_confidence:  { label: "Moderate Confidence",                             color: "#F59E0B", bg: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.3)", icon: <Clock size={20} color="#F59E0B" /> },
+    low_confidence:       { label: "Low Confidence — Recommend Closer Review",        color: "#EF4444", bg: "rgba(239,68,68,0.08)",  border: "rgba(239,68,68,0.3)",  icon: <AlertTriangle size={20} color="#EF4444" /> },
+    insufficient_evidence:{ label: "Insufficient Evidence to Assess",                 color: "#94A3B8", bg: "rgba(148,163,184,0.08)",border: "rgba(148,163,184,0.3)",icon: <HelpCircle size={20} color="#94A3B8" /> },
   };
   const style = m[trust.verdict] || m.insufficient_evidence;
 
   return (
     <div style={{ background: style.bg, border: `1.5px solid ${style.border}`, borderRadius: 6, padding: "18px 22px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-        <span style={{ fontSize: 22, color: style.color }}>{style.icon}</span>
+        <span style={{ display: "inline-flex", alignItems: "center" }}>{style.icon}</span>
         <div>
           <div className="font-display" style={{ fontSize: 16, fontWeight: 600, color: style.color }}>{style.label}</div>
           <div style={{ fontSize: 10, color: "#64748B", letterSpacing: 1, textTransform: "uppercase", marginTop: 2 }}>
@@ -102,17 +120,17 @@ function TrustAssessmentCard({ trust }: { trust: { verdict: string; score: numbe
 }
 
 function AIContentCard({ analysis }: { analysis: { likelihood: string; indicators: string[]; human_indicators: string[]; note: string } }) {
-  const m: Record<string, { label: string; color: string; bg: string; border: string; icon: string }> = {
-    low:    { label: "Low AI-Generation Likelihood",    color: "#10B981", bg: "rgba(16,185,129,0.06)",  border: "rgba(16,185,129,0.25)",  icon: "🧑" },
-    medium: { label: "Some AI-Writing Patterns Found",  color: "#F59E0B", bg: "rgba(245,158,11,0.06)",  border: "rgba(245,158,11,0.25)",  icon: "🤔" },
-    high:   { label: "High AI-Generation Likelihood",   color: "#EF4444", bg: "rgba(239,68,68,0.06)",  border: "rgba(239,68,68,0.25)",  icon: "🤖" },
+  const m: Record<string, { label: string; color: string; bg: string; border: string; icon: ReactNode }> = {
+    low:    { label: "Low AI-Generation Likelihood",    color: "#10B981", bg: "rgba(16,185,129,0.06)",  border: "rgba(16,185,129,0.25)",  icon: <UserCheck size={16} color="#10B981" /> },
+    medium: { label: "Some AI-Writing Patterns Found",  color: "#F59E0B", bg: "rgba(245,158,11,0.06)",  border: "rgba(245,158,11,0.25)",  icon: <HelpCircle size={16} color="#F59E0B" /> },
+    high:   { label: "High AI-Generation Likelihood",   color: "#EF4444", bg: "rgba(239,68,68,0.06)",  border: "rgba(239,68,68,0.25)",  icon: <Cpu size={16} color="#EF4444" /> },
   };
   const style = m[analysis.likelihood] || m.low;
 
   return (
     <div style={{ background: style.bg, border: `1px solid ${style.border}`, borderRadius: 12, padding: "16px 20px", marginBottom: 20 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-        <span style={{ fontSize: 18 }}>{style.icon}</span>
+        <span style={{ display: "inline-flex", alignItems: "center" }}>{style.icon}</span>
         <span style={{ fontSize: 12, fontWeight: 800, color: style.color, letterSpacing: 1, textTransform: "uppercase" }}>{style.label}</span>
       </div>
 
@@ -168,10 +186,10 @@ function VerifyRow({
   detail?: string;
   link?: string;
 }) {
-  const b = statusMap[status] || { icon: "?", label: status, color: "#94A3B8" };
+  const b = statusMap[status] || { icon: <HelpCircle size={13} />, label: status, color: "#94A3B8" };
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 0", borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
-      <span style={{ fontSize: 13, color: b.color, fontWeight: 800, minWidth: 16 }}>{b.icon}</span>
+      <span style={{ color: b.color, minWidth: 16, display: "inline-flex", alignItems: "center", marginTop: 2 }}>{b.icon}</span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, color: "#F8FAFC", fontWeight: 600 }}>{label}</div>
         {detail && <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 2, lineHeight: 1.5 }}>{detail}</div>}
@@ -186,22 +204,17 @@ function VerifyRow({
   );
 }
 
-function GithubVerifyBlock({ g }: { g: { status: string; username: string | null; profile_url?: string; public_repos?: number; top_languages?: string[]; verified_skills?: string[]; unverified_skills?: string[]; note?: string } }) {
-  const b = GITHUB_STATUS_MAP[g.status] || { icon: "?", label: g.status, color: "#94A3B8" };
+function GithubVerifyBlock({ g }: { g: VerificationResult["github"] }) {
+  if (!g) return null;
   return (
-    <div style={{ padding: "10px 0" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 13, color: b.color, fontWeight: 800 }}>{b.icon}</span>
-          {g.username ? (
-            <a href={g.profile_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: "#3B82F6", textDecoration: "none", fontWeight: 700 }}>
-              @{g.username} ↗
-            </a>
-          ) : (
-            <span style={{ fontSize: 13, color: "#94A3B8" }}>No GitHub username</span>
-          )}
-        </div>
-        <span style={{ fontSize: 11, fontWeight: 700, color: b.color }}>{b.label}</span>
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0 6px" }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#F8FAFC" }}>
+          {g.username ? `@${g.username}` : "No username detected"}
+        </span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: GITHUB_STATUS_MAP[g.status]?.color || "#94A3B8" }}>
+          {GITHUB_STATUS_MAP[g.status]?.label || g.status}
+        </span>
       </div>
 
       {typeof g.public_repos === "number" && (
@@ -220,7 +233,10 @@ function GithubVerifyBlock({ g }: { g: { status: string; username: string | null
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 8 }}>
           {!!g.verified_skills?.length && (
             <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#10B981", marginBottom: 4 }}>✓ VERIFIED</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#10B981", marginBottom: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                <Check size={11} strokeWidth={3} />
+                <span>VERIFIED</span>
+              </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
                 {g.verified_skills.map((s) => <span key={s} style={{ fontSize: 10, color: "#A7F3D0", background: "rgba(16,185,129,0.12)", padding: "2px 8px", borderRadius: 999 }}>{s}</span>)}
               </div>
@@ -324,7 +340,7 @@ function FlagCard({ flag }: { flag: Flag }) {
               </span>
             </div>
           )}
-          {flag.action && <div style={{ fontSize: 12, color: "#3B82F6" }}>✦ Action: {flag.action}</div>}
+          {flag.action && <div style={{ fontSize: 12, color: "#3B82F6", fontWeight: 600 }}>Action: {flag.action}</div>}
         </div>
       )}
     </div>
@@ -671,7 +687,7 @@ export default function ReportPage() {
 
   const TABS = [
     { id: "overview",   label: "Overview" },
-    { id: "copilot",    label: "🎙️ Interview Co-Pilot" },
+    { id: "copilot",    label: "Interview Co-Pilot" },
     { id: "flags",      label: `Flags (${flags.length})` },
     { id: "skills",     label: "Skills" },
     { id: "timeline",   label: "Timeline" },
@@ -698,8 +714,8 @@ export default function ReportPage() {
             width: 32, height: 32, borderRadius: 10,
             background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 16, boxShadow: "0 0 16px rgba(99,102,241,0.4)"
-          }}>🔎</div>
+            boxShadow: "0 0 16px rgba(99,102,241,0.4)"
+          }}><Search size={16} color="#FFFFFF" strokeWidth={2.5} /></div>
           <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
         </Link>
         <span style={{ color: "rgba(255,255,255,0.15)" }}>|</span>
@@ -733,9 +749,10 @@ export default function ReportPage() {
           </div>
 
           {cred.recommendation_adjusted_by_verification && (
-            <div style={{ padding: "12px 28px", background: "rgba(239, 68, 68, 0.1)", borderBottom: "1px solid rgba(239, 68, 68, 0.25)" }}>
+            <div style={{ padding: "12px 28px", background: "rgba(239, 68, 68, 0.1)", borderBottom: "1px solid rgba(239, 68, 68, 0.25)", display: "flex", alignItems: "center", gap: 8 }}>
+              <AlertTriangle size={14} color="#EF4444" style={{ flexShrink: 0 }} />
               <span style={{ fontSize: 12, color: "#EF4444", fontWeight: 700 }}>
-                ⚠️ Recommendation adjusted from &quot;{cred.ai_recommendation}&quot; after verification —
+                Recommendation adjusted from &quot;{cred.ai_recommendation}&quot; after verification —
               </span>
               <span style={{ fontSize: 12, color: "#F8FAFC" }}> {cred.recommendation_adjustment_reason}</span>
             </div>
@@ -765,8 +782,9 @@ export default function ReportPage() {
                 {(report.skills?.all_claimed || []).slice(0, 8).map(s => {
                   const v = (report.skills?.verified_by_evidence || []).includes(s);
                   return (
-                    <span key={s} style={{ padding: "4px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600, color: v ? "#10B981" : "#F59E0B", background: v ? "rgba(16,185,129,0.15)" : "rgba(245,158,11,0.15)", border: `1px solid ${v ? "rgba(16,185,129,0.3)" : "rgba(245,158,11,0.3)"}` }}>
-                      {v ? "✓" : "?"} {s}
+                    <span key={s} style={{ padding: "4px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600, color: v ? "#10B981" : "#F59E0B", background: v ? "rgba(16,185,129,0.15)" : "rgba(245,158,11,0.15)", border: `1px solid ${v ? "rgba(16,185,129,0.3)" : "rgba(245,158,11,0.3)"}`, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                      {v ? <Check size={11} strokeWidth={3} /> : <span style={{ fontWeight: 800 }}>?</span>}
+                      <span>{s}</span>
                     </span>
                   );
                 })}
@@ -836,7 +854,7 @@ export default function ReportPage() {
                   <div style={{ background: "rgba(99, 102, 241, 0.06)", border: "1px solid rgba(99, 102, 241, 0.25)", borderRadius: 16, padding: "20px 24px", marginBottom: 20 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                       <div style={{ fontSize: 11, color: "#818CF8", fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase" }}>
-                        🚀 Predictive Career Growth & Talent Velocity
+                        Predictive Career Growth & Talent Velocity
                       </div>
                       <span style={{ padding: "4px 12px", borderRadius: 99, background: "rgba(99, 102, 241, 0.2)", border: "1px solid rgba(99, 102, 241, 0.4)", color: "#818CF8", fontSize: 11, fontWeight: 700 }}>
                         {report.talent_velocity.trajectory_stage}
@@ -874,8 +892,8 @@ export default function ReportPage() {
                   <div style={{ background: "rgba(16, 185, 129, 0.08)", border: "1px solid rgba(16, 185, 129, 0.25)", borderRadius: 16, padding: "20px 24px" }}>
                     <div style={{ fontSize: 11, color: "#10B981", fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 12 }}>Positive Signals</div>
                     {report.positive_signals!.map((p, i) => (
-                      <div key={i} style={{ display: "flex", gap: 10, marginBottom: 8 }}>
-                        <span style={{ color: "#10B981", flexShrink: 0, fontWeight: 800 }}>✓</span>
+                      <div key={i} style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "flex-start" }}>
+                        <Check size={14} color="#10B981" strokeWidth={3} style={{ flexShrink: 0, marginTop: 2 }} />
                         <div style={{ fontSize: 13, color: "#CBD5E1" }}><strong style={{ color: "#F8FAFC" }}>{p.title}:</strong> {p.description}</div>
                       </div>
                     ))}
@@ -889,7 +907,7 @@ export default function ReportPage() {
               <div className="fu">
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
                   <div>
-                    <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#F8FAFC" }}>🎙️ Live Interview Co-Pilot & Candidate Scorecard</h3>
+                    <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#F8FAFC" }}>Live Interview Co-Pilot & Candidate Scorecard</h3>
                     <p style={{ margin: "4px 0 0", fontSize: 13, color: "#94A3B8" }}>
                       Rate candidate competency, check off probe questions during live interviews, and store structured feedback.
                     </p>
@@ -904,7 +922,7 @@ export default function ReportPage() {
                       boxShadow: "0 4px 14px rgba(99,102,241,0.3)", display: "flex", alignItems: "center", gap: 6
                     }}
                   >
-                    {copilotSaving ? "Saving…" : copilotSuccess ? "✓ Scorecard Saved" : "Save Evaluation"}
+                    {copilotSaving ? "Saving…" : copilotSuccess ? "Scorecard Saved" : "Save Evaluation"}
                   </button>
                 </div>
 
@@ -944,10 +962,12 @@ export default function ReportPage() {
                                     flex: 1, padding: "6px 0", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
                                     border: active ? "1px solid #6366F1" : "1px solid rgba(255, 255, 255, 0.08)",
                                     background: active ? "rgba(99, 102, 241, 0.3)" : "rgba(15, 23, 42, 0.6)",
-                                    color: active ? "#818CF8" : "#94A3B8", transition: "all 0.15s"
+                                    color: active ? "#818CF8" : "#94A3B8", transition: "all 0.15s",
+                                    display: "flex", alignItems: "center", justifyContent: "center", gap: 4
                                   }}
                                 >
-                                  ★ {star}
+                                  <Star size={11} fill={active ? "#818CF8" : "none"} strokeWidth={2} />
+                                  <span>{star}</span>
                                 </button>
                               );
                             })}
@@ -1112,8 +1132,10 @@ export default function ReportPage() {
               <div className="fu">
                 {flags.length === 0 ? (
                   <div style={{ textAlign: "center", padding: 40 }}>
-                    <div style={{ fontSize: 36, marginBottom: 12 }}>✅</div>
-                    <div style={{ fontSize: 14, color: "#10B981" }}>No significant risk flags detected</div>
+                    <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+                      <CheckCircle2 size={36} color="#10B981" />
+                    </div>
+                    <div style={{ fontSize: 14, color: "#10B981", fontWeight: 700 }}>No significant risk flags detected</div>
                     <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 6 }}>Resume appears consistent and well-evidenced.</div>
                   </div>
                 ) : (
@@ -1133,11 +1155,15 @@ export default function ReportPage() {
             {tab === "skills" && (
               <div className="fu">
                 {report.skills?.primary_domain && (
-                  <div style={{ marginBottom: 16, padding: "12px 16px", background: "rgba(59,130,246,.1)", border: "1px solid rgba(59,130,246,.25)", borderRadius: 10 }}>
-                    <span style={{ fontSize: 12, color: "#3B82F6" }}>Primary domain: </span>
-                    <strong style={{ fontSize: 12, color: "#F8FAFC" }}>{report.skills.primary_domain}</strong>
+                  <div style={{ marginBottom: 16, padding: "12px 16px", background: "rgba(59,130,246,.1)", border: "1px solid rgba(59,130,246,.25)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div>
+                      <span style={{ fontSize: 12, color: "#3B82F6" }}>Primary domain: </span>
+                      <strong style={{ fontSize: 12, color: "#F8FAFC" }}>{report.skills.primary_domain}</strong>
+                    </div>
                     {report.skills.keyword_stuffing_risk && report.skills.keyword_stuffing_risk !== "none" && (
-                      <span style={{ marginLeft: 14, fontSize: 11, color: "#F59E0B" }}>⚠ Keyword stuffing risk: {report.skills.keyword_stuffing_risk}</span>
+                      <span style={{ fontSize: 11, color: "#F59E0B", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        <AlertTriangle size={12} color="#F59E0B" /> Keyword stuffing risk: {report.skills.keyword_stuffing_risk}
+                      </span>
                     )}
                   </div>
                 )}
@@ -1147,13 +1173,14 @@ export default function ReportPage() {
                     {(report.skills?.all_claimed || []).map(s => {
                       const v = (report.skills?.verified_by_evidence || []).includes(s);
                       return (
-                        <span key={s} style={{ padding: "6px 13px", borderRadius: 9, fontSize: 12, fontWeight: 600, color: v ? "#10B981" : "#F59E0B", background: v ? "rgba(16,185,129,.1)" : "rgba(245,158,11,.1)", border: `1px solid ${v ? "#059669" : "#D97706"}33` }}>
-                          {v ? "✓" : "?"} {s}
+                        <span key={s} style={{ padding: "6px 13px", borderRadius: 9, fontSize: 12, fontWeight: 600, color: v ? "#10B981" : "#F59E0B", background: v ? "rgba(16,185,129,.1)" : "rgba(245,158,11,.1)", border: `1px solid ${v ? "#059669" : "#D97706"}33`, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          {v ? <Check size={12} strokeWidth={3} /> : <span style={{ fontWeight: 800 }}>?</span>}
+                          <span>{s}</span>
                         </span>
                       );
                     })}
                   </div>
-                  <div style={{ fontSize: 11, color: "#64748B", marginTop: 10 }}>✓ = found in job descriptions or projects · ? = listed only, not evidenced in work history</div>
+                  <div style={{ fontSize: 11, color: "#64748B", marginTop: 10 }}>Evidenced in work history: confirmed · Unconfirmed: listed only in summary</div>
                 </div>
                 {(report.skills?.domain_spread_concern) && (
                   <div style={{ padding: "14px 16px", background: "rgba(245,158,11,.08)", border: "1px solid rgba(245,158,11,.2)", borderRadius: 10 }}>
@@ -1190,7 +1217,11 @@ export default function ReportPage() {
                         <div style={{ fontSize: 13, fontWeight: 600, color: "#F8FAFC" }}>{exp.role}</div>
                         <div style={{ fontSize: 12, color: exp.is_verifiable !== false ? "#3B82F6" : "#F59E0B" }}>{exp.company}</div>
                         <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 2 }}>{exp.period}</div>
-                        {exp.is_verifiable === false && <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 2 }}>⚠ Company not easily verifiable</div>}
+                        {exp.is_verifiable === false && (
+                          <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
+                            <AlertTriangle size={11} color="#F59E0B" /> Company not easily verifiable
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1203,7 +1234,11 @@ export default function ReportPage() {
                         <div style={{ fontSize: 13, fontWeight: 600, color: "#F8FAFC" }}>{e.degree}</div>
                         <div style={{ fontSize: 12, color: e.is_recognized_institution !== false ? "#3B82F6" : "#F59E0B" }}>{e.institution}</div>
                         <div style={{ fontSize: 11, color: "#94A3B8" }}>{e.period}</div>
-                        {e.concern && <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 4 }}>⚠ {e.concern}</div>}
+                        {e.concern && (
+                          <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                            <AlertTriangle size={11} color="#F59E0B" /> {e.concern}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1256,7 +1291,9 @@ export default function ReportPage() {
 
                 {!verification && !verifyLoading && !verifyError && (
                   <div style={{ padding: 40, textAlign: "center", border: "1px dashed rgba(255, 255, 255, 0.08)", borderRadius: 14 }}>
-                    <div style={{ fontSize: 28, marginBottom: 10 }}>🔍</div>
+                    <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+                      <Search size={28} color="#64748B" />
+                    </div>
                     <div style={{ fontSize: 13, color: "#94A3B8" }}>No verification has been run yet for this report.</div>
                   </div>
                 )}
@@ -1272,12 +1309,12 @@ export default function ReportPage() {
                     )}
 
                     {/* GitHub */}
-                    <VerifyCard title="🐙 GitHub Skills">
+                    <VerifyCard title="GitHub Skills">
                       <GithubVerifyBlock g={verification.github} />
                     </VerifyCard>
 
                     {/* Education */}
-                    <VerifyCard title="🎓 Education">
+                    <VerifyCard title="Education">
                       {verification.education.length === 0 ? (
                         <EmptyNote text="No education entries were found on this resume to check." />
                       ) : (
@@ -1294,7 +1331,7 @@ export default function ReportPage() {
                     </VerifyCard>
 
                     {/* Certifications */}
-                    <VerifyCard title="📜 Certifications">
+                    <VerifyCard title="Certifications">
                       {verification.certifications.length === 0 ? (
                         <EmptyNote text="No certifications were found on this resume to check." />
                       ) : (
@@ -1312,7 +1349,7 @@ export default function ReportPage() {
                     </VerifyCard>
 
                     {/* Employer / Experience */}
-                    <VerifyCard title="🏢 Employers">
+                    <VerifyCard title="Employers">
                       {verification.experience.length === 0 ? (
                         <EmptyNote text="No work experience entries were found on this resume to check." />
                       ) : (
@@ -1349,7 +1386,10 @@ export default function ReportPage() {
                       No teams yet. <a href="/teams" style={{ color: "#3B82F6" }}>Create one</a> to share this report and collaborate.
                     </div>
                   ) : report.team_id ? (
-                    <div style={{ fontSize: 12, color: "#10B981" }}>✓ Shared with your team — teammates can see, comment, and vote on this report.</div>
+                    <div style={{ fontSize: 12, color: "#10B981", display: "flex", alignItems: "center", gap: 6 }}>
+                      <Check size={13} strokeWidth={3} />
+                      <span>Shared with your team — teammates can see, comment, and vote on this report.</span>
+                    </div>
                   ) : (
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {myTeams.map((t) => (
@@ -1446,7 +1486,7 @@ export default function ReportPage() {
                       <div>
                         <div style={{ fontSize: 13, color: "#F8FAFC", lineHeight: 1.65, fontWeight: 500, marginBottom: q.rationale ? 6 : 0 }}>{q.question}</div>
                         {q.rationale && <div style={{ fontSize: 11, color: "#94A3B8", lineHeight: 1.5 }}>↳ {q.rationale}</div>}
-                        {q.targets_flag && <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 3 }}>⚑ Targets: {q.targets_flag}</div>}
+                        {q.targets_flag && <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 3 }}>Targets: {q.targets_flag}</div>}
                       </div>
                     </div>
                   ))}
@@ -1486,7 +1526,12 @@ export default function ReportPage() {
                 {d.label}
               </button>
             ))}
-            {decision && <div style={{ marginLeft: "auto", alignSelf: "center", fontSize: 12, color: "#10B981" }}>✓ Recorded</div>}
+            {decision && (
+              <div style={{ marginLeft: "auto", alignSelf: "center", fontSize: 12, color: "#10B981", display: "flex", alignItems: "center", gap: 4 }}>
+                <Check size={14} strokeWidth={3} />
+                <span>Recorded</span>
+              </div>
+            )}
           </div>
 
           {/* Notify Candidate — a deliberate, separate step from recording the
@@ -1502,8 +1547,10 @@ export default function ReportPage() {
                     fontFamily: "inherit", fontSize: 12, fontWeight: 600,
                     color: "#0F172A", background: notifyState === "sending" ? "#64748B" : "#F59E0B",
                     border: "none", opacity: notifyState === "sent" ? 0.6 : 1,
+                    display: "flex", alignItems: "center", gap: 6
                   }}>
-                  {notifyState === "sending" ? "Sending…" : "✉ Notify Candidate"}
+                  <Mail size={14} />
+                  <span>{notifyState === "sending" ? "Sending…" : "Notify Candidate"}</span>
                 </button>
                 <button
                   onClick={openNotifyEditor}
@@ -1512,8 +1559,9 @@ export default function ReportPage() {
                   style={{
                     padding: "9px 12px", borderRadius: 9, cursor: "pointer", fontFamily: "inherit",
                     fontSize: 13, color: "#F59E0B", background: "transparent", border: "1.5px solid rgba(255, 255, 255, 0.08)",
+                    display: "flex", alignItems: "center", justifyContent: "center"
                   }}>
-                  {notifyDraftLoading ? "…" : "✎"}
+                  {notifyDraftLoading ? "…" : <Edit2 size={13} />}
                 </button>
                 {notifyMessage && (
                   <div style={{ fontSize: 12, color: notifyState === "error" ? "#EF4444" : "#10B981" }}>

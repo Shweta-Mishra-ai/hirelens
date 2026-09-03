@@ -3,6 +3,21 @@ import { useEffect, useCallback, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
+import {
+  Search,
+  LayoutDashboard,
+  Zap,
+  Files,
+  Target,
+  Users,
+  FileText,
+  BarChart3,
+  AlertTriangle,
+  MessageSquare,
+  ShieldCheck,
+  Check,
+  AlertCircle,
+} from "lucide-react";
 import { useAnalysis } from "@/hooks/useAnalysis";
 
 const STAGES = [
@@ -63,11 +78,11 @@ export default function AnalyzePage() {
   const progress = state.phase === "analyzing" ? state.job.progress : state.phase === "complete" ? 100 : 0;
 
   const NAV_LINKS = [
-    { href: "/dashboard", label: "Dashboard", icon: "📊" },
-    { href: "/analyze", label: "Analyze", icon: "⚡" },
-    { href: "/bulk", label: "Bulk Upload", icon: "🗂️" },
-    { href: "/match", label: "JD Match", icon: "🎯" },
-    { href: "/teams", label: "Teams", icon: "👥" },
+    { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={14} /> },
+    { href: "/analyze", label: "Analyze", icon: <Zap size={14} /> },
+    { href: "/bulk", label: "Bulk Upload", icon: <Files size={14} /> },
+    { href: "/match", label: "JD Match", icon: <Target size={14} /> },
+    { href: "/teams", label: "Teams", icon: <Users size={14} /> },
   ];
 
   return (
@@ -84,8 +99,8 @@ export default function AnalyzePage() {
             width: 32, height: 32, borderRadius: 10,
             background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 16, boxShadow: "0 0 16px rgba(99,102,241,0.4)"
-          }}>🔎</div>
+            boxShadow: "0 0 16px rgba(99,102,241,0.4)"
+          }}><Search size={16} color="#FFFFFF" strokeWidth={2.5} /></div>
           <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
         </Link>
 
@@ -97,12 +112,12 @@ export default function AnalyzePage() {
               <Link key={link.href} href={link.href} style={{
                 padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
                 color: active ? "#F8FAFC" : "#94A3B8",
-                background: active ? "rgba(99, 102, 241, 0.25)" : "transparent",
+                background: active ? "rgba(99, 102, 241, 0.2)" : "transparent",
                 border: active ? "1px solid rgba(99, 102, 241, 0.4)" : "1px solid transparent",
-                textDecoration: "none", transition: "all 0.15s ease",
-                display: "flex", alignItems: "center", gap: 6,
+                display: "flex", alignItems: "center", gap: 7, textDecoration: "none",
+                transition: "all 0.15s ease",
               }}>
-                <span>{link.icon}</span>
+                <span style={{ display: "inline-flex", alignItems: "center" }}>{link.icon}</span>
                 <span>{link.label}</span>
               </Link>
             );
@@ -172,9 +187,9 @@ export default function AnalyzePage() {
                 width: 76, height: 76, borderRadius: 24,
                 background: "linear-gradient(135deg, rgba(99,102,241,0.2), rgba(139,92,246,0.2))",
                 border: "1.5px solid rgba(99,102,241,0.4)",
-                display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32,
+                display: "flex", alignItems: "center", justifyContent: "center",
                 boxShadow: "0 0 24px rgba(99,102,241,0.25)"
-              }}>📄</div>
+              }}><FileText size={32} color="#818CF8" /></div>
 
               <div>
                 <div style={{ fontSize: 18, fontWeight: 700, color: "#F8FAFC", marginBottom: 6 }}>Drop resume file here</div>
@@ -194,24 +209,25 @@ export default function AnalyzePage() {
             {/* Feature Cards Grid */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 24 }}>
               {[
-                ["⚡", "Deep Decision Engine", "Frontier-class semantic intelligence"],
-                ["📊", "Credibility Score", "Evidence-linked 0–100 rating"],
-                ["🚩", "Risk Flags", "Cites exact candidate text"],
-                ["💬", "Custom Interview Qs", "Targeted probe questions"],
-              ].map(([icon, title, desc]) => (
-                <div key={title as string} style={{
+                { icon: <Zap size={18} color="#818CF8" />, title: "Deep Decision Engine", desc: "Frontier-class semantic intelligence" },
+                { icon: <BarChart3 size={18} color="#3B82F6" />, title: "Credibility Score", desc: "Evidence-linked 0–100 rating" },
+                { icon: <AlertTriangle size={18} color="#EF4444" />, title: "Risk Flags", desc: "Cites exact candidate text" },
+                { icon: <MessageSquare size={18} color="#10B981" />, title: "Custom Interview Qs", desc: "Targeted probe questions" },
+              ].map(({ icon, title, desc }) => (
+                <div key={title} style={{
                   padding: "16px 18px", background: "rgba(30, 41, 59, 0.6)",
                   border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 16
                 }}>
-                  <div style={{ fontSize: 20, marginBottom: 6 }}>{icon}</div>
+                  <div style={{ marginBottom: 8 }}>{icon}</div>
                   <div style={{ fontSize: 13, fontWeight: 700, color: "#F8FAFC", marginBottom: 2 }}>{title}</div>
                   <div style={{ fontSize: 12, color: "#94A3B8" }}>{desc}</div>
                 </div>
               ))}
             </div>
 
-            <div style={{ marginTop: 20, padding: "14px 18px", background: "rgba(30, 41, 59, 0.4)", border: "1px solid rgba(255, 255, 255, 0.06)", borderRadius: 14, fontSize: 12, color: "#94A3B8", lineHeight: 1.6 }}>
-              🛡️ <strong style={{ color: "#CBD5E1" }}>Privacy & Compliance Notice:</strong> Resume data is processed securely and protected under enterprise encryption standards.
+            <div style={{ marginTop: 20, padding: "14px 18px", background: "rgba(30, 41, 59, 0.4)", border: "1px solid rgba(255, 255, 255, 0.06)", borderRadius: 14, fontSize: 12, color: "#94A3B8", lineHeight: 1.6, display: "flex", alignItems: "center", gap: 10 }}>
+              <ShieldCheck size={16} color="#10B981" style={{ flexShrink: 0 }} />
+              <span><strong style={{ color: "#CBD5E1" }}>Privacy & Compliance Notice:</strong> Resume data is processed securely and protected under enterprise encryption standards.</span>
             </div>
           </div>
         )}
@@ -265,7 +281,7 @@ export default function AnalyzePage() {
                         border: `1.5px solid ${done ? "#10B981" : active ? "#6366F1" : "rgba(255,255,255,0.1)"}`,
                         fontSize: 12, transition: "all 0.3s",
                       }}>
-                        {done ? <span style={{ color: "#10B981", fontWeight: 800 }}>✓</span>
+                        {done ? <Check size={14} color="#10B981" strokeWidth={3} />
                                : <span style={{ color: active ? "#818CF8" : "#64748B" }}>{i + 1}</span>}
                       </div>
                       <span style={{ fontSize: 13, color: done ? "#10B981" : active ? "#F8FAFC" : "#64748B", fontWeight: active ? 600 : 400 }}>
@@ -288,7 +304,9 @@ export default function AnalyzePage() {
         {state.phase === "error" && (
           <div className="animate-fade-up" style={{ textAlign: "center" }}>
             <div style={{ background: "rgba(30, 41, 59, 0.7)", border: "1px solid rgba(239, 68, 68, 0.4)", borderRadius: 24, padding: "48px 36px" }}>
-              <div style={{ fontSize: 44, marginBottom: 16 }}>⚠️</div>
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
+                <AlertCircle size={44} color="#EF4444" />
+              </div>
               <div style={{ fontSize: 18, fontWeight: 700, color: "#F8FAFC", marginBottom: 10 }}>Analysis Failed</div>
               <div style={{ fontSize: 14, color: "#94A3B8", lineHeight: 1.6, marginBottom: 28 }}>{state.message}</div>
               <button onClick={reset} style={{ padding: "12px 32px", borderRadius: 12, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #6366F1, #4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 14 }}>
@@ -297,6 +315,7 @@ export default function AnalyzePage() {
             </div>
           </div>
         )}
+
 
       </div>
     </div>
