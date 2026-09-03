@@ -260,7 +260,7 @@ export default function TeamsPage() {
                   {inviteSuccess && <div style={{ fontSize: 13, color: "#10B981", marginTop: 10, fontWeight: 600 }}>{inviteSuccess}</div>}
                   {inviteUrl && (
                     <div style={{ marginTop: 10, padding: "10px 12px", background: "rgba(30,41,59,0.8)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                      <span style={{ fontSize: 11, color: "#94A3B8", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{inviteUrl}</span>
+                      <span style={{ fontSize: 11, color: "#94A3B8", fontFamily: "var(--font-mono), monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{inviteUrl}</span>
                       <button onClick={() => { navigator.clipboard.writeText(inviteUrl); alert("Invitation link copied to clipboard!"); }} style={{ padding: "4px 10px", borderRadius: 6, background: "rgba(99,102,241,0.2)", border: "1px solid rgba(99,102,241,0.4)", color: "#818CF8", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
                         📋 Copy Link
                       </button>

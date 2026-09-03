@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
@@ -7,7 +7,14 @@ import { authAPI, APIError } from "@/lib/api";
 
 export default function SignupPage() {
   const router   = useRouter();
-  const setAuth  = useAuthStore((s) => s.setAuth);
+  const { token, hasHydrated, setAuth } = useAuthStore();
+
+  useEffect(() => {
+    if (hasHydrated && token) {
+      router.replace("/dashboard");
+    }
+  }, [hasHydrated, token, router]);
+
 
   const [fullName, setFullName] = useState("");
   const [company, setCompany]   = useState("");

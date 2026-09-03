@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback, type ReactNode } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
-import { reportsAPI, verifyAPI, teamsAPI, collaborationAPI, APIError } from "@/lib/api";
+import { reportsAPI, verifyAPI, teamsAPI, collaborationAPI, copilotAPI, APIError } from "@/lib/api";
 import type { Report, Flag, Decision, VerificationResult, Team, ReportComment, VotesResult } from "@/types";
 import { VerdictStamp, verdictFromRecommendation, type VerdictKind } from "@/components/VerdictStamp";
 
@@ -17,9 +17,9 @@ function scoreColor(n: number) {
 
 function sevInfo(s: string) {
   const m: Record<string, { label: string; color: string; bg: string; border: string }> = {
-    high:   { label: "HIGH", color: "#D46A4C", bg: "rgba(177,66,38,.08)",  border: "#B14226" },
-    medium: { label: "MED",  color: "#D4AC5C", bg: "rgba(176,137,49,.08)",  border: "#B08931" },
-    low:    { label: "LOW",  color: "#6E90AC", bg: "rgba(62,92,118,.08)",  border: "#3E5C76" },
+    high:   { label: "HIGH", color: "#EF4444", bg: "rgba(239,68,68,.08)",  border: "#DC2626" },
+    medium: { label: "MED",  color: "#F59E0B", bg: "rgba(245,158,11,.08)",  border: "#D97706" },
+    low:    { label: "LOW",  color: "#3B82F6", bg: "rgba(59,130,246,.08)",  border: "#2563EB" },
   };
   return m[s] || m.low;
 }
@@ -28,42 +28,42 @@ function sevInfo(s: string) {
 type StatusBadge = { icon: string; label: string; color: string };
 
 const GITHUB_STATUS_MAP: Record<string, StatusBadge> = {
-  verified:            { icon: "✓", label: "Verified",         color: "#6E9974" },
-  partial:             { icon: "◐", label: "Partial Match",    color: "#D4AC5C" },
-  no_public_activity:  { icon: "○", label: "No Public Repos",  color: "#9C9483" },
-  not_found:           { icon: "✕", label: "Account Not Found", color: "#D46A4C" },
-  no_username:         { icon: "—", label: "No Username",      color: "#9C9483" },
-  rate_limited:        { icon: "⚠", label: "Rate Limited",     color: "#D4AC5C" },
-  error:               { icon: "⚠", label: "Check Failed",     color: "#D4AC5C" },
+  verified:            { icon: "✓", label: "Verified",         color: "#10B981" },
+  partial:             { icon: "◐", label: "Partial Match",    color: "#F59E0B" },
+  no_public_activity:  { icon: "○", label: "No Public Repos",  color: "#94A3B8" },
+  not_found:           { icon: "✕", label: "Account Not Found", color: "#EF4444" },
+  no_username:         { icon: "—", label: "No Username",      color: "#94A3B8" },
+  rate_limited:        { icon: "⚠", label: "Rate Limited",     color: "#F59E0B" },
+  error:               { icon: "⚠", label: "Check Failed",     color: "#F59E0B" },
 };
 
 const EDU_STATUS_MAP: Record<string, StatusBadge> = {
-  verified:  { icon: "✓", label: "Verified",     color: "#6E9974" },
-  not_found: { icon: "?", label: "Not in Registry", color: "#D4AC5C" },
-  skipped:   { icon: "—", label: "Skipped",      color: "#9C9483" },
-  error:     { icon: "⚠", label: "Check Failed", color: "#D4AC5C" },
+  verified:  { icon: "✓", label: "Verified",     color: "#10B981" },
+  not_found: { icon: "?", label: "Not in Registry", color: "#F59E0B" },
+  skipped:   { icon: "—", label: "Skipped",      color: "#94A3B8" },
+  error:     { icon: "⚠", label: "Check Failed", color: "#F59E0B" },
 };
 
 const CERT_STATUS_MAP: Record<string, StatusBadge> = {
-  verified_via_link:               { icon: "✓", label: "Verified",         color: "#6E9974" },
-  link_reachable_name_not_confirmed: { icon: "◐", label: "Link Works, Name Unconfirmed", color: "#D4AC5C" },
-  link_unreachable:                { icon: "✕", label: "Link Unreachable", color: "#D46A4C" },
-  no_link_provided:                { icon: "—", label: "No Link on Resume", color: "#9C9483" },
-  error:                            { icon: "⚠", label: "Check Failed",     color: "#D4AC5C" },
+  verified_via_link:               { icon: "✓", label: "Verified",         color: "#10B981" },
+  link_reachable_name_not_confirmed: { icon: "◐", label: "Link Works, Name Unconfirmed", color: "#F59E0B" },
+  link_unreachable:                { icon: "✕", label: "Link Unreachable", color: "#EF4444" },
+  no_link_provided:                { icon: "—", label: "No Link on Resume", color: "#94A3B8" },
+  error:                            { icon: "⚠", label: "Check Failed",     color: "#F59E0B" },
 };
 
 const EXP_STATUS_MAP: Record<string, StatusBadge> = {
-  domain_found:     { icon: "✓", label: "Website Found",     color: "#6E9974" },
-  domain_not_found: { icon: "?", label: "Website Not Found", color: "#D4AC5C" },
-  skipped:          { icon: "—", label: "Skipped",           color: "#9C9483" },
+  domain_found:     { icon: "✓", label: "Website Found",     color: "#10B981" },
+  domain_not_found: { icon: "?", label: "Website Not Found", color: "#F59E0B" },
+  skipped:          { icon: "—", label: "Skipped",           color: "#94A3B8" },
 };
 
 function TrustAssessmentCard({ trust }: { trust: { verdict: string; score: number; reasoning: string[]; evidence_available: boolean } }) {
   const m: Record<string, { label: string; color: string; bg: string; border: string; icon: string }> = {
-    high_confidence:      { label: "High Confidence — Evidence Supports This Resume", color: "#6E9974", bg: "rgba(75,112,81,0.08)",  border: "rgba(75,112,81,0.3)",  icon: "✓" },
-    moderate_confidence:  { label: "Moderate Confidence",                             color: "#D4AC5C", bg: "rgba(176,137,49,0.08)", border: "rgba(176,137,49,0.3)", icon: "◐" },
-    low_confidence:       { label: "Low Confidence — Recommend Closer Review",        color: "#D46A4C", bg: "rgba(177,66,38,0.08)",  border: "rgba(177,66,38,0.3)",  icon: "⚠" },
-    insufficient_evidence:{ label: "Insufficient Evidence to Assess",                 color: "#9C9483", bg: "rgba(156,148,131,0.08)",border: "rgba(156,148,131,0.3)",icon: "?" },
+    high_confidence:      { label: "High Confidence — Evidence Supports This Resume", color: "#10B981", bg: "rgba(16,185,129,0.08)",  border: "rgba(16,185,129,0.3)",  icon: "✓" },
+    moderate_confidence:  { label: "Moderate Confidence",                             color: "#F59E0B", bg: "rgba(245,158,11,0.08)", border: "rgba(245,158,11,0.3)", icon: "◐" },
+    low_confidence:       { label: "Low Confidence — Recommend Closer Review",        color: "#EF4444", bg: "rgba(239,68,68,0.08)",  border: "rgba(239,68,68,0.3)",  icon: "⚠" },
+    insufficient_evidence:{ label: "Insufficient Evidence to Assess",                 color: "#94A3B8", bg: "rgba(148,163,184,0.08)",border: "rgba(148,163,184,0.3)",icon: "?" },
   };
   const style = m[trust.verdict] || m.insufficient_evidence;
 
@@ -73,14 +73,14 @@ function TrustAssessmentCard({ trust }: { trust: { verdict: string; score: numbe
         <span style={{ fontSize: 22, color: style.color }}>{style.icon}</span>
         <div>
           <div className="font-display" style={{ fontSize: 16, fontWeight: 600, color: style.color }}>{style.label}</div>
-          <div style={{ fontSize: 10, color: "#6B6355", letterSpacing: 1, textTransform: "uppercase", marginTop: 2 }}>
+          <div style={{ fontSize: 10, color: "#64748B", letterSpacing: 1, textTransform: "uppercase", marginTop: 2 }}>
             Combined Trust Assessment — deterministic, not another AI guess
           </div>
         </div>
       </div>
 
       {!trust.evidence_available && (
-        <p style={{ fontSize: 12, color: "#A79E8C", lineHeight: 1.6, margin: "0 0 10px" }}>
+        <p style={{ fontSize: 12, color: "#94A3B8", lineHeight: 1.6, margin: "0 0 10px" }}>
           No independently-verifiable evidence (GitHub, education registry) was found either way.
           This is not a red flag — it means public data alone can&apos;t confirm or dispute this
           candidate. Consider it in context with the interview.
@@ -93,7 +93,7 @@ function TrustAssessmentCard({ trust }: { trust: { verdict: string; score: numbe
         </summary>
         <ul style={{ margin: "8px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 4 }}>
           {trust.reasoning.map((r, i) => (
-            <li key={i} style={{ fontSize: 12, color: "#A79E8C", lineHeight: 1.6 }}>{r}</li>
+            <li key={i} style={{ fontSize: 12, color: "#94A3B8", lineHeight: 1.6 }}>{r}</li>
           ))}
         </ul>
       </details>
@@ -103,9 +103,9 @@ function TrustAssessmentCard({ trust }: { trust: { verdict: string; score: numbe
 
 function AIContentCard({ analysis }: { analysis: { likelihood: string; indicators: string[]; human_indicators: string[]; note: string } }) {
   const m: Record<string, { label: string; color: string; bg: string; border: string; icon: string }> = {
-    low:    { label: "Low AI-Generation Likelihood",    color: "#6E9974", bg: "rgba(75,112,81,0.06)",  border: "rgba(75,112,81,0.25)",  icon: "🧑" },
-    medium: { label: "Some AI-Writing Patterns Found",  color: "#D4AC5C", bg: "rgba(176,137,49,0.06)",  border: "rgba(176,137,49,0.25)",  icon: "🤔" },
-    high:   { label: "High AI-Generation Likelihood",   color: "#D46A4C", bg: "rgba(177,66,38,0.06)",  border: "rgba(177,66,38,0.25)",  icon: "🤖" },
+    low:    { label: "Low AI-Generation Likelihood",    color: "#10B981", bg: "rgba(16,185,129,0.06)",  border: "rgba(16,185,129,0.25)",  icon: "🧑" },
+    medium: { label: "Some AI-Writing Patterns Found",  color: "#F59E0B", bg: "rgba(245,158,11,0.06)",  border: "rgba(245,158,11,0.25)",  icon: "🤔" },
+    high:   { label: "High AI-Generation Likelihood",   color: "#EF4444", bg: "rgba(239,68,68,0.06)",  border: "rgba(239,68,68,0.25)",  icon: "🤖" },
   };
   const style = m[analysis.likelihood] || m.low;
 
@@ -116,14 +116,14 @@ function AIContentCard({ analysis }: { analysis: { likelihood: string; indicator
         <span style={{ fontSize: 12, fontWeight: 800, color: style.color, letterSpacing: 1, textTransform: "uppercase" }}>{style.label}</span>
       </div>
 
-      {analysis.note && <p style={{ fontSize: 13, color: "#D9D2C0", lineHeight: 1.65, margin: "0 0 12px" }}>{analysis.note}</p>}
+      {analysis.note && <p style={{ fontSize: 13, color: "#CBD5E1", lineHeight: 1.65, margin: "0 0 12px" }}>{analysis.note}</p>}
 
       <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
         {analysis.indicators.length > 0 && (
           <div style={{ flex: "1 1 240px" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#D46A4C", marginBottom: 6, letterSpacing: 0.5 }}>AI-PATTERN INDICATORS</div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#EF4444", marginBottom: 6, letterSpacing: 0.5 }}>AI-PATTERN INDICATORS</div>
             {analysis.indicators.map((s, i) => (
-              <div key={i} style={{ fontSize: 12, color: "#A79E8C", marginBottom: 5, paddingLeft: 14, position: "relative" }}>
+              <div key={i} style={{ fontSize: 12, color: "#94A3B8", marginBottom: 5, paddingLeft: 14, position: "relative" }}>
                 <span style={{ position: "absolute", left: 0 }}>•</span>{s}
               </div>
             ))}
@@ -131,9 +131,9 @@ function AIContentCard({ analysis }: { analysis: { likelihood: string; indicator
         )}
         {analysis.human_indicators.length > 0 && (
           <div style={{ flex: "1 1 240px" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#6E9974", marginBottom: 6, letterSpacing: 0.5 }}>AUTHENTIC-WRITING SIGNS</div>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#10B981", marginBottom: 6, letterSpacing: 0.5 }}>AUTHENTIC-WRITING SIGNS</div>
             {analysis.human_indicators.map((s, i) => (
-              <div key={i} style={{ fontSize: 12, color: "#A79E8C", marginBottom: 5, paddingLeft: 14, position: "relative" }}>
+              <div key={i} style={{ fontSize: 12, color: "#94A3B8", marginBottom: 5, paddingLeft: 14, position: "relative" }}>
                 <span style={{ position: "absolute", left: 0 }}>•</span>{s}
               </div>
             ))}
@@ -146,8 +146,8 @@ function AIContentCard({ analysis }: { analysis: { likelihood: string; indicator
 
 function VerifyCard({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div style={{ background: "#131110", border: "1px solid #2A251C", borderRadius: 14, overflow: "hidden" }}>
-      <div style={{ padding: "12px 18px", borderBottom: "1px solid #2A251C", fontSize: 13, fontWeight: 700, color: "#EDE6D6" }}>
+    <div style={{ background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 14, overflow: "hidden" }}>
+      <div style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255, 255, 255, 0.08)", fontSize: 13, fontWeight: 700, color: "#F8FAFC" }}>
         {title}
       </div>
       <div style={{ padding: "6px 18px 12px" }}>{children}</div>
@@ -156,7 +156,7 @@ function VerifyCard({ title, children }: { title: string; children: ReactNode })
 }
 
 function EmptyNote({ text }: { text: string }) {
-  return <div style={{ fontSize: 12, color: "#9C9483", padding: "10px 0" }}>{text}</div>;
+  return <div style={{ fontSize: 12, color: "#94A3B8", padding: "10px 0" }}>{text}</div>;
 }
 
 function VerifyRow({
@@ -168,15 +168,15 @@ function VerifyRow({
   detail?: string;
   link?: string;
 }) {
-  const b = statusMap[status] || { icon: "?", label: status, color: "#9C9483" };
+  const b = statusMap[status] || { icon: "?", label: status, color: "#94A3B8" };
   return (
-    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 0", borderTop: "1px solid #2A251C" }}>
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 0", borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
       <span style={{ fontSize: 13, color: b.color, fontWeight: 800, minWidth: 16 }}>{b.icon}</span>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, color: "#EDE6D6", fontWeight: 600 }}>{label}</div>
-        {detail && <div style={{ fontSize: 11, color: "#9C9483", marginTop: 2, lineHeight: 1.5 }}>{detail}</div>}
+        <div style={{ fontSize: 13, color: "#F8FAFC", fontWeight: 600 }}>{label}</div>
+        {detail && <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 2, lineHeight: 1.5 }}>{detail}</div>}
         {link && (
-          <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#6E90AC", textDecoration: "none" }}>
+          <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#3B82F6", textDecoration: "none" }}>
             View link ↗
           </a>
         )}
@@ -187,31 +187,31 @@ function VerifyRow({
 }
 
 function GithubVerifyBlock({ g }: { g: { status: string; username: string | null; profile_url?: string; public_repos?: number; top_languages?: string[]; verified_skills?: string[]; unverified_skills?: string[]; note?: string } }) {
-  const b = GITHUB_STATUS_MAP[g.status] || { icon: "?", label: g.status, color: "#9C9483" };
+  const b = GITHUB_STATUS_MAP[g.status] || { icon: "?", label: g.status, color: "#94A3B8" };
   return (
     <div style={{ padding: "10px 0" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 13, color: b.color, fontWeight: 800 }}>{b.icon}</span>
           {g.username ? (
-            <a href={g.profile_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: "#6E90AC", textDecoration: "none", fontWeight: 700 }}>
+            <a href={g.profile_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: "#3B82F6", textDecoration: "none", fontWeight: 700 }}>
               @{g.username} ↗
             </a>
           ) : (
-            <span style={{ fontSize: 13, color: "#A79E8C" }}>No GitHub username</span>
+            <span style={{ fontSize: 13, color: "#94A3B8" }}>No GitHub username</span>
           )}
         </div>
         <span style={{ fontSize: 11, fontWeight: 700, color: b.color }}>{b.label}</span>
       </div>
 
       {typeof g.public_repos === "number" && (
-        <div style={{ fontSize: 11, color: "#9C9483", marginBottom: 8 }}>{g.public_repos} public repositories</div>
+        <div style={{ fontSize: 11, color: "#94A3B8", marginBottom: 8 }}>{g.public_repos} public repositories</div>
       )}
 
       {!!g.top_languages?.length && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
           {g.top_languages.map((l) => (
-            <span key={l} style={{ fontSize: 10, color: "#A79E8C", background: "#17140F", border: "1px solid #2A251C", padding: "2px 8px", borderRadius: 999 }}>{l}</span>
+            <span key={l} style={{ fontSize: 10, color: "#94A3B8", background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", padding: "2px 8px", borderRadius: 999 }}>{l}</span>
           ))}
         </div>
       )}
@@ -220,24 +220,24 @@ function GithubVerifyBlock({ g }: { g: { status: string; username: string | null
         <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 8 }}>
           {!!g.verified_skills?.length && (
             <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#6E9974", marginBottom: 4 }}>✓ VERIFIED</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#10B981", marginBottom: 4 }}>✓ VERIFIED</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                {g.verified_skills.map((s) => <span key={s} style={{ fontSize: 10, color: "#A7F3D0", background: "rgba(75,112,81,0.12)", padding: "2px 8px", borderRadius: 999 }}>{s}</span>)}
+                {g.verified_skills.map((s) => <span key={s} style={{ fontSize: 10, color: "#A7F3D0", background: "rgba(16,185,129,0.12)", padding: "2px 8px", borderRadius: 999 }}>{s}</span>)}
               </div>
             </div>
           )}
           {!!g.unverified_skills?.length && (
             <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#9C9483", marginBottom: 4 }}>NOT FOUND IN REPOS</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#94A3B8", marginBottom: 4 }}>NOT FOUND IN REPOS</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                {g.unverified_skills.map((s) => <span key={s} style={{ fontSize: 10, color: "#A79E8C", background: "#17140F", padding: "2px 8px", borderRadius: 999 }}>{s}</span>)}
+                {g.unverified_skills.map((s) => <span key={s} style={{ fontSize: 10, color: "#94A3B8", background: "#1E293B", padding: "2px 8px", borderRadius: 999 }}>{s}</span>)}
               </div>
             </div>
           )}
         </div>
       )}
 
-      {g.note && <div style={{ fontSize: 11, color: "#9C9483", marginTop: 8, lineHeight: 1.5 }}>{g.note}</div>}
+      {g.note && <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 8, lineHeight: 1.5 }}>{g.note}</div>}
     </div>
   );
 }
@@ -265,11 +265,11 @@ function ScoreDocket({ score, verdict }: { score: number; verdict: VerdictKind }
         >
           {shown}
         </div>
-        <div style={{ fontSize: 10, color: "#6B6355", letterSpacing: 3, textTransform: "uppercase", marginTop: 6 }}>
+        <div style={{ fontSize: 10, color: "#64748B", letterSpacing: 3, textTransform: "uppercase", marginTop: 6 }}>
           Credibility / 100
         </div>
       </div>
-      <div style={{ width: 1, height: 56, background: "#2A251C" }} />
+      <div style={{ width: 1, height: 56, background: "rgba(255, 255, 255, 0.08)" }} />
       <VerdictStamp verdict={verdict} size="lg" />
     </div>
   );
@@ -288,7 +288,7 @@ function ScoreBar({ label, value, rationale }: { label: string; value: number; r
           onMouseOver={() => rationale && setTip(true)} onMouseOut={() => setTip(false)}>
           {label}{rationale && <span style={{ color: "#94A3B8", marginLeft: 6, fontSize: 11 }}>ⓘ</span>}
         </span>
-        <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: col }}>{value}</span>
+        <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: 13, fontWeight: 800, color: col }}>{value}</span>
       </div>
       <div style={{ height: 6, background: "rgba(255, 255, 255, 0.08)", borderRadius: 99, overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${w}%`, background: `linear-gradient(90deg, ${col}88, ${col})`, borderRadius: 99, transition: "width 1.3s cubic-bezier(.4,0,.2,1)" }} />
@@ -310,21 +310,21 @@ function FlagCard({ flag }: { flag: Flag }) {
     <div style={{ background: si.bg, border: `1px solid ${si.border}25`, borderLeft: `3px solid ${si.color}`, borderRadius: 10, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "13px 16px", cursor: "pointer" }} onClick={() => setOpen(o => !o)}>
         <span style={{ padding: "2px 7px", borderRadius: 4, fontSize: 10, fontWeight: 800, color: si.color, background: `${si.color}18`, letterSpacing: ".08em", flexShrink: 0, marginTop: 1 }}>{si.label}</span>
-        <span style={{ fontSize: 13, fontWeight: 600, color: "#EDE6D6", flex: 1 }}>{flag.title}</span>
-        <span style={{ color: "#9C9483", fontSize: 11, flexShrink: 0 }}>{open ? "▲" : "▼"}</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#F8FAFC", flex: 1 }}>{flag.title}</span>
+        <span style={{ color: "#94A3B8", fontSize: 11, flexShrink: 0 }}>{open ? "▲" : "▼"}</span>
       </div>
       {open && (
         <div style={{ padding: "0 16px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-          <p style={{ margin: 0, fontSize: 13, color: "#D9D2C0", lineHeight: 1.65 }}>{flag.description}</p>
+          <p style={{ margin: 0, fontSize: 13, color: "#CBD5E1", lineHeight: 1.65 }}>{flag.description}</p>
           {flag.evidence && (
-            <div style={{ fontSize: 10, color: "#6B6355", letterSpacing: 1, textTransform: "uppercase" }}>
+            <div style={{ fontSize: 10, color: "#64748B", letterSpacing: 1, textTransform: "uppercase" }}>
               Evidence from resume<br />
               <span className="evidence-quote" style={{ fontSize: 13, display: "inline-block", marginTop: 4, lineHeight: 1.6 }}>
                 &ldquo;{flag.evidence}&rdquo;
               </span>
             </div>
           )}
-          {flag.action && <div style={{ fontSize: 12, color: "#6E90AC" }}>✦ Action: {flag.action}</div>}
+          {flag.action && <div style={{ fontSize: 12, color: "#3B82F6" }}>✦ Action: {flag.action}</div>}
         </div>
       )}
     </div>
@@ -342,6 +342,11 @@ export default function ReportPage() {
   const [tab, setTab]       = useState("overview");
   const [decision, setDecision] = useState<Decision | null>(null);
   const [saving, setSaving] = useState(false);
+  const [notifyState, setNotifyState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [notifyMessage, setNotifyMessage] = useState<string | null>(null);
+  const [notifyEditorOpen, setNotifyEditorOpen] = useState(false);
+  const [notifyDraft, setNotifyDraft] = useState<{ subject: string; body: string; candidate_email: string | null; has_email: boolean } | null>(null);
+  const [notifyDraftLoading, setNotifyDraftLoading] = useState(false);
   const [verification, setVerification] = useState<VerificationResult | null>(null);
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
@@ -354,6 +359,22 @@ export default function ReportPage() {
   const [discussLoading, setDiscussLoading] = useState(false);
   const [discussError, setDiscussError] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
+
+  // Co-Pilot state
+  const [copilotLoading, setCopilotLoading] = useState(false);
+  const [copilotSaving, setCopilotSaving] = useState(false);
+  const [copilotSuccess, setCopilotSuccess] = useState(false);
+  const [copilotError, setCopilotError] = useState<string | null>(null);
+  const [scorecard, setScorecard] = useState<Array<{ category: string; label: string; score: number; notes: string }>>([
+    { category: "technical", label: "Technical Depth & Architecture", score: 0, notes: "" },
+    { category: "problem_solving", label: "Problem Solving & Analytical Thinking", score: 0, notes: "" },
+    { category: "culture_fit", label: "Culture Fit & Communication", score: 0, notes: "" },
+    { category: "authenticity", label: "Authenticity & Grounding", score: 0, notes: "" },
+  ]);
+  const [copilotQuestions, setCopilotQuestions] = useState<Array<{ question: string; category?: string; is_asked: boolean }>>([]);
+  const [newProbeQuestion, setNewProbeQuestion] = useState("");
+  const [interviewNotes, setInterviewNotes] = useState("");
+  const [copilotRecOverride, setCopilotRecOverride] = useState<Decision | null>(null);
 
   useEffect(() => {
     if (hasHydrated && !token) { router.replace("/login"); return; }
@@ -390,12 +411,84 @@ export default function ReportPage() {
 
   const submitDecision = useCallback(async (d: Decision) => {
     if (!token || !params.id) return;
+    const previous = decision;
     setDecision(d);
     setSaving(true);
-    try { await reportsAPI.decision(params.id, d, undefined, token); }
-    catch { /* silent fail — decision still shown locally */ }
+    setNotifyState("idle");
+    setNotifyMessage(null);
+    try {
+      await reportsAPI.decision(params.id, d, undefined, token);
+    } catch (e) {
+      // Revert the optimistic UI update — a decision that silently failed
+      // to save must not be shown as "recorded".
+      setDecision(previous);
+      setNotifyMessage(e instanceof APIError ? e.message : "Could not save decision. Please try again.");
+    }
     setSaving(false);
-  }, [token, params.id]);
+  }, [token, params.id, decision]);
+
+  // One-click send: fetches the default template and immediately emails it.
+  // This never opens the editor — for that, use openNotifyEditor() below.
+  const sendDefaultNotification = useCallback(async () => {
+    if (!token || !params.id || !decision) return;
+    setNotifyState("sending");
+    setNotifyMessage(null);
+    try {
+      const draft = await reportsAPI.notifyDraft(params.id, decision, token);
+      if (!draft.has_email || !draft.candidate_email) {
+        setNotifyState("error");
+        setNotifyMessage("No email address found for this candidate. Use Edit to add one manually.");
+        return;
+      }
+      const result = await reportsAPI.notify(params.id, decision, draft.subject, draft.body, token);
+      if (result.email_sent) {
+        setNotifyState("sent");
+        setNotifyMessage(`Email sent to ${result.candidate_email}.`);
+      } else {
+        setNotifyState("error");
+        setNotifyMessage(result.message);
+      }
+    } catch (e) {
+      setNotifyState("error");
+      setNotifyMessage(e instanceof APIError ? e.message : "Could not send email. Please try again.");
+    }
+  }, [token, params.id, decision]);
+
+  // Opens the edit-before-sending panel, pre-filled with the default draft.
+  const openNotifyEditor = useCallback(async () => {
+    if (!token || !params.id || !decision) return;
+    setNotifyDraftLoading(true);
+    setNotifyMessage(null);
+    try {
+      const draft = await reportsAPI.notifyDraft(params.id, decision, token);
+      setNotifyDraft(draft);
+      setNotifyEditorOpen(true);
+    } catch (e) {
+      setNotifyState("error");
+      setNotifyMessage(e instanceof APIError ? e.message : "Could not load email draft.");
+    }
+    setNotifyDraftLoading(false);
+  }, [token, params.id, decision]);
+
+  const sendEditedNotification = useCallback(async () => {
+    if (!token || !params.id || !decision || !notifyDraft) return;
+    setNotifyState("sending");
+    setNotifyMessage(null);
+    try {
+      const result = await reportsAPI.notify(params.id, decision, notifyDraft.subject, notifyDraft.body, token);
+      if (result.email_sent) {
+        setNotifyState("sent");
+        setNotifyMessage(`Email sent to ${result.candidate_email}.`);
+        setNotifyEditorOpen(false);
+      } else {
+        setNotifyState("error");
+        setNotifyMessage(result.message);
+      }
+    } catch (e) {
+      setNotifyState("error");
+      setNotifyMessage(e instanceof APIError ? e.message : "Could not send email. Please try again.");
+    }
+  }, [token, params.id, decision, notifyDraft]);
 
   const runVerification = useCallback(async () => {
     if (!token || !params.id) return;
@@ -496,6 +589,67 @@ export default function ReportPage() {
     if (tab === "discuss") loadDiscussData();
   }, [tab, loadDiscussData]);
 
+  const loadCopilotData = useCallback(async () => {
+    if (!token || !params.id) return;
+    setCopilotLoading(true);
+    setCopilotError(null);
+    try {
+      const res = await copilotAPI.get(params.id, token);
+      if (res && res.copilot) {
+        const c = res.copilot;
+        if (Array.isArray(c.scorecard) && c.scorecard.length > 0) {
+          setScorecard(prev => prev.map(item => {
+            const found = c.scorecard.find((s: any) => s.category === item.category);
+            return found ? { ...item, score: found.score, notes: found.notes || "" } : item;
+          }));
+        }
+        if (Array.isArray(c.custom_questions) && c.custom_questions.length > 0) {
+          setCopilotQuestions(c.custom_questions);
+        } else if (report?.interview_questions?.length) {
+          setCopilotQuestions(report.interview_questions.map(q => ({ question: q.question, category: q.category, is_asked: false })));
+        }
+        if (c.interview_notes) setInterviewNotes(c.interview_notes);
+        if (c.recommendation_override) setCopilotRecOverride(c.recommendation_override);
+      } else if (report?.interview_questions?.length) {
+        setCopilotQuestions(report.interview_questions.map(q => ({ question: q.question, category: q.category, is_asked: false })));
+      }
+    } catch {
+      if (report?.interview_questions?.length) {
+        setCopilotQuestions(report.interview_questions.map(q => ({ question: q.question, category: q.category, is_asked: false })));
+      }
+    } finally {
+      setCopilotLoading(false);
+    }
+  }, [token, params.id, report]);
+
+  useEffect(() => {
+    if (tab === "copilot") {
+      loadCopilotData();
+    }
+  }, [tab, loadCopilotData]);
+
+  const saveCopilotData = async () => {
+    if (!token || !params.id) return;
+    setCopilotSaving(true);
+    setCopilotError(null);
+    setCopilotSuccess(false);
+    try {
+      const payload = {
+        scorecard: scorecard.map(s => ({ category: s.category, score: s.score, notes: s.notes })),
+        custom_questions: copilotQuestions,
+        interview_notes: interviewNotes,
+        recommendation_override: copilotRecOverride || decision || undefined,
+      };
+      await copilotAPI.save(params.id, payload, token);
+      setCopilotSuccess(true);
+      setTimeout(() => setCopilotSuccess(false), 3500);
+    } catch (e) {
+      setCopilotError(e instanceof APIError ? e.message : "Failed to save evaluation scorecard.");
+    } finally {
+      setCopilotSaving(false);
+    }
+  };
+
   if (loading) return (
     <div style={{ minHeight: "100vh", background: "#0B0F17", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div style={{ color: "#94A3B8", fontSize: 14 }}>Loading report…</div>
@@ -517,6 +671,7 @@ export default function ReportPage() {
 
   const TABS = [
     { id: "overview",   label: "Overview" },
+    { id: "copilot",    label: "🎙️ Interview Co-Pilot" },
     { id: "flags",      label: `Flags (${flags.length})` },
     { id: "skills",     label: "Skills" },
     { id: "timeline",   label: "Timeline" },
@@ -525,6 +680,7 @@ export default function ReportPage() {
     { id: "questions",  label: "Interview Qs" },
     { id: "json",       label: "JSON" },
   ];
+
 
   return (
     <div style={{ minHeight: "100vh", background: "#0B0F17", color: "#F8FAFC" }}>
@@ -622,8 +778,8 @@ export default function ReportPage() {
               </div>
             </div>
             <div style={{ flexShrink: 0, textAlign: "right" }}>
-              <div style={{ fontFamily: "monospace", fontSize: 12, color: "#94A3B8", marginBottom: 4 }}>{report.file_name}</div>
-              <div style={{ fontFamily: "monospace", fontSize: 12, color: "#64748B" }}>
+              <div style={{ fontFamily: "var(--font-mono), monospace", fontSize: 12, color: "#94A3B8", marginBottom: 4 }}>{report.file_name}</div>
+              <div style={{ fontFamily: "var(--font-mono), monospace", fontSize: 12, color: "#64748B" }}>
                 {report.created_at ? new Date(report.created_at).toLocaleDateString() : "Just analyzed"}
               </div>
             </div>
@@ -675,7 +831,39 @@ export default function ReportPage() {
                   <AIContentCard analysis={report.ai_content_analysis} />
                 )}
 
+                {/* Feature B: Predictive Talent Velocity & Career Growth Index */}
+                {report.talent_velocity && (
+                  <div style={{ background: "rgba(99, 102, 241, 0.06)", border: "1px solid rgba(99, 102, 241, 0.25)", borderRadius: 16, padding: "20px 24px", marginBottom: 20 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                      <div style={{ fontSize: 11, color: "#818CF8", fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase" }}>
+                        🚀 Predictive Career Growth & Talent Velocity
+                      </div>
+                      <span style={{ padding: "4px 12px", borderRadius: 99, background: "rgba(99, 102, 241, 0.2)", border: "1px solid rgba(99, 102, 241, 0.4)", color: "#818CF8", fontSize: 11, fontWeight: 700 }}>
+                        {report.talent_velocity.trajectory_stage}
+                      </span>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 12 }}>
+                      <div style={{ background: "rgba(15, 23, 42, 0.6)", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(255, 255, 255, 0.05)" }}>
+                        <div style={{ fontSize: 11, color: "#94A3B8" }}>Growth Index</div>
+                        <div style={{ fontSize: 24, fontWeight: 900, color: "#6366F1", fontFamily: "var(--font-mono), monospace" }}>{report.talent_velocity.growth_velocity_index}/100</div>
+                      </div>
+                      <div style={{ background: "rgba(15, 23, 42, 0.6)", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(255, 255, 255, 0.05)" }}>
+                        <div style={{ fontSize: 11, color: "#94A3B8" }}>Promotion Cadence</div>
+                        <div style={{ fontSize: 24, fontWeight: 900, color: "#10B981", fontFamily: "var(--font-mono), monospace" }}>~{report.talent_velocity.promotion_cadence_months} mos</div>
+                      </div>
+                      <div style={{ background: "rgba(15, 23, 42, 0.6)", padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(255, 255, 255, 0.05)" }}>
+                        <div style={{ fontSize: 11, color: "#94A3B8" }}>Retention Stability</div>
+                        <div style={{ fontSize: 24, fontWeight: 900, color: "#3B82F6", fontFamily: "var(--font-mono), monospace" }}>{report.talent_velocity.retention_stability_score}%</div>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#CBD5E1", lineHeight: 1.5 }}>
+                      {report.talent_velocity.note}
+                    </div>
+                  </div>
+                )}
+
                 {/* Summary */}
+
                 <div style={{ background: "rgba(15, 23, 42, 0.6)", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 16, padding: "20px 24px", marginBottom: 18 }}>
                   <div style={{ fontSize: 11, color: "#818CF8", fontWeight: 700, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>AI Recruiter Summary</div>
                   <p style={{ fontSize: 14, color: "#CBD5E1", lineHeight: 1.75, margin: 0 }}>{report.summary}</p>
@@ -696,18 +884,241 @@ export default function ReportPage() {
               </div>
             )}
 
+            {/* INTERVIEW CO-PILOT — Live candidate evaluation & scorecard */}
+            {tab === "copilot" && (
+              <div className="fu">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "#F8FAFC" }}>🎙️ Live Interview Co-Pilot & Candidate Scorecard</h3>
+                    <p style={{ margin: "4px 0 0", fontSize: 13, color: "#94A3B8" }}>
+                      Rate candidate competency, check off probe questions during live interviews, and store structured feedback.
+                    </p>
+                  </div>
+                  <button
+                    onClick={saveCopilotData}
+                    disabled={copilotSaving}
+                    style={{
+                      padding: "9px 20px", borderRadius: 10,
+                      background: copilotSuccess ? "#10B981" : "linear-gradient(135deg, #6366F1, #4F46E5)",
+                      color: "#FFF", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer",
+                      boxShadow: "0 4px 14px rgba(99,102,241,0.3)", display: "flex", alignItems: "center", gap: 6
+                    }}
+                  >
+                    {copilotSaving ? "Saving…" : copilotSuccess ? "✓ Scorecard Saved" : "Save Evaluation"}
+                  </button>
+                </div>
+
+                {copilotError && (
+                  <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 10, fontSize: 12, color: "#EF4444", marginBottom: 16 }}>
+                    {copilotError}
+                  </div>
+                )}
+
+                {copilotLoading ? (
+                  <div style={{ fontSize: 13, color: "#94A3B8", padding: 24, textAlign: "center" }}>Loading interview scorecard…</div>
+                ) : (
+                  <>
+                    {/* Scorecard Dimensions */}
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginBottom: 24 }}>
+                      {scorecard.map((item, idx) => (
+                        <div key={item.category} style={{ background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 12, padding: "16px 18px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                            <span style={{ fontSize: 13, fontWeight: 700, color: "#F8FAFC" }}>{item.label}</span>
+                            <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: 13, fontWeight: 800, color: item.score > 0 ? (item.score >= 4 ? "#10B981" : item.score >= 3 ? "#F59E0B" : "#EF4444") : "#64748B" }}>
+                              {item.score > 0 ? `${item.score} / 5` : "Unrated"}
+                            </span>
+                          </div>
+                          
+                          {/* Rating chips 1 to 5 */}
+                          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                            {[1, 2, 3, 4, 5].map(star => {
+                              const active = item.score === star;
+                              return (
+                                <button
+                                  key={star}
+                                  type="button"
+                                  onClick={() => {
+                                    setScorecard(prev => prev.map((s, i) => i === idx ? { ...s, score: star } : s));
+                                  }}
+                                  style={{
+                                    flex: 1, padding: "6px 0", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                                    border: active ? "1px solid #6366F1" : "1px solid rgba(255, 255, 255, 0.08)",
+                                    background: active ? "rgba(99, 102, 241, 0.3)" : "rgba(15, 23, 42, 0.6)",
+                                    color: active ? "#818CF8" : "#94A3B8", transition: "all 0.15s"
+                                  }}
+                                >
+                                  ★ {star}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <input
+                            type="text"
+                            placeholder="Interviewer observations/notes…"
+                            value={item.notes}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setScorecard(prev => prev.map((s, i) => i === idx ? { ...s, notes: val } : s));
+                            }}
+                            style={{
+                              width: "100%", boxSizing: "border-box", padding: "7px 10px", borderRadius: 6,
+                              background: "rgba(15, 23, 42, 0.6)", border: "1px solid rgba(255, 255, 255, 0.06)",
+                              color: "#F8FAFC", fontSize: 12, outline: "none"
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Probing Questions Checklist */}
+                    <div style={{ background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 14, padding: "20px 22px", marginBottom: 24 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#94A3B8", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 12 }}>
+                        Live Question Checklist ({copilotQuestions.filter(q => q.is_asked).length}/{copilotQuestions.length} Asked)
+                      </div>
+                      
+                      <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+                        {copilotQuestions.map((q, qIdx) => (
+                          <div
+                            key={qIdx}
+                            onClick={() => {
+                              setCopilotQuestions(prev => prev.map((item, i) => i === qIdx ? { ...item, is_asked: !item.is_asked } : item));
+                            }}
+                            style={{
+                              display: "flex", alignItems: "flex-start", gap: 12, padding: "12px 14px",
+                              background: q.is_asked ? "rgba(16, 185, 129, 0.06)" : "rgba(15, 23, 42, 0.5)",
+                              border: q.is_asked ? "1px solid rgba(16, 185, 129, 0.3)" : "1px solid rgba(255, 255, 255, 0.06)",
+                              borderRadius: 8, cursor: "pointer", transition: "all 0.15s"
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={q.is_asked}
+                              readOnly
+                              style={{ marginTop: 3, cursor: "pointer", accentColor: "#10B981" }}
+                            />
+                            <div style={{ flex: 1 }}>
+                              <span style={{ fontSize: 13, color: q.is_asked ? "#94A3B8" : "#F8FAFC", textDecoration: q.is_asked ? "line-through" : "none", lineHeight: 1.5 }}>
+                                {q.question}
+                              </span>
+                              {q.category && (
+                                <span style={{ marginLeft: 8, fontSize: 10, color: "#818CF8", background: "rgba(99,102,241,0.15)", padding: "2px 6px", borderRadius: 4, textTransform: "uppercase" }}>
+                                  {q.category}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Add Custom Question on the fly */}
+                      <div style={{ display: "flex", gap: 10 }}>
+                        <input
+                          type="text"
+                          placeholder="Add custom interview question on the fly…"
+                          value={newProbeQuestion}
+                          onChange={(e) => setNewProbeQuestion(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && newProbeQuestion.trim()) {
+                              setCopilotQuestions(prev => [...prev, { question: newProbeQuestion.trim(), category: "custom", is_asked: false }]);
+                              setNewProbeQuestion("");
+                            }
+                          }}
+                          style={{
+                            flex: 1, padding: "9px 14px", background: "rgba(15, 23, 42, 0.6)",
+                            border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 8,
+                            color: "#F8FAFC", fontSize: 13, outline: "none"
+                          }}
+                        />
+                        <button
+                          type="button"
+                          disabled={!newProbeQuestion.trim()}
+                          onClick={() => {
+                            if (newProbeQuestion.trim()) {
+                              setCopilotQuestions(prev => [...prev, { question: newProbeQuestion.trim(), category: "custom", is_asked: false }]);
+                              setNewProbeQuestion("");
+                            }
+                          }}
+                          style={{
+                            padding: "9px 18px", borderRadius: 8, background: "rgba(99, 102, 241, 0.2)",
+                            border: "1px solid rgba(99, 102, 241, 0.4)", color: "#818CF8", fontSize: 13, fontWeight: 600, cursor: "pointer"
+                          }}
+                        >
+                          + Add Question
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* General Interview Notes & Override */}
+                    <div style={{ background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 14, padding: "20px 22px" }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#94A3B8", letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 10 }}>
+                        Interviewer Feedback & Recommendation
+                      </div>
+                      <textarea
+                        rows={4}
+                        value={interviewNotes}
+                        onChange={(e) => setInterviewNotes(e.target.value)}
+                        placeholder="Candidate live demonstration feedback, communication clarity, coding walkthrough observations…"
+                        style={{
+                          width: "100%", boxSizing: "border-box", padding: "12px 14px", background: "rgba(15, 23, 42, 0.6)",
+                          border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 10, color: "#F8FAFC", fontSize: 13,
+                          fontFamily: "inherit", outline: "none", resize: "vertical", marginBottom: 16
+                        }}
+                      />
+
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <span style={{ fontSize: 12, color: "#94A3B8", marginRight: 4 }}>Verdict:</span>
+                          {([
+                            { val: "advance", label: "Advance", color: "#10B981" },
+                            { val: "schedule_followup", label: "Follow-up", color: "#F59E0B" },
+                            { val: "reject", label: "Reject", color: "#EF4444" },
+                          ] as const).map(o => (
+                            <button
+                              key={o.val}
+                              type="button"
+                              onClick={() => setCopilotRecOverride(o.val)}
+                              style={{
+                                padding: "6px 14px", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                                border: `1px solid ${o.color}`,
+                                background: copilotRecOverride === o.val ? `${o.color}22` : "transparent",
+                                color: o.color
+                              }}
+                            >
+                              {o.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <button
+                          onClick={saveCopilotData}
+                          disabled={copilotSaving}
+                          style={{
+                            padding: "9px 24px", borderRadius: 8, background: "#2563EB", color: "#FFF",
+                            fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer"
+                          }}
+                        >
+                          {copilotSaving ? "Saving…" : "Save Evaluation"}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             {/* FLAGS */}
             {tab === "flags" && (
               <div className="fu">
                 {flags.length === 0 ? (
                   <div style={{ textAlign: "center", padding: 40 }}>
                     <div style={{ fontSize: 36, marginBottom: 12 }}>✅</div>
-                    <div style={{ fontSize: 14, color: "#6E9974" }}>No significant risk flags detected</div>
-                    <div style={{ fontSize: 12, color: "#9C9483", marginTop: 6 }}>Resume appears consistent and well-evidenced.</div>
+                    <div style={{ fontSize: 14, color: "#10B981" }}>No significant risk flags detected</div>
+                    <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 6 }}>Resume appears consistent and well-evidenced.</div>
                   </div>
                 ) : (
                   <>
-                    <div style={{ fontSize: 12, color: "#9C9483", marginBottom: 14 }}>
+                    <div style={{ fontSize: 12, color: "#94A3B8", marginBottom: 14 }}>
                       {flags.filter(f => f.severity === "high").length} high · {flags.filter(f => f.severity === "medium").length} medium · {flags.filter(f => f.severity === "low").length} low · Click any flag to expand
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -722,32 +1133,32 @@ export default function ReportPage() {
             {tab === "skills" && (
               <div className="fu">
                 {report.skills?.primary_domain && (
-                  <div style={{ marginBottom: 16, padding: "12px 16px", background: "rgba(62,92,118,.1)", border: "1px solid rgba(62,92,118,.25)", borderRadius: 10 }}>
-                    <span style={{ fontSize: 12, color: "#6E90AC" }}>Primary domain: </span>
-                    <strong style={{ fontSize: 12, color: "#EDE6D6" }}>{report.skills.primary_domain}</strong>
+                  <div style={{ marginBottom: 16, padding: "12px 16px", background: "rgba(59,130,246,.1)", border: "1px solid rgba(59,130,246,.25)", borderRadius: 10 }}>
+                    <span style={{ fontSize: 12, color: "#3B82F6" }}>Primary domain: </span>
+                    <strong style={{ fontSize: 12, color: "#F8FAFC" }}>{report.skills.primary_domain}</strong>
                     {report.skills.keyword_stuffing_risk && report.skills.keyword_stuffing_risk !== "none" && (
-                      <span style={{ marginLeft: 14, fontSize: 11, color: "#D4AC5C" }}>⚠ Keyword stuffing risk: {report.skills.keyword_stuffing_risk}</span>
+                      <span style={{ marginLeft: 14, fontSize: 11, color: "#F59E0B" }}>⚠ Keyword stuffing risk: {report.skills.keyword_stuffing_risk}</span>
                     )}
                   </div>
                 )}
                 <div style={{ marginBottom: 20 }}>
-                  <div style={{ fontSize: 10, color: "#6B6355", letterSpacing: 2.5, textTransform: "uppercase", marginBottom: 12 }}>All Skills — Verification Status</div>
+                  <div style={{ fontSize: 10, color: "#64748B", letterSpacing: 2.5, textTransform: "uppercase", marginBottom: 12 }}>All Skills — Verification Status</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                     {(report.skills?.all_claimed || []).map(s => {
                       const v = (report.skills?.verified_by_evidence || []).includes(s);
                       return (
-                        <span key={s} style={{ padding: "6px 13px", borderRadius: 9, fontSize: 12, fontWeight: 600, color: v ? "#6E9974" : "#D4AC5C", background: v ? "rgba(75,112,81,.1)" : "rgba(176,137,49,.1)", border: `1px solid ${v ? "#4B7051" : "#B08931"}33` }}>
+                        <span key={s} style={{ padding: "6px 13px", borderRadius: 9, fontSize: 12, fontWeight: 600, color: v ? "#10B981" : "#F59E0B", background: v ? "rgba(16,185,129,.1)" : "rgba(245,158,11,.1)", border: `1px solid ${v ? "#059669" : "#D97706"}33` }}>
                           {v ? "✓" : "?"} {s}
                         </span>
                       );
                     })}
                   </div>
-                  <div style={{ fontSize: 11, color: "#6B6355", marginTop: 10 }}>✓ = found in job descriptions or projects · ? = listed only, not evidenced in work history</div>
+                  <div style={{ fontSize: 11, color: "#64748B", marginTop: 10 }}>✓ = found in job descriptions or projects · ? = listed only, not evidenced in work history</div>
                 </div>
                 {(report.skills?.domain_spread_concern) && (
-                  <div style={{ padding: "14px 16px", background: "rgba(176,137,49,.08)", border: "1px solid rgba(176,137,49,.2)", borderRadius: 10 }}>
-                    <div style={{ fontSize: 11, color: "#D4AC5C", fontWeight: 700, marginBottom: 6 }}>DOMAIN SPREAD CONCERN</div>
-                    <div style={{ fontSize: 12, color: "#D9D2C0" }}>{report.skills.domain_spread_note}</div>
+                  <div style={{ padding: "14px 16px", background: "rgba(245,158,11,.08)", border: "1px solid rgba(245,158,11,.2)", borderRadius: 10 }}>
+                    <div style={{ fontSize: 11, color: "#F59E0B", fontWeight: 700, marginBottom: 6 }}>DOMAIN SPREAD CONCERN</div>
+                    <div style={{ fontSize: 12, color: "#CBD5E1" }}>{report.skills.domain_spread_note}</div>
                   </div>
                 )}
               </div>
@@ -757,13 +1168,13 @@ export default function ReportPage() {
             {tab === "timeline" && (
               <div className="fu">
                 {(report.timeline_gaps || []).length > 0 && (
-                  <div style={{ marginBottom: 20, padding: "14px 16px", background: "rgba(176,137,49,.08)", border: "1px solid rgba(176,137,49,.2)", borderRadius: 10 }}>
-                    <div style={{ fontSize: 11, color: "#D4AC5C", fontWeight: 700, marginBottom: 8 }}>GAPS DETECTED</div>
+                  <div style={{ marginBottom: 20, padding: "14px 16px", background: "rgba(245,158,11,.08)", border: "1px solid rgba(245,158,11,.2)", borderRadius: 10 }}>
+                    <div style={{ fontSize: 11, color: "#F59E0B", fontWeight: 700, marginBottom: 8 }}>GAPS DETECTED</div>
                     {report.timeline_gaps!.map((g, i) => (
-                      <div key={i} style={{ fontSize: 12, color: "#D9D2C0", marginBottom: 5 }}>
+                      <div key={i} style={{ fontSize: 12, color: "#CBD5E1", marginBottom: 5 }}>
                         {g.from} → {g.to}: <strong>{g.duration}</strong> ·{" "}
-                        <span style={{ color: g.severity === "high" ? "#D46A4C" : g.severity === "medium" ? "#D4AC5C" : "#6E90AC" }}>{g.severity} severity</span>
-                        {g.note && <span style={{ color: "#9C9483" }}> — {g.note}</span>}
+                        <span style={{ color: g.severity === "high" ? "#EF4444" : g.severity === "medium" ? "#F59E0B" : "#3B82F6" }}>{g.severity} severity</span>
+                        {g.note && <span style={{ color: "#94A3B8" }}> — {g.note}</span>}
                       </div>
                     ))}
                   </div>
@@ -772,27 +1183,27 @@ export default function ReportPage() {
                   {(report.experience || []).map((exp, i) => (
                     <div key={i} style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
-                        <div style={{ width: 10, height: 10, borderRadius: "50%", marginTop: 4, background: exp.is_verifiable !== false ? "#6E90AC" : "#D4AC5C", boxShadow: `0 0 0 3px ${exp.is_verifiable !== false ? "#3E5C76" : "#B08931"}33` }} />
-                        {i < (report.experience || []).length - 1 && <div style={{ width: 2, flex: 1, background: "#2A251C", minHeight: 32, marginTop: 4 }} />}
+                        <div style={{ width: 10, height: 10, borderRadius: "50%", marginTop: 4, background: exp.is_verifiable !== false ? "#3B82F6" : "#F59E0B", boxShadow: `0 0 0 3px ${exp.is_verifiable !== false ? "#2563EB" : "#D97706"}33` }} />
+                        {i < (report.experience || []).length - 1 && <div style={{ width: 2, flex: 1, background: "rgba(255, 255, 255, 0.08)", minHeight: 32, marginTop: 4 }} />}
                       </div>
                       <div style={{ paddingBottom: i < (report.experience || []).length - 1 ? 20 : 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "#EDE6D6" }}>{exp.role}</div>
-                        <div style={{ fontSize: 12, color: exp.is_verifiable !== false ? "#6E90AC" : "#D4AC5C" }}>{exp.company}</div>
-                        <div style={{ fontSize: 11, color: "#9C9483", marginTop: 2 }}>{exp.period}</div>
-                        {exp.is_verifiable === false && <div style={{ fontSize: 11, color: "#D4AC5C", marginTop: 2 }}>⚠ Company not easily verifiable</div>}
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#F8FAFC" }}>{exp.role}</div>
+                        <div style={{ fontSize: 12, color: exp.is_verifiable !== false ? "#3B82F6" : "#F59E0B" }}>{exp.company}</div>
+                        <div style={{ fontSize: 11, color: "#94A3B8", marginTop: 2 }}>{exp.period}</div>
+                        {exp.is_verifiable === false && <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 2 }}>⚠ Company not easily verifiable</div>}
                       </div>
                     </div>
                   ))}
                 </div>
                 {(report.education || []).length > 0 && (
                   <div style={{ marginTop: 24 }}>
-                    <div style={{ fontSize: 10, color: "#6B6355", letterSpacing: 2.5, textTransform: "uppercase", marginBottom: 14 }}>Education</div>
+                    <div style={{ fontSize: 10, color: "#64748B", letterSpacing: 2.5, textTransform: "uppercase", marginBottom: 14 }}>Education</div>
                     {report.education!.map((e, i) => (
-                      <div key={i} style={{ padding: "12px 16px", background: "#131110", border: "1px solid #2A251C", borderRadius: 10, marginBottom: 8 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "#EDE6D6" }}>{e.degree}</div>
-                        <div style={{ fontSize: 12, color: e.is_recognized_institution !== false ? "#6E90AC" : "#D4AC5C" }}>{e.institution}</div>
-                        <div style={{ fontSize: 11, color: "#9C9483" }}>{e.period}</div>
-                        {e.concern && <div style={{ fontSize: 11, color: "#D4AC5C", marginTop: 4 }}>⚠ {e.concern}</div>}
+                      <div key={i} style={{ padding: "12px 16px", background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 10, marginBottom: 8 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#F8FAFC" }}>{e.degree}</div>
+                        <div style={{ fontSize: 12, color: e.is_recognized_institution !== false ? "#3B82F6" : "#F59E0B" }}>{e.institution}</div>
+                        <div style={{ fontSize: 11, color: "#94A3B8" }}>{e.period}</div>
+                        {e.concern && <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 4 }}>⚠ {e.concern}</div>}
                       </div>
                     ))}
                   </div>
@@ -805,7 +1216,7 @@ export default function ReportPage() {
               <div className="fu">
                 <div style={{ display: "flex", alignItems: "flex-end", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
                   <div style={{ flex: "1 1 220px" }}>
-                    <label style={{ fontSize: 11, fontWeight: 700, color: "#A79E8C", display: "block", marginBottom: 6 }}>
+                    <label style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", display: "block", marginBottom: 6 }}>
                       GitHub username (optional override)
                     </label>
                     <input
@@ -813,8 +1224,8 @@ export default function ReportPage() {
                       onChange={(e) => setGithubOverride(e.target.value)}
                       placeholder={report.candidate?.github ? "Found on resume — leave blank to use it" : "e.g. octocat"}
                       style={{
-                        width: "100%", boxSizing: "border-box", padding: "9px 12px", background: "#131110",
-                        border: "1px solid #2A251C", borderRadius: 9, color: "#EDE6D6", fontSize: 13,
+                        width: "100%", boxSizing: "border-box", padding: "9px 12px", background: "#1E293B",
+                        border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 9, color: "#F8FAFC", fontSize: 13,
                         fontFamily: "inherit", outline: "none",
                       }}
                     />
@@ -824,35 +1235,35 @@ export default function ReportPage() {
                     disabled={verifyLoading}
                     style={{
                       padding: "10px 20px", borderRadius: 10, border: "none", cursor: verifyLoading ? "default" : "pointer",
-                      background: "linear-gradient(135deg,#3E5C76,#2C4258)", color: "#EDE6D6", fontWeight: 700,
+                      background: "linear-gradient(135deg,#2563EB,#2C4258)", color: "#F8FAFC", fontWeight: 700,
                       fontSize: 13, fontFamily: "inherit", opacity: verifyLoading ? 0.7 : 1, whiteSpace: "nowrap",
                     }}
                   >
                     {verifyLoading ? "Verifying…" : verification ? "Re-run Verification" : "Run Verification"}
                   </button>
                 </div>
-                <p style={{ fontSize: 11, color: "#9C9483", margin: "0 0 20px", lineHeight: 1.6 }}>
+                <p style={{ fontSize: 11, color: "#94A3B8", margin: "0 0 20px", lineHeight: 1.6 }}>
                   Runs live checks against GitHub, a university registry, and company websites.
                   These are corroborating signals, not proof — a &quot;not found&quot; result often means
                   the data simply isn&apos;t public, not that something is false.
                 </p>
 
                 {verifyError && (
-                  <div style={{ padding: "10px 14px", background: "rgba(177,66,38,0.08)", border: "1px solid rgba(177,66,38,.3)", borderRadius: 10, fontSize: 12, color: "#D46A4C", marginBottom: 16 }}>
+                  <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,.3)", borderRadius: 10, fontSize: 12, color: "#EF4444", marginBottom: 16 }}>
                     {verifyError}
                   </div>
                 )}
 
                 {!verification && !verifyLoading && !verifyError && (
-                  <div style={{ padding: 40, textAlign: "center", border: "1px dashed #2A251C", borderRadius: 14 }}>
+                  <div style={{ padding: 40, textAlign: "center", border: "1px dashed rgba(255, 255, 255, 0.08)", borderRadius: 14 }}>
                     <div style={{ fontSize: 28, marginBottom: 10 }}>🔍</div>
-                    <div style={{ fontSize: 13, color: "#A79E8C" }}>No verification has been run yet for this report.</div>
+                    <div style={{ fontSize: 13, color: "#94A3B8" }}>No verification has been run yet for this report.</div>
                   </div>
                 )}
 
                 {verification && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                    <div style={{ fontSize: 11, color: "#6B6355" }}>
+                    <div style={{ fontSize: 11, color: "#64748B" }}>
                       Last run: {new Date(verification.run_at).toLocaleString()}
                     </div>
 
@@ -925,20 +1336,20 @@ export default function ReportPage() {
             {tab === "discuss" && (
               <div className="fu">
                 {discussError && (
-                  <div style={{ padding: "10px 14px", background: "rgba(177,66,38,0.08)", border: "1px solid rgba(177,66,38,.3)", borderRadius: 6, fontSize: 12, color: "#D46A4C", marginBottom: 16 }}>
+                  <div style={{ padding: "10px 14px", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,.3)", borderRadius: 6, fontSize: 12, color: "#EF4444", marginBottom: 16 }}>
                     {discussError}
                   </div>
                 )}
 
                 {/* Share with team */}
                 <div style={{ marginBottom: 20 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#9C9483", marginBottom: 8, letterSpacing: 0.5, textTransform: "uppercase" }}>Share With Team</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", marginBottom: 8, letterSpacing: 0.5, textTransform: "uppercase" }}>Share With Team</div>
                   {myTeams.length === 0 ? (
-                    <div style={{ fontSize: 12, color: "#6B6355" }}>
-                      No teams yet. <a href="/teams" style={{ color: "#6E90AC" }}>Create one</a> to share this report and collaborate.
+                    <div style={{ fontSize: 12, color: "#64748B" }}>
+                      No teams yet. <a href="/teams" style={{ color: "#3B82F6" }}>Create one</a> to share this report and collaborate.
                     </div>
                   ) : report.team_id ? (
-                    <div style={{ fontSize: 12, color: "#6E9974" }}>✓ Shared with your team — teammates can see, comment, and vote on this report.</div>
+                    <div style={{ fontSize: 12, color: "#10B981" }}>✓ Shared with your team — teammates can see, comment, and vote on this report.</div>
                   ) : (
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {myTeams.map((t) => (
@@ -946,7 +1357,7 @@ export default function ReportPage() {
                           key={t.id}
                           onClick={() => shareWithTeam(t.id)}
                           disabled={sharing}
-                          style={{ padding: "7px 14px", borderRadius: 6, border: "1px solid #2A251C", background: "#131110", color: "#D9D2C0", fontSize: 12, cursor: "pointer" }}
+                          style={{ padding: "7px 14px", borderRadius: 6, border: "1px solid rgba(255, 255, 255, 0.08)", background: "#1E293B", color: "#CBD5E1", fontSize: 12, cursor: "pointer" }}
                         >
                           Share with &quot;{t.name}&quot;
                         </button>
@@ -957,11 +1368,11 @@ export default function ReportPage() {
 
                 {/* Votes */}
                 <div style={{ marginBottom: 20 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#9C9483", marginBottom: 8, letterSpacing: 0.5, textTransform: "uppercase" }}>Team Vote</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", marginBottom: 8, letterSpacing: 0.5, textTransform: "uppercase" }}>Team Vote</div>
                   <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                     {(["advance", "maybe", "reject"] as const).map((v) => {
                       const active = votesResult?.my_vote === v;
-                      const colors = { advance: "#6E9974", maybe: "#D4AC5C", reject: "#D46A4C" };
+                      const colors = { advance: "#10B981", maybe: "#F59E0B", reject: "#EF4444" };
                       return (
                         <button
                           key={v}
@@ -981,23 +1392,23 @@ export default function ReportPage() {
 
                 {/* Comments */}
                 <div>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#9C9483", marginBottom: 8, letterSpacing: 0.5, textTransform: "uppercase" }}>Comments</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#94A3B8", marginBottom: 8, letterSpacing: 0.5, textTransform: "uppercase" }}>Comments</div>
                   {discussLoading ? (
-                    <div style={{ fontSize: 12, color: "#6B6355" }}>Loading…</div>
+                    <div style={{ fontSize: 12, color: "#64748B" }}>Loading…</div>
                   ) : (
                     <>
                       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
                         {comments.length === 0 ? (
-                          <div style={{ fontSize: 12, color: "#6B6355" }}>No comments yet.</div>
+                          <div style={{ fontSize: 12, color: "#64748B" }}>No comments yet.</div>
                         ) : (
                           comments.map((c) => (
-                            <div key={c.id} style={{ background: "#131110", border: "1px solid #2A251C", borderRadius: 6, padding: "10px 14px" }}>
+                            <div key={c.id} style={{ background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 6, padding: "10px 14px" }}>
                               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                                <span style={{ fontSize: 11, color: "#6E90AC", fontFamily: "monospace" }}>{c.user_id.slice(0, 8)}…</span>
-                                <span style={{ fontSize: 10, color: "#6B6355" }}>{new Date(c.created_at).toLocaleString()}</span>
+                                <span style={{ fontSize: 11, color: "#3B82F6", fontFamily: "var(--font-mono), monospace" }}>{c.user_id.slice(0, 8)}…</span>
+                                <span style={{ fontSize: 10, color: "#64748B" }}>{new Date(c.created_at).toLocaleString()}</span>
                               </div>
-                              <p style={{ fontSize: 13, color: "#D9D2C0", margin: 0, lineHeight: 1.6 }}>{c.comment}</p>
-                              <button onClick={() => removeComment(c.id)} style={{ background: "none", border: "none", color: "#6B6355", fontSize: 11, cursor: "pointer", marginTop: 6, padding: 0 }}>Delete</button>
+                              <p style={{ fontSize: 13, color: "#CBD5E1", margin: 0, lineHeight: 1.6 }}>{c.comment}</p>
+                              <button onClick={() => removeComment(c.id)} style={{ background: "none", border: "none", color: "#64748B", fontSize: 11, cursor: "pointer", marginTop: 6, padding: 0 }}>Delete</button>
                             </div>
                           ))
                         )}
@@ -1008,12 +1419,12 @@ export default function ReportPage() {
                           onChange={(e) => setNewComment(e.target.value)}
                           onKeyDown={(e) => { if (e.key === "Enter") postComment(); }}
                           placeholder="Add a comment for your team…"
-                          style={{ flex: 1, padding: "9px 12px", background: "#131110", border: "1px solid #2A251C", borderRadius: 6, color: "#EDE6D6", fontSize: 13, fontFamily: "inherit", outline: "none" }}
+                          style={{ flex: 1, padding: "9px 12px", background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 6, color: "#F8FAFC", fontSize: 13, fontFamily: "inherit", outline: "none" }}
                         />
                         <button
                           onClick={postComment}
                           disabled={postingComment || !newComment.trim()}
-                          style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: "#3E5C76", color: "#EDE6D6", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+                          style={{ padding: "9px 18px", borderRadius: 6, border: "none", background: "#2563EB", color: "#F8FAFC", fontSize: 13, fontWeight: 700, cursor: "pointer" }}
                         >
                           Post
                         </button>
@@ -1027,15 +1438,15 @@ export default function ReportPage() {
             {/* INTERVIEW QUESTIONS */}
             {tab === "questions" && (
               <div className="fu">
-                <div style={{ fontSize: 12, color: "#9C9483", marginBottom: 16 }}>Generated from this candidate&apos;s specific signals — not generic templates</div>
+                <div style={{ fontSize: 12, color: "#94A3B8", marginBottom: 16 }}>Generated from this candidate&apos;s specific signals — not generic templates</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                   {(report.interview_questions || []).map((q, i) => (
-                    <div key={i} style={{ display: "flex", gap: 14, padding: "15px 18px", background: "#131110", border: "1px solid #2A251C", borderRadius: 12 }}>
-                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "#6E90AC", flexShrink: 0, paddingTop: 2, minWidth: 28, fontWeight: 800 }}>Q{i + 1}</span>
+                    <div key={i} style={{ display: "flex", gap: 14, padding: "15px 18px", background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 12 }}>
+                      <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: 11, color: "#3B82F6", flexShrink: 0, paddingTop: 2, minWidth: 28, fontWeight: 800 }}>Q{i + 1}</span>
                       <div>
-                        <div style={{ fontSize: 13, color: "#EDE6D6", lineHeight: 1.65, fontWeight: 500, marginBottom: q.rationale ? 6 : 0 }}>{q.question}</div>
-                        {q.rationale && <div style={{ fontSize: 11, color: "#9C9483", lineHeight: 1.5 }}>↳ {q.rationale}</div>}
-                        {q.targets_flag && <div style={{ fontSize: 11, color: "#D4AC5C", marginTop: 3 }}>⚑ Targets: {q.targets_flag}</div>}
+                        <div style={{ fontSize: 13, color: "#F8FAFC", lineHeight: 1.65, fontWeight: 500, marginBottom: q.rationale ? 6 : 0 }}>{q.question}</div>
+                        {q.rationale && <div style={{ fontSize: 11, color: "#94A3B8", lineHeight: 1.5 }}>↳ {q.rationale}</div>}
+                        {q.targets_flag && <div style={{ fontSize: 11, color: "#F59E0B", marginTop: 3 }}>⚑ Targets: {q.targets_flag}</div>}
                       </div>
                     </div>
                   ))}
@@ -1046,8 +1457,8 @@ export default function ReportPage() {
             {/* RAW JSON */}
             {tab === "json" && (
               <div className="fu">
-                <div style={{ fontSize: 12, color: "#9C9483", marginBottom: 12 }}>Full structured output — use via API for ATS/HRIS integration</div>
-                <pre style={{ background: "#131110", border: "1px solid #2A251C", borderRadius: 12, padding: 18, fontSize: 10.5, color: "#A79E8C", overflow: "auto", fontFamily: "monospace", lineHeight: 1.75, margin: 0, maxHeight: 500 }}>
+                <div style={{ fontSize: 12, color: "#94A3B8", marginBottom: 12 }}>Full structured output — use via API for ATS/HRIS integration</div>
+                <pre style={{ background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 12, padding: 18, fontSize: 10.5, color: "#94A3B8", overflow: "auto", fontFamily: "var(--font-mono), monospace", lineHeight: 1.75, margin: 0, maxHeight: 500 }}>
                   {JSON.stringify(report, null, 2)}
                 </pre>
               </div>
@@ -1057,28 +1468,134 @@ export default function ReportPage() {
         </div>
 
         {/* Decision panel */}
-        <div className="fu" style={{ background: "#17140F", border: "1px solid #2A251C", borderRadius: 16, padding: "18px 24px" }}>
+        <div className="fu" style={{ background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 16, padding: "18px 24px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
-            <div style={{ fontSize: 10, color: "#6B6355", letterSpacing: 2.5, textTransform: "uppercase" }}>Recruiter Decision</div>
-            <div style={{ fontSize: 11, color: "#6B6355", fontStyle: "italic" }}>
+            <div style={{ fontSize: 10, color: "#64748B", letterSpacing: 2.5, textTransform: "uppercase" }}>Recruiter Decision</div>
+            <div style={{ fontSize: 11, color: "#64748B", fontStyle: "italic" }}>
               {saving ? "Saving…" : "Your decision trains the AI model"}
             </div>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             {([
-              { val: "advance",           label: "Advance to Interview", color: "#6E9974", bg: "rgba(75,112,81,.1)",  border: "#4B7051" },
-              { val: "schedule_followup", label: "Request More Info",    color: "#D4AC5C", bg: "rgba(176,137,49,.1)", border: "#B08931" },
-              { val: "reject",            label: "Not a Match",          color: "#D46A4C", bg: "rgba(177,66,38,.1)", border: "#B14226" },
+              { val: "advance",           label: "Advance to Interview", color: "#10B981", bg: "rgba(16,185,129,.1)",  border: "#059669" },
+              { val: "schedule_followup", label: "Request More Info",    color: "#F59E0B", bg: "rgba(245,158,11,.1)", border: "#D97706" },
+              { val: "reject",            label: "Not a Match",          color: "#EF4444", bg: "rgba(239,68,68,.1)", border: "#DC2626" },
             ] as const).map(d => (
               <button key={d.val} onClick={() => submitDecision(d.val)}
-                style={{ padding: "10px 18px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, color: d.color, background: decision === d.val ? d.bg : "transparent", border: `1.5px solid ${decision === d.val ? d.border : "#2A251C"}`, transition: "all .15s" }}>
+                style={{ padding: "10px 18px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 600, color: d.color, background: decision === d.val ? d.bg : "transparent", border: `1.5px solid ${decision === d.val ? d.border : "rgba(255, 255, 255, 0.08)"}`, transition: "all .15s" }}>
                 {d.label}
               </button>
             ))}
-            {decision && <div style={{ marginLeft: "auto", alignSelf: "center", fontSize: 12, color: "#6E9974" }}>✓ Recorded</div>}
+            {decision && <div style={{ marginLeft: "auto", alignSelf: "center", fontSize: 12, color: "#10B981" }}>✓ Recorded</div>}
           </div>
+
+          {/* Notify Candidate — a deliberate, separate step from recording the
+              decision above. Saving a decision never auto-emails anyone. */}
+          {decision && (
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(255, 255, 255, 0.08)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <button
+                  onClick={sendDefaultNotification}
+                  disabled={notifyState === "sending"}
+                  style={{
+                    padding: "9px 18px", borderRadius: 9, cursor: notifyState === "sending" ? "default" : "pointer",
+                    fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+                    color: "#0F172A", background: notifyState === "sending" ? "#64748B" : "#F59E0B",
+                    border: "none", opacity: notifyState === "sent" ? 0.6 : 1,
+                  }}>
+                  {notifyState === "sending" ? "Sending…" : "✉ Notify Candidate"}
+                </button>
+                <button
+                  onClick={openNotifyEditor}
+                  disabled={notifyDraftLoading || notifyState === "sending"}
+                  title="Edit the email before sending"
+                  style={{
+                    padding: "9px 12px", borderRadius: 9, cursor: "pointer", fontFamily: "inherit",
+                    fontSize: 13, color: "#F59E0B", background: "transparent", border: "1.5px solid rgba(255, 255, 255, 0.08)",
+                  }}>
+                  {notifyDraftLoading ? "…" : "✎"}
+                </button>
+                {notifyMessage && (
+                  <div style={{ fontSize: 12, color: notifyState === "error" ? "#EF4444" : "#10B981" }}>
+                    {notifyMessage}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Edit-before-sending modal */}
+      {notifyEditorOpen && notifyDraft && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(15,23,42,.7)", display: "flex",
+          alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20,
+        }}>
+          <div style={{
+            background: "#1E293B", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 16,
+            padding: 24, width: "100%", maxWidth: 560, maxHeight: "85vh", overflowY: "auto",
+          }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#F8FAFC", marginBottom: 4 }}>
+              Edit email before sending
+            </div>
+            <div style={{ fontSize: 12, color: "#64748B", marginBottom: 18 }}>
+              To: {notifyDraft.candidate_email || "no email on file"}
+            </div>
+
+            {!notifyDraft.has_email && (
+              <div style={{ padding: "10px 14px", background: "rgba(239,68,68,.1)", border: "1px solid #DC2626", borderRadius: 8, fontSize: 12, color: "#EF4444", marginBottom: 14 }}>
+                No email address was found on this resume. Sending is disabled until one is added below.
+              </div>
+            )}
+
+            <label style={{ fontSize: 11, color: "#64748B", display: "block", marginBottom: 6 }}>Candidate email</label>
+            <input
+              value={notifyDraft.candidate_email || ""}
+              onChange={e => setNotifyDraft({ ...notifyDraft, candidate_email: e.target.value, has_email: e.target.value.trim().length > 3 })}
+              placeholder="candidate@example.com"
+              style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: "1px solid rgba(255, 255, 255, 0.08)", background: "#0F172A", color: "#F8FAFC", fontSize: 13, marginBottom: 14 }}
+            />
+
+            <label style={{ fontSize: 11, color: "#64748B", display: "block", marginBottom: 6 }}>Subject</label>
+            <input
+              value={notifyDraft.subject}
+              onChange={e => setNotifyDraft({ ...notifyDraft, subject: e.target.value })}
+              style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: "1px solid rgba(255, 255, 255, 0.08)", background: "#0F172A", color: "#F8FAFC", fontSize: 13, marginBottom: 14 }}
+            />
+
+            <label style={{ fontSize: 11, color: "#64748B", display: "block", marginBottom: 6 }}>Message</label>
+            <textarea
+              value={notifyDraft.body}
+              onChange={e => setNotifyDraft({ ...notifyDraft, body: e.target.value })}
+              rows={10}
+              style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px", borderRadius: 8, border: "1px solid rgba(255, 255, 255, 0.08)", background: "#0F172A", color: "#F8FAFC", fontSize: 13, fontFamily: "inherit", lineHeight: 1.6, resize: "vertical", marginBottom: 16 }}
+            />
+
+            {notifyMessage && notifyState === "error" && (
+              <div style={{ fontSize: 12, color: "#EF4444", marginBottom: 14 }}>{notifyMessage}</div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setNotifyEditorOpen(false)}
+                style={{ padding: "9px 16px", borderRadius: 8, border: "1.5px solid rgba(255, 255, 255, 0.08)", background: "transparent", color: "#64748B", fontSize: 12, fontFamily: "inherit", cursor: "pointer" }}>
+                Cancel
+              </button>
+              <button
+                onClick={sendEditedNotification}
+                disabled={!notifyDraft.has_email || notifyState === "sending"}
+                style={{
+                  padding: "9px 18px", borderRadius: 8, border: "none", cursor: notifyDraft.has_email ? "pointer" : "not-allowed",
+                  background: notifyDraft.has_email ? "#F59E0B" : "rgba(255, 255, 255, 0.12)", color: "#0F172A", fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                  opacity: notifyState === "sending" ? 0.6 : 1,
+                }}>
+                {notifyState === "sending" ? "Sending…" : "Send Email"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

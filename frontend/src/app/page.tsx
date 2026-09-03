@@ -2,6 +2,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/auth";
+import { color } from "@/lib/design-tokens";
 
 export default function RootPage() {
   const router = useRouter();
@@ -16,8 +17,8 @@ export default function RootPage() {
   }, [token, router]);
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0D0C0A", display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ color: "#A79E8C", fontSize: 14 }}>Loading…</div>
+    <div style={{ minHeight: "100vh", background: color.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ color: color.textMuted, fontSize: 14 }}>Loading…</div>
     </div>
   );
 }

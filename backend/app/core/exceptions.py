@@ -79,3 +79,12 @@ class AllResumesUnreachable(HireLensException):
 class DBRequiredError(HireLensException):
     http_status = 503; code = "database_required"
     message = "This feature requires a configured database. Ask your admin to set SUPABASE_URL/SUPABASE_SERVICE_KEY."
+
+class ValidationError(HireLensException):
+    http_status = 422; code = "validation_error"
+    message = "Invalid request data."
+
+class CapacityLimitExceeded(HireLensException):
+    http_status = 429; code = "capacity_limit_exceeded"
+    message = "Registration capacity limit of 5,000 active recruiters reached."
+
