@@ -44,9 +44,28 @@ export default function LoginPage() {
     }
   };
 
+  const handleDemoLogin = async () => {
+    setEmail("demo@hirelens.ai");
+    setPassword("Password123!");
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await authAPI.login("demo@hirelens.ai", "Password123!");
+      setAuth(res.access_token, res.user);
+      router.replace("/dashboard");
+    } catch (err) {
+      setError(err instanceof APIError ? err.message : "Demo login failed. Make sure backend is running.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleGoogleLogin = async () => {
-    if (!supabase) {
-      setError("Supabase is not configured. Please use email & password.");
+    const isConfigured =
+      process.env.NEXT_PUBLIC_SUPABASE_URL &&
+      !process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
+    if (!isConfigured) {
+      setError("Google OAuth requires Supabase to be configured in .env.local. Please use Email & Password or One-Click Demo Login.");
       return;
     }
     const { error } = await supabase.auth.signInWithOAuth({
@@ -98,6 +117,23 @@ export default function LoginPage() {
             ⚠️ {error}
           </div>
         )}
+
+        {/* One-Click Demo Login */}
+        <button
+          type="button"
+          onClick={handleDemoLogin}
+          disabled={loading}
+          style={{
+            width: "100%", padding: "11px 16px", borderRadius: 12,
+            border: "1px solid rgba(99, 102, 241, 0.4)",
+            background: "linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(139, 92, 246, 0.2))",
+            color: "#C7D2FE", fontWeight: 700, fontSize: 13,
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+            cursor: "pointer", marginBottom: 12, transition: "all 0.15s"
+          }}
+        >
+          <span>⚡</span> {loading ? "Signing in…" : "One-Click Demo Login (demo@hirelens.ai)"}
+        </button>
 
         {/* Google OAuth */}
         <button onClick={handleGoogleLogin} style={{

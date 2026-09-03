@@ -1,11 +1,14 @@
+from pathlib import Path
 from typing import List
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(_ENV_PATH, ".env"),
         case_sensitive=True,
         # This tells pydantic-settings to NOT try JSON parsing strings
         env_parse_none_str="None",

@@ -42,7 +42,7 @@ export const useAuthStore = create<AuthStore>()(
       requiresEmailConfirmation: false,
       hasHydrated: false,
       setHasHydrated: (v) => set({ hasHydrated: v }),
-      setAuth: (token, user) => set({ token, user, isLoading: false, error: null }),
+      setAuth: (token, user) => set({ token, user, isLoading: false, error: null, hasHydrated: true }),
 
       login: async (email, password) => {
         set({ isLoading: true, error: null });

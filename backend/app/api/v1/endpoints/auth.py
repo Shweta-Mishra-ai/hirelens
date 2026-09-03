@@ -17,6 +17,7 @@ from app.core.dependencies import get_db, get_current_user, get_redis
 from app.core.security import create_access_token
 from app.core.exceptions import AuthError, HireLensException, CapacityLimitExceeded
 from app.core.rate_limit import check_rate_limit, get_client_ip
+from app.core import local_db
 from app.services.teams.access import accept_pending_invites_for_email
 
 logger = logging.getLogger("hirelens")
@@ -149,11 +150,13 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
                 raise AuthError("An account with this email already exists. Please log in instead.")
             logger.warning(f"Supabase signup failed for {email_str}: {e} — using local auth store fallback")
 
-    # In-memory fallback (when DB is unconfigured or Supabase connection fails)
-    if email_str in _mem_users:
+    # Persistent local SQLite and in-memory fallback (when DB is unconfigured or Supabase connection fails)
+    existing_u = local_db.get_user_by_email(email_str) or _mem_users.get(email_str)
+    if existing_u:
         raise AuthError("An account with this email already exists. Please log in instead.")
 
-    uid = str(uuid.uuid4())
+    u_record = local_db.create_user(email_str, body.password, body.full_name, body.company or "")
+    uid = u_record["id"]
     _mem_users[email_str] = {
         "id": uid,
         "email": email_str,
@@ -221,13 +224,26 @@ async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=
             raise
         except Exception as e:
             err_str = str(e).lower()
-            if "invalid" in err_str or "wrong" in err_str or "credentials" in err_str:
-                raise AuthError("Invalid email or password.")
             if "email not confirmed" in err_str:
                 raise AuthError("Please confirm your email address before logging in.")
             logger.warning(f"Supabase login error for {email_str}: {e} — checking local auth store fallback")
 
-    # In-memory fallback store lookup
+    # Persistent local SQLite fallback lookup
+    local_user = local_db.verify_user_password(email_str, body.password)
+    if local_user:
+        token = create_access_token({"sub": local_user["id"], "email": local_user["email"]})
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user": {
+                "id": local_user["id"],
+                "email": local_user["email"],
+                "full_name": local_user["full_name"],
+                "company": local_user["company"],
+            },
+        }
+
+    # In-memory fallback store lookup (for unit tests)
     mem_user = _mem_users.get(email_str)
     if mem_user and mem_user["password_hash"] == _hash_pw(body.password):
         token = create_access_token({"sub": mem_user["id"], "email": mem_user["email"]})
