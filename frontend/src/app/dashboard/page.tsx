@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
-import { reportsAPI, APIError } from "@/lib/api";
+import { reportsAPI, authAPI, APIError } from "@/lib/api";
 import type { Report } from "@/types";
 import { VerdictChip, verdictFromRecommendation } from "@/components/VerdictStamp";
 
@@ -34,11 +34,12 @@ const SORT_OPTIONS = [
 export default function DashboardPage() {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, token, logout, hasHydrated } = useAuthStore();
+  const { user, token, logout, hasHydrated, setAuth } = useAuthStore();
   const [reports, setReports] = useState<Report[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [checkingOAuth, setCheckingOAuth] = useState(true);
 
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
@@ -53,9 +54,33 @@ export default function DashboardPage() {
   } | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Handle Supabase OAuth redirect (e.g. Google Sign In: /dashboard#access_token=...)
   useEffect(() => {
-    if (hasHydrated && !token) { router.replace("/login"); return; }
-  }, [hasHydrated, token, router]);
+    if (typeof window !== "undefined" && window.location.hash.includes("access_token")) {
+      const hash = window.location.hash.substring(1);
+      const params = new URLSearchParams(hash);
+      const accessToken = params.get("access_token");
+      if (accessToken) {
+        authAPI.oauthVerify(accessToken)
+          .then((res) => {
+            setAuth(res.access_token, res.user);
+            window.history.replaceState(null, "", window.location.pathname);
+            setCheckingOAuth(false);
+          })
+          .catch(() => {
+            setCheckingOAuth(false);
+          });
+        return;
+      }
+    }
+    setCheckingOAuth(false);
+  }, [setAuth]);
+
+  useEffect(() => {
+    if (!checkingOAuth && hasHydrated && !token) {
+      router.replace("/login");
+    }
+  }, [checkingOAuth, hasHydrated, token, router]);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
