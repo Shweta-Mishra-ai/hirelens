@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     # Limits
     MAX_FILE_SIZE_MB: int = 10
     RATE_LIMIT_PER_MINUTE: int = 20
+    NOTIFY_RATE_LIMIT_PER_MINUTE: int = 10  # candidate emails are an external cost — tighter limit than general API use
     ANALYSIS_TIMEOUT_SECONDS: int = 120
 
     # Email Service Settings (Resend & SMTP)

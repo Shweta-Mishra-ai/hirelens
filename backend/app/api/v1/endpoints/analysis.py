@@ -53,22 +53,20 @@ def _cleanup_old_jobs():
 
 
 def _check_rate_limit(redis, user_id: str) -> None:
-    """Simple Redis rate limiting. Skips if Redis unavailable."""
-    if not redis:
-        return
-    try:
-        key = f"rl:{user_id}:{int(time.time()) // 60}"
-        count = redis.incr(key)
-        if count == 1:
-            redis.expire(key, 60)
-        if count > settings.RATE_LIMIT_PER_MINUTE:
-            from app.core.exceptions import RateLimitExceeded
-            raise RateLimitExceeded(retry_after=60)
-    except Exception as e:
-        # Don't block upload if Redis has issues
-        if "RateLimitExceeded" in type(e).__name__:
-            raise
-        logger.warning(f"Rate limit check failed (skipping): {e}")
+    """
+    Rate limiting for expensive upload endpoints (analysis, bulk, match, ats).
+
+    This used to `return` immediately whenever redis was falsy — meaning
+    with REDIS_URL unset (the shipped default), these endpoints had NO
+    rate limit at all. core.rate_limit.check_rate_limit() already has a
+    proper in-memory fallback (a module-level dict, cleaned up
+    opportunistically) for exactly this situation; this function now
+    delegates to it instead of re-implementing a weaker version. Kept as
+    a thin wrapper so existing callers (analysis.py, bulk.py, match.py,
+    ats.py) don't need to change their call sites.
+    """
+    from app.core.rate_limit import check_rate_limit
+    check_rate_limit(redis, user_id, settings.RATE_LIMIT_PER_MINUTE, window_seconds=60)
 
 
 def validate_upload(contents: bytes, filename: str, mime: str) -> str:
@@ -282,11 +280,21 @@ async def _run_analysis(
                 logger.info(f"[{job_id}] Stored report {report_id} in Supabase")
             except Exception as e:
                 logger.warning(f"[{job_id}] DB store failed — using in-memory fallback: {e}")
-                # Store in memory as fallback so report is still accessible
+                # Store in memory as fallback so report is still accessible.
+                # user_id and file_name are stamped onto the blob itself here —
+                # without this, the in-memory read/list/delete paths in
+                # reports.py have no reliable way to check ownership, which
+                # was a real access-control gap (any authenticated user could
+                # read/list/delete any in-memory report). See reports.py's
+                # _mem_reports_for_user() and get_report() for the read side.
+                result["_owner_user_id"] = user_id
+                result["_owner_file_name"] = filename
                 _jobs[f"report_{report_id}"] = result
         else:
             # No DB configured — store in memory
             logger.info(f"[{job_id}] No DB — storing report {report_id} in memory")
+            result["_owner_user_id"] = user_id
+            result["_owner_file_name"] = filename
             _jobs[f"report_{report_id}"] = result
 
         upd(status="complete", stage="complete", progress=100, report_id=report_id)

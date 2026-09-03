@@ -235,7 +235,7 @@ export default function AnalyzePage() {
             }}>
               <div style={{ marginBottom: 28 }}>
                 <div style={{ fontSize: 18, fontWeight: 700, color: "#F8FAFC", marginBottom: 4 }}>Analyzing Candidate Resume</div>
-                <div style={{ fontFamily: "monospace", fontSize: 12, color: "#818CF8" }}>{state.job.file_name}</div>
+                <div style={{ fontFamily: "var(--font-mono), monospace", fontSize: 12, color: "#818CF8" }}>{state.job.file_name}</div>
               </div>
 
               {/* Live status bar */}
@@ -248,7 +248,7 @@ export default function AnalyzePage() {
                 <span style={{ fontSize: 14, color: "#F8FAFC", fontWeight: 600 }}>
                   {STAGES.find(s => s.key === state.job.stage)?.label || state.job.stage}
                 </span>
-                <span style={{ marginLeft: "auto", fontFamily: "monospace", fontSize: 13, color: "#818CF8", fontWeight: 700 }}>{progress}%</span>
+                <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono), monospace", fontSize: 13, color: "#818CF8", fontWeight: 700 }}>{progress}%</span>
               </div>
 
               {/* Stage Steps */}

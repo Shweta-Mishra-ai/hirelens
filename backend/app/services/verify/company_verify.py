@@ -35,12 +35,52 @@ def _guess_domain(company: str) -> str | None:
     return "".join(words) + ".com"
 
 
+# Redirect hops allowed before giving up on a candidate URL — matches the
+# limit used in certification_verify.py and ats.py for consistency.
+_MAX_REDIRECT_HOPS = 3
+
+
+async def _safe_head(client: httpx.AsyncClient, url: str) -> httpx.Response | None:
+    """
+    HEAD request that re-validates the SSRF guard on every redirect hop.
+
+    The company domain here is guessed from the candidate's resume text
+    (via _guess_domain), which makes it indirectly attacker-influenced the
+    same way a directly-supplied URL would be. This used to run on a
+    client constructed with follow_redirects=True (plus a redundant
+    per-call follow_redirects=True) — httpx would silently follow any
+    redirect chain, including one ending at an internal/metadata address,
+    after only checking the guessed domain itself. Mirrors the same
+    per-hop re-check pattern used elsewhere in this codebase.
+    """
+    current_url = url
+    for _ in range(_MAX_REDIRECT_HOPS + 1):
+        if not is_public_http_url(current_url):
+            return None
+        try:
+            r = await client.head(current_url, follow_redirects=False)
+        except httpx.HTTPError:
+            return None
+        if r.is_redirect:
+            location = r.headers.get("location")
+            if not location:
+                return None
+            current_url = str(httpx.URL(current_url).join(location))
+            continue
+        return r
+    return None
+
+
 async def verify_experience_companies(experience: list[dict]) -> list[dict]:
     results: list[dict] = []
     if not experience:
         return results
 
-    async with httpx.AsyncClient(timeout=settings.VERIFY_TIMEOUT_SECONDS, follow_redirects=True) as client:
+    # NOTE: follow_redirects is intentionally NOT set to True on this
+    # client (it defaults to False) — every actual request goes through
+    # _safe_head() above, which handles redirects itself with a guard
+    # re-check on each hop.
+    async with httpx.AsyncClient(timeout=settings.VERIFY_TIMEOUT_SECONDS) as client:
         for exp in experience[:MAX_COMPANIES]:
             company = (exp.get("company") or "").strip() if isinstance(exp, dict) else ""
             if not company:
@@ -60,13 +100,10 @@ async def verify_experience_companies(experience: list[dict]) -> list[dict]:
                 candidate_url = f"{scheme}{domain}"
                 if not is_public_http_url(candidate_url):
                     continue
-                try:
-                    r = await client.head(candidate_url, follow_redirects=True)
-                    if r.status_code < 400:
-                        found = True
-                        break
-                except httpx.HTTPError:
-                    continue
+                r = await _safe_head(client, candidate_url)
+                if r is not None and r.status_code < 400:
+                    found = True
+                    break
 
             results.append({
                 "company": company,

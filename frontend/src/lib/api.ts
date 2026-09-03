@@ -199,6 +199,27 @@ export const bulkAPI = {
     }
     return res.blob();
   },
+
+  // One-click: emails every completed candidate in the batch the default
+  // template for `decision`. Pass `overrides` (keyed by report_id) to
+  // customize a specific candidate's message without a separate call.
+  notifyAll: (
+    batchId: string,
+    decision: string,
+    overrides: Record<string, { subject: string; body: string }>,
+    token: string,
+  ) =>
+    req<{
+      batch_id: string;
+      decision: string;
+      total_candidates: number;
+      emails_sent: number;
+      results: { report_id: string; candidate_name: string; email_sent: boolean; reason: string | null }[];
+    }>(`/api/v1/bulk/${batchId}/notify-all`, {
+      method: "POST",
+      body: JSON.stringify({ decision, overrides }),
+      token,
+    }),
 };
 
 // ── JD Match (Feature 2) ────────────────────────────────────────────────────
@@ -350,6 +371,52 @@ export const reportsAPI = {
 
   delete: (id: string, token: string) =>
     req<void>(`/api/v1/reports/${id}`, { method: "DELETE", token }),
+
+  // Fetches the default subject/body draft for a decision — used to
+  // pre-fill the "edit before sending" panel. Never sends anything.
+  notifyDraft: (id: string, decision: string, token: string) =>
+    req<{
+      candidate_email: string | null;
+      candidate_name: string;
+      subject: string;
+      body: string;
+      has_email: boolean;
+    }>(`/api/v1/reports/${id}/notify/draft?decision=${encodeURIComponent(decision)}`, { token }),
+
+  // Sends the (default or edited) email to the candidate. Separate from
+  // `decision()` above — recording a decision never auto-emails anyone.
+  notify: (
+    id: string,
+    decision: string,
+    subject: string,
+    body: string,
+    token: string,
+  ) =>
+    req<{ status: string; email_sent: boolean; candidate_email: string | null; message: string }>(
+      `/api/v1/reports/${id}/notify`,
+      { method: "POST", body: JSON.stringify({ decision, subject, body }), token },
+    ),
+
+  analytics: (token: string) =>
+    req<{
+      total_candidates: number;
+      avg_credibility_score: number;
+      distribution: { recommended: number; manual_review: number; high_risk: number };
+      top_skills: { skill: string; count: number }[];
+      risk_categories: Record<string, number>;
+    }>("/api/v1/reports/analytics", { token }),
+};
+
+// ── Interview Co-Pilot (Feature A) ──────────────────────────────────────────
+export const copilotAPI = {
+  get: (reportId: string, token: string) =>
+    req<{ report_id: string; copilot: any }>(`/api/v1/reports/${reportId}/copilot`, { token }),
+
+  save: (reportId: string, payload: any, token: string) =>
+    req<{ status: string; report_id: string; copilot: any }>(
+      `/api/v1/reports/${reportId}/copilot`,
+      { method: "POST", body: JSON.stringify(payload), token },
+    ),
 };
 
 // ── Health ────────────────────────────────────────────────────────────────────
@@ -365,3 +432,4 @@ export const healthAPI = {
       metrics: { active_in_memory_jobs: number; in_memory_rate_limit_keys: number; process_memory_mb: number; timestamp: number };
     }>("/api/v1/health/diagnostics"),
 };
+

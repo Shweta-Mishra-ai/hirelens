@@ -211,9 +211,25 @@ async def remove_member(team_id: str, user_id: str, current_user: dict = Depends
         except Exception as e:
             logger.warning(f"DB remove member failed: {e}")
 
-    # Remove from memory
-    global _mem_team_members
-    _mem_team_members = [m for m in _mem_team_members if not (m["team_id"] == team_id and m["user_id"] == user_id)]
+    # Remove from memory.
+    #
+    # This used to do `global _mem_team_members; _mem_team_members = [...]`,
+    # which only rebinds the NAME `_mem_team_members` inside this module
+    # (teams.py). It does not touch the list object that access.py's
+    # get_user_role() actually reads — that's a separate binding of the
+    # same original name, imported at the top of this file. The practical
+    # effect: removing a team member was a complete no-op for every
+    # authorization check for as long as the process stayed up, even
+    # though this endpoint returned {"status": "removed"}.
+    #
+    # Mutating the list in place (slice assignment) instead of rebinding
+    # the name means every module holding a reference to this list — this
+    # one and access.py — sees the same change, because it's still the
+    # same object.
+    _mem_team_members[:] = [
+        m for m in _mem_team_members
+        if not (m["team_id"] == team_id and m["user_id"] == user_id)
+    ]
     return {"status": "removed"}
 
 
@@ -229,6 +245,8 @@ async def delete_team(team_id: str, current_user: dict = Depends(get_current_use
             logger.warning(f"DB delete team failed: {e}")
 
     _mem_teams.pop(team_id, None)
-    global _mem_team_members
-    _mem_team_members = [m for m in _mem_team_members if m["team_id"] != team_id]
+    # Same in-place-mutation fix as remove_member() above — see that
+    # comment for the full explanation of why `global` + reassignment
+    # silently did nothing here.
+    _mem_team_members[:] = [m for m in _mem_team_members if m["team_id"] != team_id]
     return {"status": "deleted"}
