@@ -1,7 +1,7 @@
 """HireLens API — Production FastAPI Application"""
 
 from contextlib import asynccontextmanager
-import asyncio, time, uuid, logging
+import asyncio, os, time, uuid, logging
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,7 +13,7 @@ from app.core.exceptions import (
     HireLensException, RateLimitExceeded,
     FileTooLarge, UnsupportedFileType, AuthError,
 )
-from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match, verify, ats, teams, collaboration
+from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match, verify, ats, teams, collaboration, copilot
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hirelens")
@@ -28,13 +28,26 @@ async def _keep_alive_loop():
     Pings our own /api/v1/health endpoint every 10 minutes so Render never
     considers the service idle and spins it down.
     Only runs in production; development can skip it.
+
+    Requires BACKEND_URL to be set explicitly. This used to derive the URL
+    by string-replacing two specific hardcoded hostnames inside
+    FRONTEND_URL — which silently pinged the wrong URL (or a URL that
+    doesn't exist) the moment either domain changed. Failing loudly and
+    skipping is safer than guessing.
     """
     import httpx
+
+    backend_url = settings.BACKEND_URL.strip()
+    if not backend_url:
+        logger.warning(
+            "Keep-alive pinger not started: BACKEND_URL is not set. "
+            "Without it, this service may idle-sleep on Render's free tier. "
+            "Set BACKEND_URL to this service's own public URL to enable it."
+        )
+        return
+
     await asyncio.sleep(30)  # let startup finish first
-    self_url = f"{settings.FRONTEND_URL.replace('hirelens-theta.vercel.app', 'hirelens-backend.onrender.com')}/api/v1/health"
-    # Allow override via BACKEND_URL env var
-    backend_url = getattr(settings, 'BACKEND_URL', None) or self_url
-    ping_url = backend_url.rstrip('/') + '/api/v1/health'
+    ping_url = backend_url.rstrip("/") + "/api/v1/health"
     while True:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -50,6 +63,10 @@ async def lifespan(app: FastAPI):
     logger.info(f"HireLens API starting — env={settings.APP_ENV}")
 
     # ── Security startup checks ─────────────────────────────────────────────
+    # These raise SystemExit rather than just logging, deliberately. A log
+    # line at startup is easy to miss in a deploy pipeline; a process that
+    # refuses to boot is not. Forgeable JWTs and wide-open CORS are not
+    # conditions this app should ever silently serve traffic under.
     if settings.is_production:
         if settings.SECRET_KEY == DEFAULT_SECRET_KEY or len(settings.SECRET_KEY) < 32:
             logger.critical(
@@ -58,12 +75,40 @@ async def lifespan(app: FastAPI):
                 "repo. Set a real random SECRET_KEY (32+ chars) in your environment "
                 "immediately — e.g. `python -c \"import secrets; print(secrets.token_urlsafe(48))\"`."
             )
+            raise SystemExit(
+                "Refusing to start: SECRET_KEY is missing or too short for a "
+                "production environment. Set SECRET_KEY (32+ chars) and redeploy."
+            )
         if "*" in settings.allowed_origins_list:
             logger.critical(
                 "SECURITY: ALLOWED_ORIGINS includes '*' in production — this allows "
                 "any website to make authenticated requests to this API. Restrict it "
                 "to your actual frontend domain(s)."
             )
+            raise SystemExit(
+                "Refusing to start: ALLOWED_ORIGINS is '*' in a production "
+                "environment. Set it to your real frontend domain(s) and redeploy."
+            )
+
+    # ── Worker/job-store consistency check ──────────────────────────────────
+    # See the comment in Dockerfile above the uvicorn CMD for the full
+    # explanation. This is a best-effort runtime check (uvicorn doesn't
+    # expose --workers to the app process directly), so it checks the one
+    # thing the app *can* see: whether Redis is configured. It cannot detect
+    # "someone raised --workers without setting Redis" by itself — that's
+    # why the Dockerfile comment is the primary defense — but it does catch
+    # the single most common misconfiguration (Redis unset, multi-worker
+    # intent signaled via WEB_CONCURRENCY, which Render sets automatically
+    # on some plans).
+    web_concurrency = os.environ.get("WEB_CONCURRENCY", "").strip()
+    if web_concurrency and web_concurrency != "1" and not settings.REDIS_URL:
+        logger.critical(
+            f"SECURITY/CORRECTNESS: WEB_CONCURRENCY={web_concurrency} is set but "
+            f"REDIS_URL is not configured. With more than one worker process and "
+            f"no Redis, job status and report reads will randomly fail depending "
+            f"on which worker handles the request — see job_store.py's docstring. "
+            f"Set REDIS_URL, or set WEB_CONCURRENCY=1."
+        )
 
     # Start keep-alive pinger in production
     _keep_alive_task = None
@@ -175,6 +220,7 @@ app.include_router(ats.router, prefix="/api/v1/ats", tags=["ATS Import"])
 app.include_router(teams.router, prefix="/api/v1/teams", tags=["Teams"])
 app.include_router(reports.router, prefix="/api/v1/reports", tags=["Reports"])
 app.include_router(collaboration.router, prefix="/api/v1/reports", tags=["Collaboration"])
+app.include_router(copilot.router, prefix="/api/v1/reports", tags=["Interview Co-Pilot"])
 
 @app.get("/", include_in_schema=False)
 async def root():

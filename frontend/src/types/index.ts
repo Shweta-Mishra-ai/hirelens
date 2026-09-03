@@ -113,6 +113,14 @@ export interface InterviewQuestion {
   category?: "technical" | "clarification" | "behavioral";
 }
 
+export interface TalentVelocity {
+  growth_velocity_index: number;
+  trajectory_stage: string;
+  promotion_cadence_months: number;
+  retention_stability_score: number;
+  note: string;
+}
+
 export interface Report {
   id?: string;
   created_at?: string;
@@ -126,6 +134,7 @@ export interface Report {
   certifications?: string[];
   credibility: Credibility;
   ai_content_analysis?: AIContentAnalysis;
+  talent_velocity?: TalentVelocity;
   timeline_gaps: TimelineGap[];
   flags: Flag[];
   positive_signals: PositiveSignal[];
@@ -134,6 +143,7 @@ export interface Report {
   one_liner?: string;
   recruiter_decision: Decision | null;
 }
+
 
 export interface AnalysisJob {
   id: string;

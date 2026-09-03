@@ -44,6 +44,13 @@ export default function DashboardPage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState("newest");
   const [exporting, setExporting] = useState(false);
+  const [analytics, setAnalytics] = useState<{
+    total_candidates: number;
+    avg_credibility_score: number;
+    distribution: { recommended: number; manual_review: number; high_risk: number };
+    top_skills: { skill: string; count: number }[];
+    risk_categories: Record<string, number>;
+  } | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -76,6 +83,11 @@ export default function DashboardPage() {
   }, [token, logout, router, search, sort]);
 
   useEffect(() => { loadReports(); }, [loadReports]);
+
+  useEffect(() => {
+    if (!token) return;
+    reportsAPI.analytics(token).then(setAnalytics).catch(() => {});
+  }, [token]);
 
   const handleExportAll = async () => {
     if (!token) return;
@@ -212,10 +224,38 @@ export default function DashboardPage() {
                 <span style={{ fontSize: 12, fontWeight: 600, color: "#94A3B8", textTransform: "uppercase", letterSpacing: 0.5 }}>{s.label}</span>
                 <div style={{ width: 34, height: 34, borderRadius: 10, background: s.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>{s.icon}</div>
               </div>
-              <div style={{ fontSize: 32, fontWeight: 900, color: s.color, fontFamily: "monospace", letterSpacing: -1 }}>{s.n}</div>
+              <div style={{ fontSize: 32, fontWeight: 900, color: s.color, fontFamily: "var(--font-mono), monospace", letterSpacing: -1 }}>{s.n}</div>
             </div>
           ))}
         </div>
+
+        {/* Enterprise Talent Intelligence Panel */}
+        {analytics && analytics.top_skills && analytics.top_skills.length > 0 && (
+          <div style={{
+            background: "rgba(30, 41, 59, 0.5)", backdropFilter: "blur(12px)",
+            border: "1px solid rgba(99, 102, 241, 0.2)", borderRadius: 16,
+            padding: "18px 22px", marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16
+          }}>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#818CF8", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4 }}>
+                📈 Enterprise Talent Pool Intelligence
+              </div>
+              <div style={{ fontSize: 13, color: "#CBD5E1" }}>
+                Top in-demand verified skills across your candidate pipeline:
+              </div>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {analytics.top_skills.slice(0, 6).map(s => (
+                <span key={s.skill} style={{
+                  padding: "4px 10px", borderRadius: 8, background: "rgba(99, 102, 241, 0.15)",
+                  border: "1px solid rgba(99, 102, 241, 0.3)", color: "#C7D2FE", fontSize: 12, fontWeight: 600
+                }}>
+                  {s.skill} ({s.count})
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Search + Filter toolbar */}
         <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
@@ -315,12 +355,12 @@ export default function DashboardPage() {
                 
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC", marginBottom: 2 }}>{r.candidate_name || "Unknown Candidate"}</div>
-                  <div style={{ fontSize: 12, color: "#94A3B8", fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.file_name}</div>
+                  <div style={{ fontSize: 12, color: "#94A3B8", fontFamily: "var(--font-mono), monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.file_name}</div>
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontSize: 11, color: "#94A3B8", fontWeight: 600 }}>Score</span>
-                  <span style={{ fontSize: 20, fontWeight: 900, color, fontFamily: "monospace", minWidth: 36, textAlign: "right" }}>{r.overall_score}</span>
+                  <span style={{ fontSize: 20, fontWeight: 900, color, fontFamily: "var(--font-mono), monospace", minWidth: 36, textAlign: "right" }}>{r.overall_score}</span>
                 </div>
 
                 <VerdictChip verdict={verdictFromRecommendation(r.recommendation)} />
