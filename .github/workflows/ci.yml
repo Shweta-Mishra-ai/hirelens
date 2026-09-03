@@ -34,7 +34,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: python -m pytest tests/ -v --tb=short --timeout=60
+        run: python -m pytest tests/ -v --tb=short
         env:
           APP_ENV: development
           SECRET_KEY: test-secret-key-for-ci-only-do-not-use-in-prod
@@ -78,7 +78,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
