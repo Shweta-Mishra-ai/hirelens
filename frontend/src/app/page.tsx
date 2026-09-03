@@ -6,15 +6,16 @@ import { color } from "@/lib/design-tokens";
 
 export default function RootPage() {
   const router = useRouter();
-  const token = useAuthStore((s) => s.token);
+  const { token, hasHydrated } = useAuthStore();
 
   useEffect(() => {
+    if (!hasHydrated) return;
     if (token) {
       router.replace("/dashboard");
     } else {
       router.replace("/login");
     }
-  }, [token, router]);
+  }, [hasHydrated, token, router]);
 
   return (
     <div style={{ minHeight: "100vh", background: color.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
