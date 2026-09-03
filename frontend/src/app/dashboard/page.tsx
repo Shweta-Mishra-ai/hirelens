@@ -4,8 +4,22 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
 import { reportsAPI, authAPI, APIError } from "@/lib/api";
-import type { Report } from "@/types";
 import { VerdictChip, verdictFromRecommendation } from "@/components/VerdictStamp";
+import {
+  Search,
+  LayoutDashboard,
+  Zap,
+  Files,
+  Target,
+  Users,
+  FileText,
+  BarChart3,
+  CheckCircle2,
+  AlertTriangle,
+  TrendingUp,
+  Download,
+  User as UserIcon,
+} from "lucide-react";
 
 function scoreColor(n: number) {
   if (n >= 75) return "#10B981";
@@ -139,11 +153,11 @@ export default function DashboardPage() {
   const avgScore    = reports.length ? Math.round(reports.reduce((s, r) => s + ((r as any).overall_score || 0), 0) / reports.length) : 0;
 
   const NAV_LINKS = [
-    { href: "/dashboard", label: "Dashboard", icon: "📊" },
-    { href: "/analyze", label: "Analyze", icon: "⚡" },
-    { href: "/bulk", label: "Bulk Upload", icon: "🗂️" },
-    { href: "/match", label: "JD Match", icon: "🎯" },
-    { href: "/teams", label: "Teams", icon: "👥" },
+    { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={14} /> },
+    { href: "/analyze", label: "Analyze", icon: <Zap size={14} /> },
+    { href: "/bulk", label: "Bulk Upload", icon: <Files size={14} /> },
+    { href: "/match", label: "JD Match", icon: <Target size={14} /> },
+    { href: "/teams", label: "Teams", icon: <Users size={14} /> },
   ];
 
   return (
@@ -160,8 +174,8 @@ export default function DashboardPage() {
             width: 32, height: 32, borderRadius: 10,
             background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 16, boxShadow: "0 0 16px rgba(99,102,241,0.4)"
-          }}>🔎</div>
+            boxShadow: "0 0 16px rgba(99,102,241,0.4)"
+          }}><Search size={16} color="#FFFFFF" strokeWidth={2.5} /></div>
           <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
         </Link>
 
@@ -173,12 +187,12 @@ export default function DashboardPage() {
               <Link key={link.href} href={link.href} style={{
                 padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
                 color: active ? "#F8FAFC" : "#94A3B8",
-                background: active ? "rgba(99, 102, 241, 0.25)" : "transparent",
+                background: active ? "rgba(99, 102, 241, 0.2)" : "transparent",
                 border: active ? "1px solid rgba(99, 102, 241, 0.4)" : "1px solid transparent",
-                textDecoration: "none", transition: "all 0.15s ease",
-                display: "flex", alignItems: "center", gap: 6,
+                display: "flex", alignItems: "center", gap: 7, textDecoration: "none",
+                transition: "all 0.15s ease",
               }}>
-                <span>{link.icon}</span>
+                <span style={{ display: "inline-flex", alignItems: "center" }}>{link.icon}</span>
                 <span>{link.label}</span>
               </Link>
             );
@@ -233,10 +247,10 @@ export default function DashboardPage() {
         {/* 4 Hero Stats Cards */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 16, marginBottom: 28 }}>
           {[
-            { n: total, label: "Total Analyzed", color: "#6366F1", icon: "📄", bg: "rgba(99,102,241,0.1)", border: "rgba(99,102,241,0.25)" },
-            { n: avgScore, label: "Avg Score", color: "#3B82F6", icon: "📊", bg: "rgba(59,130,246,0.1)", border: "rgba(59,130,246,0.25)" },
-            { n: recommended, label: "Recommended", color: "#10B981", icon: "✅", bg: "rgba(16,185,129,0.1)", border: "rgba(16,185,129,0.25)" },
-            { n: highRisk, label: "High Risk", color: "#EF4444", icon: "🚨", bg: "rgba(239,68,68,0.1)", border: "rgba(239,68,68,0.25)" },
+            { n: total, label: "Total Analyzed", color: "#6366F1", icon: <FileText size={16} color="#6366F1" />, bg: "rgba(99,102,241,0.1)", border: "rgba(99,102,241,0.25)" },
+            { n: avgScore, label: "Avg Score", color: "#3B82F6", icon: <BarChart3 size={16} color="#3B82F6" />, bg: "rgba(59,130,246,0.1)", border: "rgba(59,130,246,0.25)" },
+            { n: recommended, label: "Recommended", color: "#10B981", icon: <CheckCircle2 size={16} color="#10B981" />, bg: "rgba(16,185,129,0.1)", border: "rgba(16,185,129,0.25)" },
+            { n: highRisk, label: "High Risk", color: "#EF4444", icon: <AlertTriangle size={16} color="#EF4444" />, bg: "rgba(239,68,68,0.1)", border: "rgba(239,68,68,0.25)" },
           ].map(s => (
             <div key={s.label} style={{
               background: "rgba(30, 41, 59, 0.6)",
@@ -247,7 +261,7 @@ export default function DashboardPage() {
             }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 12, fontWeight: 600, color: "#94A3B8", textTransform: "uppercase", letterSpacing: 0.5 }}>{s.label}</span>
-                <div style={{ width: 34, height: 34, borderRadius: 10, background: s.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>{s.icon}</div>
+                <div style={{ width: 34, height: 34, borderRadius: 10, background: s.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>{s.icon}</div>
               </div>
               <div style={{ fontSize: 32, fontWeight: 900, color: s.color, fontFamily: "var(--font-mono), monospace", letterSpacing: -1 }}>{s.n}</div>
             </div>
@@ -262,8 +276,8 @@ export default function DashboardPage() {
             padding: "18px 22px", marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16
           }}>
             <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#818CF8", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4 }}>
-                📈 Enterprise Talent Pool Intelligence
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#818CF8", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                <TrendingUp size={14} color="#818CF8" /> Enterprise Talent Pool Intelligence
               </div>
               <div style={{ fontSize: 13, color: "#CBD5E1" }}>
                 Top in-demand verified skills across your candidate pipeline:
@@ -285,7 +299,9 @@ export default function DashboardPage() {
         {/* Search + Filter toolbar */}
         <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
           <div style={{ flex: "1 1 260px", position: "relative" }}>
-            <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: "#64748B" }}>🔍</span>
+            <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center" }}>
+              <Search size={14} color="#64748B" />
+            </span>
             <input
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
@@ -315,9 +331,11 @@ export default function DashboardPage() {
               background: "rgba(30, 41, 59, 0.7)", color: "#CBD5E1", fontWeight: 700, fontSize: 13,
               cursor: exporting || reports.length === 0 ? "default" : "pointer",
               opacity: exporting || reports.length === 0 ? 0.5 : 1, whiteSpace: "nowrap",
+              display: "flex", alignItems: "center", gap: 7
             }}
           >
-            {exporting ? "Exporting…" : "⬇ Export All CSV"}
+            <Download size={14} />
+            <span>{exporting ? "Exporting…" : "Export CSV"}</span>
           </button>
         </div>
 
@@ -341,14 +359,18 @@ export default function DashboardPage() {
           )}
           {!loading && !error && reports.length === 0 && search && (
             <div style={{ padding: 64, textAlign: "center" }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>🔍</div>
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+                <Search size={36} color="#64748B" />
+              </div>
               <div style={{ fontSize: 16, fontWeight: 600, color: "#F8FAFC", marginBottom: 6 }}>No matches for &quot;{search}&quot;</div>
               <div style={{ fontSize: 13, color: "#94A3B8" }}>Try searching for a different candidate name or skill.</div>
             </div>
           )}
           {!loading && !error && reports.length === 0 && !search && (
             <div style={{ padding: 64, textAlign: "center" }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>📄</div>
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
+                <FileText size={36} color="#64748B" />
+              </div>
               <div style={{ fontSize: 16, fontWeight: 600, color: "#F8FAFC", marginBottom: 6 }}>No candidate reports yet</div>
               <div style={{ fontSize: 13, color: "#94A3B8", marginBottom: 24 }}>Upload your first resume to get started</div>
               <Link href="/analyze" style={{ padding: "10px 24px", borderRadius: 10, background: "linear-gradient(135deg, #6366F1, #4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
@@ -375,7 +397,7 @@ export default function DashboardPage() {
                   display: "flex", alignItems: "center", justifyContent: "center",
                   fontSize: 14, fontWeight: 700, color: "#818CF8", flexShrink: 0
                 }}>
-                  {r.candidate_name ? r.candidate_name[0].toUpperCase() : "👤"}
+                  {r.candidate_name ? r.candidate_name[0].toUpperCase() : <UserIcon size={16} />}
                 </div>
                 
                 <div style={{ flex: 1, minWidth: 0 }}>
