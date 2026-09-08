@@ -4,7 +4,7 @@ import logging
 from fastapi import APIRouter, Depends
 from app.core.config import settings
 from app.core.readiness import config_warnings
-from app.core.dependencies import get_db, get_redis, get_current_user
+from app.core.dependencies import get_db, get_redis, require_admin
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
@@ -84,7 +84,7 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
 
 @router.get("/health/diagnostics", tags=["Health"])
 async def diagnostics(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_admin),
     db=Depends(get_db),
     redis=Depends(get_redis),
 ):
@@ -92,9 +92,10 @@ async def diagnostics(
     Detailed system diagnostics & load health metrics.
     Returns metrics on job queues, system limits, and process capacity.
 
-    Requires authentication — this exposes internal process memory, active
-    job counts, and rate-limit internals, which is reconnaissance-useful
-    information and should never be reachable anonymously.
+    Administrators only (see require_admin). This exposes internal process
+    memory, active job counts and rate-limit internals — reconnaissance-useful
+    information. It was previously reachable by ANY authenticated caller,
+    which on a platform with open signup means anyone willing to register.
     """
     import os, time
     from app.api.v1.endpoints.analysis import _jobs

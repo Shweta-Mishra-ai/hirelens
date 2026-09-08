@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import List
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
@@ -35,6 +34,12 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+
+    # Comma-separated emails allowed to reach the admin-only endpoints
+    # (/auth/stats, /health/diagnostics). Empty in production means nobody
+    # can — see require_admin() in app/core/dependencies.py for why that is
+    # the right default rather than "everyone".
+    ADMIN_EMAILS: str = ""
 
     # Whether the session cookie must survive a cross-site request, i.e.
     # whether the frontend and this API are on different registrable domains.
@@ -113,6 +118,10 @@ class Settings(BaseSettings):
         
         # Single URL
         return [val] if val else ["http://localhost:3000"]
+
+    @property
+    def admin_emails_list(self) -> List[str]:
+        return [e.strip().lower() for e in self.ADMIN_EMAILS.split(",") if e.strip()]
 
     @property
     def is_production(self) -> bool:

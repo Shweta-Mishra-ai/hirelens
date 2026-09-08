@@ -8,7 +8,6 @@ Ensures users, passwords, and reports persist across server restarts.
 import os
 import sqlite3
 import hashlib
-import json
 import uuid
 import logging
 import bcrypt

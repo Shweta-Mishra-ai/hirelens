@@ -177,6 +177,32 @@ function EmptyNote({ text }: { text: string }) {
   return <div style={{ fontSize: 12, color: "#B4B4AC", padding: "10px 0" }}>{text}</div>;
 }
 
+/**
+ * Only ever put an http(s) URL in an href.
+ *
+ * The one dynamic href on this page is a certification link, and that value
+ * originates in the CANDIDATE'S RESUME — the least trustworthy input in the
+ * whole product. An `href` accepts `javascript:` and `data:` URLs, and React
+ * does not block them (it warns and renders), so a link scheme is a script
+ * execution primitive one click away from the recruiter's session.
+ *
+ * That is not currently reachable: the backend extracts these links with a
+ * regex anchored to `https?://` (URL_RE in certification_verify.py), so no
+ * other scheme can survive into the stored report. This check exists anyway,
+ * because a page rendering attacker-authored data should not be one regex
+ * edit three services away from being an XSS sink — and nothing in this file
+ * would tell you that regex was load-bearing.
+ */
+function httpUrlOrNull(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function VerifyRow({
   label, status, statusMap, detail, link,
 }: {
@@ -187,14 +213,15 @@ function VerifyRow({
   link?: string;
 }) {
   const b = statusMap[status] || { icon: <HelpCircle size={13} />, label: status, color: "#B4B4AC" };
+  const safeLink = httpUrlOrNull(link);
   return (
     <div style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 0", borderTop: "1px solid rgba(237, 237, 234, 0.08)" }}>
       <span style={{ color: b.color, minWidth: 16, display: "inline-flex", alignItems: "center", marginTop: 2 }}>{b.icon}</span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, color: "#EDEDEA", fontWeight: 600 }}>{label}</div>
         {detail && <div style={{ fontSize: 11, color: "#B4B4AC", marginTop: 2, lineHeight: 1.5 }}>{detail}</div>}
-        {link && (
-          <a href={link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#5B84A6", textDecoration: "none" }}>
+        {safeLink && (
+          <a href={safeLink} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#5B84A6", textDecoration: "none" }}>
             View link ↗
           </a>
         )}

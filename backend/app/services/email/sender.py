@@ -8,6 +8,7 @@ import logging
 import httpx
 from email.message import EmailMessage
 from app.core.config import settings
+from app.core.redaction import mask_email
 
 logger = logging.getLogger("hirelens")
 
@@ -36,7 +37,7 @@ async def send_raw_email(to_email: str, subject: str, html_content: str, text_fa
                     },
                 )
                 if res.status_code in (200, 201):
-                    logger.info(f"Email sent via Resend to {to_email}")
+                    logger.info(f"Email sent via Resend to {mask_email(to_email)}")
                     return True
                 logger.warning(f"Resend email API returned status {res.status_code}: {res.text}")
         except Exception as e:
@@ -55,12 +56,15 @@ async def send_raw_email(to_email: str, subject: str, html_content: str, text_fa
                 server.starttls()
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
                 server.send_message(msg)
-            logger.info(f"Email sent via SMTP to {to_email}")
+            logger.info(f"Email sent via SMTP to {mask_email(to_email)}")
             return True
         except Exception as e:
             logger.error(f"SMTP email dispatch error: {e}")
 
-    logger.info(f"No active email provider (Resend/SMTP) configured. Would have sent to {to_email}: {subject}")
+    logger.info(
+        f"No active email provider (Resend/SMTP) configured. "
+        f"Would have sent to {mask_email(to_email)}: {subject}"
+    )
     return False
 
 

@@ -19,7 +19,7 @@ that does not require shell access to the container.
 """
 
 from app.core.config import settings
-from app.core.site import is_same_site, session_cookie_is_cross_site
+from app.core.site import session_cookie_is_cross_site
 
 DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production-min-32"
 

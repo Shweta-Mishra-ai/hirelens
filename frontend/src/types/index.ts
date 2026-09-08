@@ -239,15 +239,6 @@ export interface User {
   company?: string;
 }
 
-export interface AuthState {
-  user: User | null;
-  token: string | null;
-  isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  signup: (email: string, password: string, fullName: string, company?: string) => Promise<void>;
-  logout: () => void;
-}
-
 // ── Public Data Verification (Feature 3) ────────────────────────────────────
 export type GithubVerifyStatus =
   | "verified" | "partial" | "no_public_activity" | "not_found"

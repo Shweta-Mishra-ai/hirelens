@@ -24,7 +24,6 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Database } from "lucide-react";
 import { healthAPI, type HealthStatus } from "@/lib/api";
 import { Badge } from "@/components/ui/primitives";
-import { color } from "@/lib/design-tokens";
 
 export function SystemStatus() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
@@ -93,5 +92,3 @@ export function SystemStatus() {
     </Badge>
   );
 }
-
-export const systemStatusAccent = color.brand;

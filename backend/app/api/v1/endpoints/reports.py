@@ -14,9 +14,10 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
 from app.core.dependencies import get_current_user, get_db, get_redis
-from app.core.cache import cache_get, cache_set, cache_delete
+from app.core.cache import cache_get, cache_set
 from app.core.exceptions import NotFoundError, ForbiddenError, HireLensException, ValidationError
 from app.core.rate_limit import check_rate_limit
+from app.core.redaction import mask_email
 from app.core.config import settings
 from app.api.v1.endpoints.analysis import _jobs  # in-memory fallback store
 from app.services.teams.access import user_can_access_report
@@ -607,7 +608,14 @@ async def notify_candidate(
         except Exception as e:
             logger.warning(f"Could not record notification timestamp for {report_id}: {e}")
 
-    logger.info(f"Notify | report={report_id} decision={body.decision} email_sent={sent} to={candidate_email}")
+    # The candidate's address is masked: they are not a user of this system,
+    # never consented to anything here, and a log line naming them is a
+    # durable record of "this person applied for a job" sitting outside the
+    # report they belong to. See app/core/redaction.py.
+    logger.info(
+        f"Notify | report={report_id} decision={body.decision} "
+        f"email_sent={sent} to={mask_email(candidate_email)}"
+    )
 
     return {
         "status": "sent" if sent else "queued_no_provider",

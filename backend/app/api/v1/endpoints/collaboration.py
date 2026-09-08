@@ -13,12 +13,19 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, field_validator
 from typing import Literal
 
-from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import HireLensException, NotFoundError, ForbiddenError, DBRequiredError
+from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.rate_limit import check_rate_limit
+from app.core.exceptions import HireLensException, NotFoundError, DBRequiredError
 from app.services.teams.access import user_can_access_report, is_team_member
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
+
+# Per-user cap on comment writes. Comments are capped at 2000 characters
+# each but were otherwise unbounded, so any team member could fill the
+# reports table (and every teammate's comment thread) as fast as the network
+# allowed. Generous enough that a real discussion never notices it.
+COMMENTS_PER_MINUTE = 20
 
 
 class ShareRequest(BaseModel):
@@ -41,6 +48,23 @@ class VoteRequest(BaseModel):
     vote: Literal["advance", "reject", "maybe"]
 
 
+def _report_not_found(report_id: str) -> NotFoundError:
+    """The single answer for both "no such report" and "not yours".
+
+    Returning 403 for the second case makes every one of these endpoints an
+    existence oracle: an attacker holding a report id (from a log, a shared
+    link, a screenshot) learns whether it is real by whether they get 403 or
+    404, and can confirm ids without ever being able to read them. The
+    reports router already answers 404 for both — there is a test named
+    test_nonexistent_report_raises_not_found_not_forbidden asserting exactly
+    that — so this router was the one place that leaked it.
+
+    A genuine teammate is let through by user_can_access_report() before
+    reaching here, so nobody with legitimate access sees this.
+    """
+    return NotFoundError(f"Report '{report_id}' not found.")
+
+
 def _fetch_report_row(db, report_id: str) -> dict:
     if not db:
         raise DBRequiredError()
@@ -59,7 +83,7 @@ async def share_report(report_id: str, body: ShareRequest, current_user: dict = 
     """Owner-only: shares a report with a team they belong to."""
     row = _fetch_report_row(db, report_id)
     if row["user_id"] != current_user["id"]:
-        raise ForbiddenError()
+        raise _report_not_found(report_id)
     if not is_team_member(db, body.team_id, current_user["id"]):
         raise HireLensException("You must be a member of the team you're sharing with.")
 
@@ -75,7 +99,7 @@ async def share_report(report_id: str, body: ShareRequest, current_user: dict = 
 async def unshare_report(report_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     row = _fetch_report_row(db, report_id)
     if row["user_id"] != current_user["id"]:
-        raise ForbiddenError()
+        raise _report_not_found(report_id)
     try:
         db.table("reports").update({"team_id": None}).eq("id", report_id).execute()
         return {"status": "unshared"}
@@ -88,7 +112,7 @@ async def unshare_report(report_id: str, current_user: dict = Depends(get_curren
 async def list_comments(report_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     row = _fetch_report_row(db, report_id)
     if not user_can_access_report(db, row, current_user["id"]):
-        raise ForbiddenError()
+        raise _report_not_found(report_id)
     try:
         res = db.table("report_comments").select("*").eq("report_id", report_id).order("created_at").execute()
         return {"comments": res.data or []}
@@ -98,10 +122,17 @@ async def list_comments(report_id: str, current_user: dict = Depends(get_current
 
 
 @router.post("/{report_id}/comments")
-async def add_comment(report_id: str, body: CommentRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+async def add_comment(
+    report_id: str,
+    body: CommentRequest,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+):
+    check_rate_limit(redis, f"comment:{current_user['id']}", COMMENTS_PER_MINUTE, window_seconds=60)
     row = _fetch_report_row(db, report_id)
     if not user_can_access_report(db, row, current_user["id"]):
-        raise ForbiddenError()
+        raise _report_not_found(report_id)
     try:
         res = db.table("report_comments").insert({
             "report_id": report_id, "user_id": current_user["id"], "comment": body.comment,
@@ -124,7 +155,13 @@ async def delete_comment(report_id: str, comment_id: str, current_user: dict = D
     if not res.data:
         raise NotFoundError("Comment not found.")
     if res.data["user_id"] != current_user["id"]:
-        raise ForbiddenError()
+        # 404, not 403: a 403 confirms "this comment id exists, it just isn't
+        # yours", which turns the endpoint into an existence oracle an
+        # attacker can walk to enumerate valid comment ids. The report
+        # endpoints already deliberately answer 404 for both cases (see
+        # test_nonexistent_report_raises_not_found_not_forbidden); this path
+        # was the odd one out.
+        raise NotFoundError("Comment not found.")
     try:
         db.table("report_comments").delete().eq("id", comment_id).execute()
         return {"status": "deleted"}
@@ -137,7 +174,7 @@ async def delete_comment(report_id: str, comment_id: str, current_user: dict = D
 async def list_votes(report_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     row = _fetch_report_row(db, report_id)
     if not user_can_access_report(db, row, current_user["id"]):
-        raise ForbiddenError()
+        raise _report_not_found(report_id)
     try:
         res = db.table("report_votes").select("*").eq("report_id", report_id).execute()
         votes = res.data or []
@@ -158,7 +195,7 @@ async def list_votes(report_id: str, current_user: dict = Depends(get_current_us
 async def cast_vote(report_id: str, body: VoteRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     row = _fetch_report_row(db, report_id)
     if not user_can_access_report(db, row, current_user["id"]):
-        raise ForbiddenError()
+        raise _report_not_found(report_id)
     try:
         # upsert on (report_id, user_id) — one vote per person, casting again updates it
         db.table("report_votes").upsert({
