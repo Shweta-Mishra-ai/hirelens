@@ -22,6 +22,78 @@ HireLens is a decision-support platform, not an automated gatekeeper. Every scor
 
 ---
 
+## Launch checklist
+
+Do these in order. Everything on this list is something that leaves the API
+reporting itself perfectly healthy while the product is broken for real users
+— which is exactly the class of failure that only shows up after launch.
+
+**1. Run the SQL migrations, in order, against your Supabase project.**
+`backend/sql/001_initial_schema.sql` → `002_team_collaboration.sql` →
+`003_candidate_notifications.sql`. 002 and 003 `ALTER TABLE public.reports`,
+so running them without 001 fails.
+
+**2. Set the required environment variables** in your hosting provider's
+dashboard (not just in `render.yaml` — `sync: false` there means "a human
+must type this in"). See `render.yaml` for what each one breaks when missing.
+The two most commonly forgotten:
+
+| Variable | What happens if you skip it |
+|---|---|
+| `ALLOWED_ORIGINS` | Defaults to `http://localhost:3000`. The browser blocks **every** request from your deployed frontend as a CORS violation. The API looks completely healthy. |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Accounts and reports go to container-local SQLite, wiped on every restart, redeploy and idle spin-down. |
+
+**3. After the deploy, check the health endpoint:**
+
+```bash
+curl https://<your-api>.onrender.com/api/v1/health
+```
+
+You are looking for exactly this:
+
+```json
+{ "status": "ok", "storage_mode": "supabase", "config_warnings": [] }
+```
+
+`config_warnings` is the authoritative list of misconfigurations — each entry
+names what is wrong and what it breaks (see `backend/app/core/readiness.py`).
+`storage_mode` is checked by running a real `select` against the `reports`
+table, not by looking at an env var, so `"supabase"` means the database is
+genuinely reachable and migrated.
+
+**4. Log in on the deployed frontend, then hard-refresh the page.** You should
+stay logged in. If you get bounced to `/login`, read the cross-site cookie
+note under [Sessions](#sessions-and-the-cross-site-cookie-caveat) below.
+
+**5. Upload one real resume end to end** and open the report. This is the only
+check that exercises the LLM key, the parser, and the report view together.
+
+---
+
+## Sessions and the cross-site cookie caveat
+
+The session token is restored on page load from an **httpOnly cookie**, so the
+raw JWT is never persisted to `localStorage`.
+
+That cookie is a **third-party cookie** in the default deployment, because
+`*.vercel.app` and `*.onrender.com` are separate registrable sites. Safari
+(ITP), Firefox in strict mode, and Chrome in Incognito block third-party
+cookies by default and drop it. Two mitigations ship:
+
+- The cookie is marked `Partitioned` (CHIPS), which keeps it working in Chrome
+  under third-party cookie blocking, and in Safari 18.4+.
+- The frontend keeps a **per-tab `sessionStorage` fallback**, re-validated
+  against `/auth/me` before it is trusted, so a refresh keeps you logged in
+  even when the cookie is dropped entirely. It is cleared when the tab closes.
+
+**The real fix is to stop being cross-site**: serve both halves from one
+registrable domain (`app.example.com` for the frontend, `api.example.com` for
+this API). Then the cookie is first-party, `SameSite=Lax` works everywhere,
+and the `sessionStorage` fallback becomes dead code. That is a DNS/hosting
+change, not a code change — worth doing before this carries real traffic.
+
+---
+
 ## What HireLens Does
 
 Six analysis/intelligence modules, wired end-to-end, plus real-time public verification:
@@ -87,7 +159,10 @@ If `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` are missing or unreachable, HireLens 
 
 Two things make this impossible to miss instead of a silent trap:
 - **Startup log**: a `CRITICAL` line fires at boot if the app is running in `APP_ENV=production` without Supabase configured.
-- **`GET /api/v1/health`**: returns `"storage_mode": "supabase" | "local_fallback"` and a human-readable `storage_warning` — check this after every deploy.
+- **`GET /api/v1/health`**: returns `"storage_mode": "supabase" | "local_fallback"` and a human-readable `storage_warning` — check this after every deploy. `storage_mode` is determined by running a real `select` against the `reports` table, so it also catches "Supabase is configured but the migrations were never run".
+- **`config_warnings` in the same response**: the full list of production misconfigurations that leave the process healthy and the product broken — CORS still on localhost, no LLM key, invite links pointing at a domain the API will reject. See `backend/app/core/readiness.py`.
+
+**Run the migrations first.** `backend/sql/001_initial_schema.sql` creates `public.reports`; `002` and `003` `ALTER` it, so they fail if 001 hasn't run. Order: `001` → `002` → `003`.
 
 **Before deploying anywhere real users will use it:** set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` directly in your hosting provider's environment settings (not just in `render.yaml`, which declares them as `sync: false` — placeholders you fill in yourself, not values it sets for you).
 
@@ -96,7 +171,7 @@ Two things make this impossible to miss instead of a silent trap:
 ## Load Handling, Caching & Error Handling
 
 ### Load Handling
-- **Redis Rate Limiting**: Per-IP limits on auth endpoints (login: 10/15min, signup: 8/hr) + per-user limits on analysis endpoints.
+- **Redis Rate Limiting**: Per-IP limits on auth endpoints (login: 10/15min, signup: 8/hr) + per-user limits on analysis endpoints. The client IP is taken from the **rightmost** routable `X-Forwarded-For` entry, not the leftmost — a proxy appends to that header, so the leftmost value is whatever the caller sent and using it lets an attacker land every login attempt in a fresh bucket. Set `TRUST_PROXY_HEADERS=false` if the app is ever exposed without a proxy in front.
 - **Concurrency Control**: Bulk & JD match uploads use `asyncio.Semaphore(BULK_CONCURRENCY)` to prevent event-loop starvation and stay within LLM rate limits.
 - **File Size Ceiling**: Max file size capped at 10MB (`MAX_FILE_SIZE_MB`).
 - **Registration capacity gate**: signups are capped and checked against a count of distinct Supabase Auth users (via the admin API) — not a proxy metric — so one recruiter uploading many reports can never block everyone else from signing up.
@@ -122,6 +197,18 @@ All endpoints return structured JSON payloads with tracking `x-request-id` heade
   "request_id": "req_xyz123"
 }
 ```
+
+Request-validation failures use the same shape rather than FastAPI's default `{"detail": [...]}`, plus a per-field breakdown — otherwise the frontend has no `message` to render and every rejected form field surfaces as a bare "Server error 422":
+```json
+{
+  "error": "validation_error",
+  "message": "full_name: Full name must be at least 2 characters.",
+  "details": [{ "field": "full_name", "message": "Full name must be at least 2 characters." }],
+  "request_id": "req_xyz123"
+}
+```
+
+Uncaught render errors on the frontend are caught by `app/error.tsx` (and `app/global-error.tsx` for the root layout), which show a real message and a retry rather than Next.js's blank "Application error: a client-side exception has occurred" page.
 
 ---
 
@@ -180,17 +267,25 @@ npm test
 # Frontend type check
 npm run type-check
 
+# Frontend lint (Next 16 removed `next lint` AND the lint pass inside
+# `next build`, so this calls eslint directly — see .github/workflows/ci.yml)
+npm run lint
+
 # Frontend production build
 npm run build
 ```
 
-The frontend suite currently covers the API client's error/timeout/auth-header handling, the auth store's login/logout/error-reset flows, and the shared UI primitives (`src/components/ui/primitives.tsx`) — the foundation to build page-level coverage on top of as more pages migrate onto the shared component kit.
+The frontend suite covers the API client's error/timeout/auth-header handling, the auth store's login/logout/session-restore flows (including the `sessionStorage` fallback for browsers that drop the cross-site cookie), and the shared UI primitives — the foundation to build page-level coverage on top of.
+
+The backend suite is hermetic: `tests/conftest.py` points the local SQLite database at a per-run temp file. Without that, tests wrote to the same `backend/data/local.db` the dev server uses, so a second `pytest` run on the same machine failed on "email already registered" while a fresh CI runner passed — a failure mode that only ever appears locally and gets written off as a stale file.
+
+Every job runs in CI on each push and PR: backend pytest, `pip-audit`, frontend vitest, `npm audit`, typecheck, lint, and a real production build.
 
 ---
 
 ## UI Component Kit
 
-Pages were previously built with hand-rolled inline styles duplicated across files. `src/components/ui/primitives.tsx` now centralizes the repeated patterns — `Card`, `Button`, `Badge`, `TextInput`, `StatCard`, `PageShell`, `AlertBanner` — all driven by `src/lib/design-tokens.ts`, so a spacing or color change happens in one place instead of a dozen. `/login` and `/dashboard` are migrated onto it; the same pattern applies cleanly to the remaining pages (`/bulk`, `/match`, `/teams`, `/report/[id]`, `/analyze`) going forward.
+Pages were previously built with hand-rolled inline styles duplicated across files. `src/components/ui/primitives.tsx` now centralizes the repeated patterns — `Card`, `Button`, `Badge`, `TextInput`, `StatCard`, `PageShell`, `AlertBanner` — all driven by `src/lib/design-tokens.ts`, so a spacing or color change happens in one place instead of a dozen. Every top-level page (`/`, `/login`, `/signup`, `/dashboard`, `/analyze`, `/bulk`, `/match`, `/teams`) is migrated onto it, sharing one `AppNavbar` instead of ~50 hand-copied lines per page. `/report/[id]` uses the same design tokens and palette but has not been restructured onto the shared components — it is a detail view with its own header rather than the tab-navbar pattern, and at ~1,650 lines the rewrite risk outweighs the consistency gain without visual QA.
 
 ---
 
@@ -242,7 +337,9 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 | `/api/v1/match/upload` | POST | JD match upload |
 | `/api/v1/verify/{id}/run` | POST | Real-time public data verification (GitHub result Redis-cached) |
 | `/api/v1/teams` | POST/GET | Team workspace creation and listing |
-| `/api/v1/health` | GET | System health check — includes `storage_mode` |
+| `/api/v1/auth/session` | GET | Restore a session from the httpOnly cookie (read-only; never authorizes writes) |
+| `/api/v1/auth/logout` | POST | Clear the session cookie |
+| `/api/v1/health` | GET | System health check — includes `storage_mode` and `config_warnings` |
 | `/api/v1/health/diagnostics` | GET | Capacity & system diagnostics |
 
 ---
@@ -265,6 +362,9 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 - [x] Predictive Talent Velocity & Career Growth Index
 - [x] Enterprise Talent Analytics & Workforce Intelligence
 - [x] Frontend unit/component test suite (Vitest + RTL)
-- [x] Shared UI component kit (`components/ui/primitives.tsx`) — `/login`, `/dashboard` migrated
-- [ ] Migrate remaining pages (`/bulk`, `/match`, `/teams`, `/report/[id]`, `/analyze`) onto the shared UI kit
+- [x] Shared UI component kit (`components/ui/primitives.tsx`) — every top-level page migrated
+- [x] Production configuration readiness checks surfaced in `/api/v1/health`
+- [x] Session restore that survives third-party cookie blocking (Safari/Firefox/Incognito)
+- [ ] Restructure `/report/[id]` onto the shared UI kit (already on the shared palette/tokens)
+- [ ] Serve frontend + API from one registrable domain, making the session cookie first-party
 - [ ] Page-level integration tests (dashboard load, login flow) on top of the current unit-test foundation
