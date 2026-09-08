@@ -62,8 +62,11 @@ table, not by looking at an env var, so `"supabase"` means the database is
 genuinely reachable and migrated.
 
 **4. Log in on the deployed frontend, then hard-refresh the page.** You should
-stay logged in. If you get bounced to `/login`, read the cross-site cookie
-note under [Sessions](#sessions-and-the-cross-site-cookie-caveat) below.
+stay logged in. Also check the status badge next to the dashboard heading — it
+reads `/api/v1/health` for real, so "Temporary storage" or "Degraded" there
+means something on this list is still wrong. If a refresh bounces you to
+`/login`, read the cross-site cookie note under
+[Sessions](#sessions-and-the-cross-site-cookie-caveat) below.
 
 **5. Upload one real resume end to end** and open the report. This is the only
 check that exercises the LLM key, the parser, and the report view together.
@@ -86,11 +89,32 @@ cookies by default and drop it. Two mitigations ship:
   against `/auth/me` before it is trusted, so a refresh keeps you logged in
   even when the cookie is dropped entirely. It is cleared when the tab closes.
 
+### Moving to one domain (no code change required)
+
 **The real fix is to stop being cross-site**: serve both halves from one
-registrable domain (`app.example.com` for the frontend, `api.example.com` for
-this API). Then the cookie is first-party, `SameSite=Lax` works everywhere,
-and the `sessionStorage` fallback becomes dead code. That is a DNS/hosting
-change, not a code change — worth doing before this carries real traffic.
+registrable domain. The cookie attributes are *derived*, not hardcoded — so
+once the domains line up, the app switches itself to a first-party
+`SameSite=Lax` cookie and the `sessionStorage` fallback becomes dead code.
+
+When you're ready:
+
+1. Point `app.example.com` at the Vercel deployment and `api.example.com` at
+   the Render service (custom domains in each dashboard).
+2. Update three env vars on the API — `ALLOWED_ORIGINS`, `FRONTEND_URL`,
+   `BACKEND_URL` — and `NEXT_PUBLIC_API_URL` on the frontend.
+3. Redeploy and check `/api/v1/health`. `config_warnings` should no longer
+   contain `session_cookie_cross_site`.
+
+That's it. `app/core/site.py` compares the two hosts' registrable domains and
+picks the cookie policy from the answer; `SESSION_COOKIE_CROSS_SITE=true|false`
+overrides it if you ever need to force one. Detection deliberately assumes
+cross-site whenever it can't prove otherwise, so a misdetection degrades to
+today's working behaviour instead of breaking login.
+
+Note `*.vercel.app` and `*.onrender.com` are themselves public suffixes:
+`a.vercel.app` and `b.vercel.app` are *different* sites, so moving both halves
+onto the same free hosting domain does **not** make the cookie first-party.
+Only a real domain you own does.
 
 ---
 
@@ -275,7 +299,7 @@ npm run lint
 npm run build
 ```
 
-The frontend suite covers the API client's error/timeout/auth-header handling, the auth store's login/logout/session-restore flows (including the `sessionStorage` fallback for browsers that drop the cross-site cookie), and the shared UI primitives — the foundation to build page-level coverage on top of.
+The frontend suite covers the API client's error/timeout/auth-header handling, the auth store's login/logout/session-restore flows (including the `sessionStorage` fallback for browsers that drop the cross-site cookie), the shared UI primitives, and page-level integration tests: the login flow end to end, the dashboard's render/empty/error/auth-guard paths, the real system-status badge, and the bulk duplicate-cluster rendering — that last one covers the branch that only runs when a duplicate is actually found, which is where a field-name mismatch shipped undetected in an earlier pass.
 
 The backend suite is hermetic: `tests/conftest.py` points the local SQLite database at a per-run temp file. Without that, tests wrote to the same `backend/data/local.db` the dev server uses, so a second `pytest` run on the same machine failed on "email already registered" while a fresh CI runner passed — a failure mode that only ever appears locally and gets written off as a stale file.
 
@@ -366,5 +390,8 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 - [x] Production configuration readiness checks surfaced in `/api/v1/health`
 - [x] Session restore that survives third-party cookie blocking (Safari/Firefox/Incognito)
 - [ ] Restructure `/report/[id]` onto the shared UI kit (already on the shared palette/tokens)
-- [ ] Serve frontend + API from one registrable domain, making the session cookie first-party
+- [x] Cookie policy derived from the configured domains, so moving to one domain needs no code change
+- [x] Real system-status indicator on the dashboard (was a hardcoded "All systems operational")
+- [x] Page-level integration tests (login flow, dashboard, duplicate rendering)
+- [ ] Serve frontend + API from one registrable domain (DNS/env only — see above)
 - [ ] Page-level integration tests (dashboard load, login flow) on top of the current unit-test foundation
