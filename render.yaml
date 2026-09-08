@@ -1,9 +1,26 @@
+# HireLens API — Render blueprint
+#
+# `sync: false` means "Render will NOT set this; a human must type the value
+# into the service's Environment tab". Nothing here fails the deploy if you
+# forget one — the service boots, the health check goes green, and the product
+# is broken for users. So after every first deploy, check:
+#
+#     GET https://<your-service>.onrender.com/api/v1/health
+#
+# and confirm  "storage_mode": "supabase"  and  "config_warnings": []  .
+# Anything in config_warnings is a setting that is missing or wrong; the
+# message says what breaks. See backend/app/core/readiness.py.
 services:
   - type: web
     name: hirelens-api
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
+    # NOTE: on the free plan the service spins down after ~15 minutes idle and
+    # cold-starts on the next request (tens of seconds). Anything held only in
+    # process memory — in-flight analysis jobs, batch state — is lost on that
+    # spin-down. Set BACKEND_URL below to enable the keep-alive pinger, and
+    # move to a paid plan before this carries real recruiting traffic.
     plan: free
     healthCheckPath: /api/v1/health
     envVars:
@@ -11,25 +28,71 @@ services:
         value: production
       - key: SECRET_KEY
         generateValue: true
-      - key: GEMINI_API_KEY
+
+      # ── REQUIRED: the app is unusable without these ──────────────────────
+      # Your deployed frontend origin(s), comma-separated, no trailing slash.
+      # Left unset it defaults to http://localhost:3000 and the browser blocks
+      # EVERY request from your real frontend as a CORS violation, while this
+      # API keeps reporting itself healthy. Flagged as `cors_localhost_only`
+      # in /api/v1/health.
+      - key: ALLOWED_ORIGINS
         sync: false
-      - key: GROQ_API_KEY
-        sync: false
+      # Durable storage. Without both of these, accounts and reports go to
+      # local SQLite inside the container — wiped on every restart, redeploy
+      # and idle spin-down. Run backend/sql/001 → 002 → 003 against the
+      # Supabase project before the first deploy.
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
+      # At least one LLM key — resume analysis is the entire product and
+      # fails on every upload without one.
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+
+      # ── Strongly recommended ─────────────────────────────────────────────
+      # Where emailed team invites and password-reset links point. Should
+      # match one of the ALLOWED_ORIGINS entries.
+      - key: FRONTEND_URL
+        sync: false
+      # This service's own public URL (https://<name>.onrender.com). Enables
+      # the keep-alive self-ping that stops the free plan idling to sleep.
+      # Without it the pinger logs a warning and does nothing.
+      - key: BACKEND_URL
+        sync: false
+      # Email delivery for candidate notifications and team invites. Without
+      # a transport these silently never arrive.
+      - key: RESEND_API_KEY
+        sync: false
+
+      # ── Optional ─────────────────────────────────────────────────────────
+      - key: ANTHROPIC_API_KEY
+        sync: false
       - key: DATABASE_URL
         sync: false
+      # Redis is what makes job/batch state survive a restart and lets the
+      # app run more than one worker. Read the comment above the uvicorn CMD
+      # in backend/Dockerfile before raising --workers.
       - key: REDIS_URL
         sync: false
       - key: REDIS_PASSWORD
         sync: false
-      - key: ALLOWED_ORIGINS
+      # Raises the GitHub verification rate limit from 60/hr to 5000/hr.
+      - key: GITHUB_TOKEN
         sync: false
+
+      # ── Tuning ───────────────────────────────────────────────────────────
       - key: MAX_FILE_SIZE_MB
         value: "10"
       - key: RATE_LIMIT_PER_MINUTE
         value: "20"
       - key: ANALYSIS_TIMEOUT_SECONDS
         value: "120"
+      # Render terminates TLS at its edge and appends the real client IP to
+      # X-Forwarded-For, which is how the brute-force limiter identifies
+      # callers. Only set this to false if the app is ever exposed directly
+      # with no proxy in front. See get_client_ip() in app/core/rate_limit.py.
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
