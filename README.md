@@ -52,8 +52,10 @@ curl https://<your-api>.onrender.com/api/v1/health
 You are looking for exactly this:
 
 ```json
-{ "status": "ok", "storage_mode": "supabase", "config_warnings": [] }
+{ "status": "ok", "storage_mode": "supabase", "config_warnings": [], "missing_tables": [] }
 ```
+
+`missing_tables` catches a half-applied migration: `storage_mode` only probes `reports`, so a deploy that ran 001 but not 002 looked completely healthy until the first recruiter opened `/teams`. 002 and 003 also refuse to run at all with a readable error if 001 hasn't been applied, instead of failing partway through with a bare `relation "public.reports" does not exist`.
 
 `config_warnings` is the authoritative list of misconfigurations — each entry
 names what is wrong and what it breaks (see `backend/app/core/readiness.py`).
@@ -234,6 +236,25 @@ An empty `ADMIN_EMAILS` in production denies **everyone** — a gate whose failu
 ### Not confirming what you can't read
 
 Every access failure answers `404`, never `403`. A `403` says "this id is real, it just isn't yours" — which lets someone holding a report, comment or job id (from a log, a shared link, a screenshot) confirm it exists without ever being able to read it. The reports router already did this; the collaboration router and job-status endpoint were the exceptions and now match.
+
+### Sessions can actually be ended
+
+A JWT is self-contained — a valid signature and an unexpired `exp` used to be the entire check — so **signing out did not sign you out**. `POST /auth/logout` cleared the cookie and the frontend dropped its copy, but the token string stayed a working credential for up to its full lifetime. Anyone who had captured it kept access, and changing your password did not end the session someone else was using.
+
+Tokens now carry `jti` and `iat`, and two kinds of revocation exist:
+
+| Trigger | Effect |
+|---|---|
+| `POST /auth/logout` | Denylists that one token until its own expiry. Other devices stay signed in. |
+| Password reset | Revokes every token issued before the reset, via a per-user cutoff timestamp. |
+
+**Only the `Authorization` header can revoke.** A cookie alone clears the cookie and stops there — deliberately. The session cookie is `SameSite=None` in the cross-site deployment, so a browser attaches it to a request from any site; if the cookie were enough, a random page could POST to logout and terminate a recruiter's session mid-review. A cross-site page cannot set that header.
+
+**Set `REDIS_URL`.** Without it, revocations live in process memory and are lost on every restart, redeploy and idle spin-down — meaning a token that was signed out starts working again until it expires. `/api/v1/health` reports this as `revocation_not_durable`.
+
+If Redis is *configured but unreachable*, the check falls back to the local denylist rather than rejecting. An earlier version failed closed, and the test suite immediately showed why that is wrong here: with Redis down, every authenticated request returned 401 — a Redis blip becomes a total outage. Availability of the auth path is itself a security property.
+
+`ACCESS_TOKEN_EXPIRE_MINUTES` (default 7 days) is now configurable. Shorter means a leaked token is useful for less time, at the cost of more frequent logins.
 
 ### Logs
 
@@ -430,5 +451,7 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 - [x] Cookie policy derived from the configured domains, so moving to one domain needs no code change
 - [x] Real system-status indicator on the dashboard (was a hardcoded "All systems operational")
 - [x] Page-level integration tests (login flow, dashboard, duplicate rendering)
+- [x] Token revocation on logout and password reset (signing out now ends the session)
+- [x] Schema completeness surfaced in `/api/v1/health`; migrations refuse to run out of order
 - [ ] Serve frontend + API from one registrable domain (DNS/env only — see above)
 - [ ] Page-level integration tests (dashboard load, login flow) on top of the current unit-test foundation

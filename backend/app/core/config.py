@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
 
+    # How long an access token stays valid. Default 7 days, unchanged from the
+    # value that was hardcoded before — a shorter window is safer (a leaked
+    # token works for less time) but forces more frequent logins, so it is a
+    # tradeoff to make deliberately rather than a constant to bury in code.
+    # Tokens can now be revoked before this elapses (logout, password reset)
+    # — see app/core/token_revocation.py.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
+
     # Comma-separated emails allowed to reach the admin-only endpoints
     # (/auth/stats, /health/diagnostics). Empty in production means nobody
     # can — see require_admin() in app/core/dependencies.py for why that is

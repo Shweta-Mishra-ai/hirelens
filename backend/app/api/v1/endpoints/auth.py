@@ -9,10 +9,11 @@ Fixed:
 
 import logging
 import bcrypt
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Header, Request, Response
 from pydantic import BaseModel, EmailStr, field_validator
 
-from app.core.dependencies import get_db, get_current_user, get_redis, require_admin
+from app.core.config import settings
+from app.core.dependencies import get_db, get_current_user, get_redis, require_admin, assert_not_revoked
 from app.core.security import create_access_token, decode_token
 from app.core.exceptions import AuthError, CapacityLimitExceeded
 from app.core.rate_limit import check_rate_limit, get_client_ip
@@ -416,6 +417,12 @@ async def restore_session(request: Request):
     except AuthError:
         raise AuthError("Session expired or invalid.")
 
+    # Revocation applies here too. Logout clears the cookie from the browser,
+    # but a cookie value captured beforehand would otherwise still restore a
+    # working session through this endpoint — which is exactly the hole
+    # revocation exists to close.
+    assert_not_revoked(payload)
+
     user_id = str(payload.get("sub") or payload.get("user_id") or "")
     email = str(payload.get("email") or "")
     if not user_id:
@@ -445,11 +452,93 @@ async def restore_session(request: Request):
 
 
 @router.post("/logout")
-async def logout(response: Response):
-    """Clear the session cookie. Client-side state (in-memory token, any
-    Supabase client session) is cleared separately by the frontend."""
+async def logout(
+    request: Request,
+    response: Response,
+    authorization: str = Header(default=""),
+    redis=Depends(get_redis),
+):
+    """Sign out: revoke the token AND clear the session cookie.
+
+    Clearing the cookie used to be the whole of logout, which meant it did
+    not actually log anyone out. A JWT is self-contained — signature plus
+    expiry is the entire check — so the token string stayed a working
+    credential for up to its full lifetime after the user pressed "Sign out".
+    Anyone who had captured it (shared machine, browser extension, a token
+    that reached a log) kept access, and the user had no way to take it back.
+
+    Now the presented token is denylisted until its own expiry.
+
+    Deliberately still returns 200 for an absent or unparseable token. Logout
+    must never fail; a client that cannot complete it would leave the user
+    believing they are signed out when they are not.
+
+    ONLY the Authorization header can revoke. The cookie alone clears the
+    cookie and stops there, even though revoking it would be "more thorough".
+
+    That restraint is the point. The session cookie is SameSite=None in the
+    cross-site deployment, so a browser attaches it automatically to a
+    request from ANY site — meaning a random page could POST here and, if the
+    cookie were enough, terminate a recruiter's active session mid-review. A
+    cross-site page cannot set an Authorization header, so requiring one
+    keeps the destructive half of logout out of reach. Clearing the cookie is
+    the most such a request can do, which is exactly what it could do before
+    revocation existed.
+
+    A cookie belonging to the SAME user as the header token is revoked too:
+    header and cookie are normally the same token, and when they differ they
+    are still this browser's credentials for this session.
+    """
+    from app.core.token_revocation import revoke_token
+
+    header_payload = None
+    if authorization.startswith("Bearer "):
+        header_token = authorization[7:].strip()
+        if header_token:
+            try:
+                header_payload = decode_token(header_token)
+            except AuthError:
+                header_payload = None  # already invalid — nothing to revoke
+
+    if header_payload is not None:
+        payloads = [header_payload]
+
+        cookie_token = read_session_cookie(request)
+        if cookie_token:
+            try:
+                cookie_payload = decode_token(cookie_token)
+            except AuthError:
+                cookie_payload = None
+            if cookie_payload is not None and cookie_payload.get("jti") != header_payload.get("jti"):
+                same_user = (cookie_payload.get("sub") or cookie_payload.get("user_id")) == (
+                    header_payload.get("sub") or header_payload.get("user_id")
+                )
+                if same_user:
+                    payloads.append(cookie_payload)
+
+        for payload in payloads:
+            jti = payload.get("jti")
+            exp = payload.get("exp")
+            if jti and exp:
+                revoke_token(redis, str(jti), float(exp))
+            elif exp:
+                # A token minted before jti existed: fall back to revoking
+                # every session for that user, so deploying this code never
+                # leaves an older token un-revocable.
+                user_id = payload.get("sub") or payload.get("user_id")
+                if user_id:
+                    revoke_all_sessions(redis, str(user_id))
+
     clear_session_cookie(response)
     return {"status": "ok"}
+
+
+def revoke_all_sessions(redis, user_id: str) -> None:
+    """End every session for a user — used by logout's legacy-token path and
+    after a password reset."""
+    from app.core.token_revocation import revoke_all_for_user
+
+    revoke_all_for_user(redis, user_id, ttl_seconds=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60)
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -513,7 +602,23 @@ async def reset_password(
     check_rate_limit(redis, f"reset-password:{get_client_ip(request)}", limit=10, window_seconds=900)
     if db:
         try:
-            db.auth.update_user(body.access_token, {"password": body.new_password})
+            result = db.auth.update_user(body.access_token, {"password": body.new_password})
+
+            # Changing your password has to end the sessions that existed
+            # before it. That is the entire point of resetting a password you
+            # think someone else has: if their token keeps working, the reset
+            # accomplished nothing. Revoking by user cutoff means we do not
+            # need to know which tokens are out there.
+            user = getattr(result, "user", None)
+            user_id = getattr(user, "id", None)
+            if user_id:
+                revoke_all_sessions(redis, str(user_id))
+            else:
+                logger.warning(
+                    "Password reset succeeded but the user id was not returned — "
+                    "existing sessions could NOT be revoked."
+                )
+
             return {"status": "ok", "message": "Password updated successfully. You can now log in with your new password."}
         except Exception as e:
             logger.error(f"Password update failed: {e}")

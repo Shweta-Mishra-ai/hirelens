@@ -186,11 +186,27 @@ describe("auth store", () => {
     expect(window.sessionStorage.getItem("hirelens-token")).toBeNull();
   });
 
-  it("logout calls the backend logout endpoint in addition to clearing local state", () => {
+  it("logout sends the token so the backend can actually revoke the session", () => {
+    // Not a detail: the backend revokes only what the Authorization header
+    // presents. The session cookie alone deliberately cannot terminate a
+    // session (it is SameSite=None, so any site's page would be able to).
+    // Calling logout without the token clears the cookie and leaves the token
+    // itself valid until it expires — the exact bug revocation was added to
+    // fix, silently reintroduced from the client side.
     useAuthStore.setState({ user: { id: "u1", email: "a@b.com" } as any, token: "tok-abc" });
 
     useAuthStore.getState().logout();
 
     expect(authAPI.logout).toHaveBeenCalledOnce();
+    expect(authAPI.logout).toHaveBeenCalledWith("tok-abc");
+  });
+
+  it("logout still calls the backend when there is no token in memory", () => {
+    useAuthStore.setState({ user: null, token: null });
+
+    useAuthStore.getState().logout();
+
+    // Clearing the cookie is still worth doing.
+    expect(authAPI.logout).toHaveBeenCalledWith(undefined);
   });
 });

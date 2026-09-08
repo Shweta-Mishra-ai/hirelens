@@ -6,6 +6,7 @@ Redis graceful degradation, auth header validation.
 import logging
 from fastapi import Depends, Header
 from app.core.security import decode_token
+from app.core.token_revocation import is_revoked
 from app.core.exceptions import AuthError, NotFoundError
 from app.core.config import settings
 
@@ -65,24 +66,45 @@ def get_redis():
 
 
 # ── Auth dependency ───────────────────────────────────────────────────────────
+def assert_not_revoked(payload: dict) -> None:
+    """Reject a token that has been signed out or invalidated.
+
+    A JWT is self-contained: a valid signature and an unexpired `exp` used to
+    be the whole check, so logging out did not actually end the session — the
+    token kept working until it expired. This is the step that makes logout
+    and password reset mean something. See app/core/token_revocation.py.
+    """
+    user_id = payload.get("sub") or payload.get("user_id")
+    revoked = is_revoked(
+        get_redis(),
+        payload.get("jti"),
+        str(user_id) if user_id else None,
+        payload.get("iat"),
+    )
+    if revoked:
+        raise AuthError("This session has been signed out. Please log in again.")
+
+
 async def get_current_user(authorization: str = Header(default="")) -> dict:
     """
     Validates Bearer JWT token from Authorization header.
-    Raises AuthError (401) if missing, invalid, or expired.
+    Raises AuthError (401) if missing, invalid, expired, or revoked.
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise AuthError("Authorization header missing or invalid. Format: 'Bearer <token>'")
-    
+
     token = authorization[7:].strip()  # Remove "Bearer " prefix
     if not token:
         raise AuthError("Token is empty.")
-    
+
     payload = decode_token(token)
-    
+
     user_id = payload.get("sub") or payload.get("user_id")
     if not user_id:
         raise AuthError("Token missing user ID.")
-    
+
+    assert_not_revoked(payload)
+
     email = payload.get("email", "")
     return {"id": str(user_id), "email": email}
 

@@ -153,6 +153,24 @@ def config_warnings() -> list[dict]:
             ),
         })
 
+    # ── Session revocation durability ───────────────────────────────────────
+    # Logout and password reset revoke tokens through app/core/token_revocation.
+    # Without Redis those revocations live in process memory: they are lost on
+    # every restart, redeploy and idle spin-down. The consequence is specific
+    # and worth stating plainly — a token that was signed out becomes usable
+    # again after a restart, for whatever remains of its lifetime.
+    if not settings.REDIS_URL:
+        warnings.append({
+            "code": "revocation_not_durable",
+            "message": (
+                "REDIS_URL is not set, so signed-out tokens are tracked in process "
+                "memory only. A restart, redeploy or idle spin-down forgets them, and "
+                "a token that was logged out starts working again until it expires "
+                f"(up to {settings.ACCESS_TOKEN_EXPIRE_MINUTES // 60}h). Set REDIS_URL "
+                "to make logout and password-reset revocation survive restarts."
+            ),
+        })
+
     # ── Email delivery ──────────────────────────────────────────────────────
     # Candidate notifications and team invites silently no-op without a
     # transport. The UI still reports the action as done.
