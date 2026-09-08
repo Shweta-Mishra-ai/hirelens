@@ -495,10 +495,22 @@ class ResetPasswordRequest(BaseModel):
 
 
 @router.post("/reset-password")
-async def reset_password(body: ResetPasswordRequest, db=Depends(get_db)):
+async def reset_password(
+    body: ResetPasswordRequest,
+    request: Request,
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+):
     """
     Reset password using access token from reset email.
+
+    Rate limited per IP like /forgot-password was, and this one wasn't. The
+    token itself is a Supabase JWT and not guessable, but every call here
+    reaches Supabase's admin API on an unauthenticated endpoint — so without
+    a limit anyone could drive unlimited upstream requests through it, and
+    burn the auth provider's quota for real users trying to reset a password.
     """
+    check_rate_limit(redis, f"reset-password:{get_client_ip(request)}", limit=10, window_seconds=900)
     if db:
         try:
             db.auth.update_user(body.access_token, {"password": body.new_password})

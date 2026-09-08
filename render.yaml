@@ -69,6 +69,13 @@ services:
       - key: RESEND_API_KEY
         sync: false
 
+      # Comma-separated emails allowed to reach /auth/stats and
+      # /health/diagnostics. Leave unset and NOBODY can (production denies by
+      # default) — those endpoints expose recruiter counts, process memory and
+      # live job counts, so an unconfigured gate must fail closed.
+      - key: ADMIN_EMAILS
+        sync: false
+
       # ── Optional ─────────────────────────────────────────────────────────
       - key: ANTHROPIC_API_KEY
         sync: false

@@ -70,6 +70,39 @@ def _check_rate_limit(redis, user_id: str) -> None:
     check_rate_limit(redis, user_id, settings.RATE_LIMIT_PER_MINUTE, window_seconds=60)
 
 
+# Read uploads in chunks so an oversized body is refused DURING the read
+# rather than after it.
+_UPLOAD_CHUNK = 64 * 1024
+
+
+async def read_upload_capped(file, max_bytes: int) -> bytes:
+    """Read an UploadFile, aborting as soon as `max_bytes` is exceeded.
+
+    `await file.read()` pulls the WHOLE body into memory first and only then
+    hands it to validate_upload's size check — so the 10MB limit was enforced
+    after a 2GB upload had already been buffered. On a single-worker
+    free-tier container that is an out-of-memory kill, triggered by one
+    request, taking the API down for everyone.
+
+    The remote-download path in ats.py already streams with an abort (see
+    MAX_DOWNLOAD_MB there); this brings the local upload path in line with it
+    instead of trusting the client's file to be the size it claims.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            # Stop reading immediately — do not keep buffering something
+            # already known to be too big.
+            raise FileTooLarge(max(1, max_bytes // (1024 * 1024)))
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def validate_upload(contents: bytes, filename: str, mime: str) -> str:
     """
     Shared validation for a single resume file (used by both the single-file
@@ -132,8 +165,8 @@ async def upload_resume(
     # Rate limit check
     _check_rate_limit(redis, current_user["id"])
 
-    # Read file
-    contents = await file.read()
+    # Read file (capped mid-read — see read_upload_capped)
+    contents = await read_upload_capped(file, settings.MAX_FILE_SIZE_MB * 1024 * 1024)
     filename = (file.filename or "").strip()
     mime = (file.content_type or "").lower().strip()
 

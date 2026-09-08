@@ -207,9 +207,46 @@ A small Redis-backed JSON cache, used in two places so far:
 
 Both degrade to "always miss, recompute" if Redis isn't configured — caching is a performance layer, never a hard dependency.
 
+### Abuse & Resource Limits
+
+Signup is open, so "needs a valid token" is not a barrier — anyone willing to register gets whatever an authenticated caller gets. Every endpoint that hands a caller something expensive is capped per **user** (not per team or per resource, which would be free to bypass by creating more of them):
+
+| Endpoint | Limit | Why it needs one |
+|---|---|---|
+| `POST /verify/{id}/run` | 10/min, 60/hr | Fans out to four concurrent outbound HTTP checks per call, one of which fetches URLs taken from candidate-supplied resume text. Unlimited, it saturates a single-worker container, burns the GitHub API quota every user shares, and makes the server an outbound request amplifier. |
+| `POST /teams/{id}/invite` | 20/hr, 100/day | **Sends email** to an address in the request body. The duplicate check only catches the same address on the same team, so varying the address bypassed it entirely — unlimited mail out of your Resend account, in HireLens's name, from your sending domain. |
+| `POST /reports/{id}/comments` | 20/min | Unbounded writes into the DB and every teammate's thread. |
+| `POST /auth/login` | 10 / 15 min per IP | Brute force. |
+| `POST /auth/signup` | 8/hr per IP | Bulk fake accounts. |
+| `POST /auth/forgot-password`, `/reset-password` | 5 and 10 / 15 min per IP | Upstream auth-provider quota. |
+| Resume analysis, bulk, JD match | `RATE_LIMIT_PER_MINUTE` per user | LLM cost and event-loop time. |
+
+Client IP comes from the **rightmost** routable `X-Forwarded-For` entry. A proxy *appends* to that header, so the leftmost value is whatever the caller sent — reading it let an attacker land every login attempt in a fresh bucket. Set `TRUST_PROXY_HEADERS=false` if the app is ever exposed without a proxy.
+
+Uploads are read in chunks and **refused mid-read** once the cap is exceeded, rather than buffered whole and rejected afterwards. Bulk upload spends a single shrinking budget across the batch.
+
+### Administrator-only endpoints
+
+`GET /auth/stats` and `GET /health/diagnostics` expose recruiter counts, process memory, live job counts and rate-limiter internals. Both require an email listed in **`ADMIN_EMAILS`** (comma-separated).
+
+An empty `ADMIN_EMAILS` in production denies **everyone** — a gate whose failure mode is "open" is the bug it was added to fix. Local development stays open so diagnostics remain usable while working on them. Denials answer `404`, not `403`, for the same reason described below.
+
+### Not confirming what you can't read
+
+Every access failure answers `404`, never `403`. A `403` says "this id is real, it just isn't yours" — which lets someone holding a report, comment or job id (from a log, a shared link, a screenshot) confirm it exists without ever being able to read it. The reports router already did this; the collaboration router and job-status endpoint were the exceptions and now match.
+
+### Logs
+
+Candidate email addresses are masked (`j***@example.com`) before they reach a log line. Candidates are not users of this system: they never signed up, cannot ask for their data back, and logs outlive reports, get shipped to third-party services, and are readable by people never granted access to the report itself. All configured LLM provider keys are redacted from error text before logging — SDKs routinely echo the failing request's `Authorization` header into the exception.
+
+### Frontend security headers
+
+`next.config.js` sets CSP (`frame-ancestors 'none'`, `connect-src` pinned to the API and Supabase origins, `object-src`/`base-uri`/`form-action` locked down), `X-Frame-Options: DENY`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, HSTS, and disables `X-Powered-By`. The API's own headers do nothing for the HTML Vercel serves — the browser enforces these per document origin — so without them the dashboard could be framed by any site and nothing limited where the page could load code from or send data to.
+
 ### Input & Security Validation
 - **MIME & Magic Byte Verification**: `validate_upload()` checks PDF/DOCX magic bytes to reject executable/malicious uploads.
-- **SSRF Protection**: `ssrf_guard.py` validates verification URLs against loopback, private, link-local, and cloud metadata IPs (169.254.169.254).
+- **SSRF Protection**: `ssrf_guard.py` validates verification URLs against loopback, private, link-local, and cloud metadata IPs (169.254.169.254), re-checks on every redirect hop, and pins the connection to the exact IP it validated so DNS cannot change underneath the check.
+- **Verified means verified**: the university registry is queried over HTTPS with no `http://` fallback. That lookup becomes `status: "verified"` on a candidate's degree — deriving it from a channel anyone on the network path could rewrite would let a fabricated institution read as confirmed. A TLS failure reports `error` ("we could not check"), never `not_found` ("we checked and it isn't real").
 - **Injection Defense**: Multi-stage prompt fencing + heuristic injection scan.
 
 ### Error Handling
