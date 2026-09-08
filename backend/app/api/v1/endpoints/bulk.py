@@ -29,7 +29,7 @@ from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.rate_limit import check_rate_limit
 from app.core.exceptions import NotFoundError, ForbiddenError, EmptyBatch, TooManyFiles, TooManyBatches, FileTooLarge
-from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload
+from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload, read_upload_capped
 from app.services.queue import batch_store
 from app.services.fraud.duplicate_detection import extract_fingerprint_text, find_duplicate_clusters
 
@@ -77,15 +77,23 @@ async def bulk_upload(
     job_ids: list[str] = []
     total_bytes = 0
 
+    # Budget for the WHOLE batch, spent as files are read. The total-size
+    # check below used to run only after every file had been read into
+    # memory, so 50 oversized files were fully buffered before the batch was
+    # rejected — the exact allocation the limit exists to prevent. Reading
+    # against a shrinking budget refuses them mid-read instead.
+    batch_budget = settings.BULK_MAX_TOTAL_MB * 1024 * 1024
+    per_file_cap = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+
     for f in files:
-        contents = await f.read()
         filename = (f.filename or "resume").strip()
         mime = (f.content_type or "").lower().strip()
         job_id = str(uuid.uuid4())
         job_ids.append(job_id)
-        total_bytes += len(contents)
 
         try:
+            contents = await read_upload_capped(f, min(per_file_cap, max(0, batch_budget - total_bytes)))
+            total_bytes += len(contents)
             effective_mime = validate_upload(contents, filename, mime)
         except Exception as e:
             message = getattr(e, "message", str(e))
