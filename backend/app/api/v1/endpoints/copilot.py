@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import NotFoundError, HireLensException
+from app.core.exceptions import NotFoundError, PersistenceError
 from app.api.v1.endpoints.analysis import _jobs
 from app.services.teams.access import user_can_access_report
 
@@ -157,6 +157,27 @@ async def save_copilot_data(
         # refuse rather than silently accepting notes into the void (and
         # rather than letting anyone stash data under an arbitrary id).
         raise NotFoundError(f"Report '{report_id}' not found.")
+
+    if not saved:
+        # `found` but not `saved`: the report row exists and this recruiter
+        # may access it, but the UPDATE came back empty (the row changed
+        # under us, a write policy rejected it, PostgREST returned no
+        # representation) and there was no in-memory job to fall back on.
+        #
+        # The previous version of this function fell straight through to the
+        # `{"status": "ok"}` below in exactly this case — which is the same
+        # "told the user it saved when nothing persisted" bug the docstring
+        # above describes fixing, still live on one branch. An interviewer
+        # who types up a full scorecard mid-interview and sees "Saved" must
+        # never lose it silently; failing loudly lets them retry or copy it
+        # out while it's still on screen.
+        logger.error(
+            f"Co-pilot save reached no durable store | report={report_id} "
+            f"user={current_user['id']} (row found but update persisted nothing)"
+        )
+        raise PersistenceError(
+            "Could not save the evaluation. Please retry — your notes are still on screen."
+        )
 
     logger.info(f"Co-pilot data saved | report={report_id} user={current_user['id']}")
     return {"status": "ok", "report_id": report_id, "copilot": payload}

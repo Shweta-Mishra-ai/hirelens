@@ -15,7 +15,9 @@ here shouldn't take down login for everyone.
 
 import time
 import logging
+import ipaddress
 from fastapi import Request
+from app.core.config import settings
 from app.core.exceptions import RateLimitExceeded
 
 logger = logging.getLogger("hirelens")
@@ -41,11 +43,64 @@ def _check_in_memory_rate_limit(key: str, limit: int, window_seconds: int = 60) 
             _mem_rate_limit.pop(k, None)
 
 
+def _is_routable_public_ip(value: str) -> bool:
+    """True only for a real, globally-routable client address.
+
+    Entries that are private (10./172.16./192.168.), loopback, link-local or
+    not a valid IP at all are internal hops or junk — never the client we
+    want to rate-limit by.
+    """
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
 def get_client_ip(request: Request) -> str:
-    """Best-effort real client IP behind a proxy (Render/Vercel set X-Forwarded-For)."""
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
+    """
+    Real client IP behind a reverse proxy (Render/Vercel set X-Forwarded-For).
+
+    This used to return `xff.split(",")[0]` — the LEFTMOST entry. That is the
+    one value in the header an attacker fully controls: a proxy *appends* to
+    X-Forwarded-For rather than replacing it, so whatever the client sent
+    survives at the front of the list. Since this function is what keys the
+    per-IP brute-force limiter on /auth/login, /auth/signup and
+    /auth/forgot-password, a caller could defeat rate limiting entirely by
+    sending a different fake `X-Forwarded-For: 1.2.3.4` on every attempt:
+    every request lands in a fresh bucket, so the limit never trips and an
+    unlimited password-guessing run is free.
+
+    The trustworthy end is the RIGHT: the last entry was appended by our own
+    edge proxy and reflects the peer it actually saw. So walk from the right
+    and take the first globally-routable address — skipping internal hops,
+    which would otherwise collapse every user into one shared bucket and rate
+    limit them all together. A client can prepend anything it likes; it
+    cannot append past our own edge.
+
+    Set TRUST_PROXY_HEADERS=false when the app is exposed directly with no
+    proxy in front. There, X-Forwarded-For carries no trustworthy value at
+    all and must be ignored rather than believed.
+    """
+    if settings.TRUST_PROXY_HEADERS:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            for candidate in reversed(parts):
+                if _is_routable_public_ip(candidate):
+                    return candidate
+            if parts:
+                # Everything in the chain is internal (typical for local or
+                # in-cluster traffic). The rightmost is still the closest to
+                # the truth; the leftmost is still the most forgeable.
+                return parts[-1]
     return request.client.host if request.client else "unknown"
 
 

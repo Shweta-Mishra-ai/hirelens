@@ -43,6 +43,18 @@ class LLMError(HireLensException):
     http_status = 503; code = "llm_unavailable"
     message = "AI service temporarily unavailable."
 
+class PersistenceError(HireLensException):
+    """A write was accepted for processing but reached no durable store.
+
+    Deliberately a 503 rather than a 500: nothing is wrong with the request
+    itself, and the correct client behaviour is to retry. Raised instead of
+    returning a success shape when a save silently persisted nothing — see
+    save_copilot_data() in api/v1/endpoints/copilot.py.
+    """
+    http_status = 503; code = "persistence_failed"
+    message = "Could not save. Please retry."
+
+
 class RateLimitExceeded(HireLensException):
     http_status = 429; code = "rate_limit_exceeded"
     def __init__(self, retry_after: int = 60):
