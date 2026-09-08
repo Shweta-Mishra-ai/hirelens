@@ -57,9 +57,11 @@ services:
       # match one of the ALLOWED_ORIGINS entries.
       - key: FRONTEND_URL
         sync: false
-      # This service's own public URL (https://<name>.onrender.com). Enables
-      # the keep-alive self-ping that stops the free plan idling to sleep.
-      # Without it the pinger logs a warning and does nothing.
+      # This service's own public URL (https://<name>.onrender.com, or your
+      # custom api.<domain>). Two jobs: it enables the keep-alive self-ping
+      # that stops the free plan idling to sleep, and it is how the app works
+      # out whether the session cookie is first- or third-party. Leave it
+      # unset and the cookie defaults to the wider cross-site form.
       - key: BACKEND_URL
         sync: false
       # Email delivery for candidate notifications and team invites. Without
@@ -96,3 +98,10 @@ services:
       # with no proxy in front. See get_client_ip() in app/core/rate_limit.py.
       - key: TRUST_PROXY_HEADERS
         value: "true"
+      # Leave unset. The session cookie's SameSite/Secure/Partitioned
+      # attributes are derived from FRONTEND_URL vs BACKEND_URL, so serving
+      # both halves from one domain (app.example.com + api.example.com)
+      # switches to a first-party SameSite=Lax cookie on its own. Set this to
+      # "true" or "false" only to override that detection.
+      # - key: SESSION_COOKIE_CROSS_SITE
+      #   sync: false
