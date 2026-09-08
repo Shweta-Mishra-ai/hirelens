@@ -36,6 +36,21 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
 
+    # Whether the session cookie must survive a cross-site request, i.e.
+    # whether the frontend and this API are on different registrable domains.
+    #
+    # None (default) = detect it from FRONTEND_URL vs BACKEND_URL, assuming
+    # cross-site when it can't be proven — see app/core/site.py. Set this
+    # explicitly only to override that detection:
+    #   true  -> always SameSite=None; Secure; Partitioned (cross-site)
+    #   false -> SameSite=Lax (same registrable domain; no third-party
+    #            cookie caveat, works in every browser)
+    #
+    # When the frontend and API move behind one domain (app.example.com +
+    # api.example.com), setting BACKEND_URL is enough — detection flips this
+    # on its own and no code changes.
+    SESSION_COOKIE_CROSS_SITE: bool | None = None
+
     # Whether a reverse proxy sits in front of this app and can be trusted to
     # append the real client IP to X-Forwarded-For. True for the default
     # Render/Vercel deployment. Set false when the app is exposed directly —

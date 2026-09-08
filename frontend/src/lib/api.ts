@@ -434,11 +434,22 @@ export const copilotAPI = {
 };
 
 // ── Health ────────────────────────────────────────────────────────────────────
+export interface HealthStatus {
+  status: "ok" | "degraded" | string;
+  version: string;
+  env: string;
+  llm_ready: boolean;
+  storage_mode: "supabase" | "local_fallback";
+  storage_warning: string | null;
+  // Production misconfigurations that leave the API healthy but the product
+  // broken — see backend/app/core/readiness.py. Always present, empty when
+  // everything is configured.
+  config_warnings: { code: string; message: string }[];
+  services: Record<string, string>;
+}
+
 export const healthAPI = {
-  check: () =>
-    req<{ status: string; version: string; llm_ready: boolean }>(
-      "/api/v1/health",
-    ),
+  check: () => req<HealthStatus>("/api/v1/health"),
   diagnostics: () =>
     req<{
       health: { status: string; version: string; env: string; llm_ready: boolean };

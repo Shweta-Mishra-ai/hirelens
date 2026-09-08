@@ -56,17 +56,49 @@ Python, FastAPI, React, Next.js, TypeScript, Node.js, PostgreSQL, Redis, Docker,
 """
 
 
-def test_e2e_health_check_and_diagnostics():
-    signup_res = client.post(
+E2E_EMAIL = "e2e_recruiter@example.com"
+E2E_PASSWORD = "Password123!"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def shared_recruiter_account():
+    """Guarantee the shared account exists before ANY test in this file runs.
+
+    Every test here logs in as e2e_recruiter@example.com, but only the first
+    one created it — so the whole file only worked when executed top to
+    bottom. `pytest -k team`, `pytest --lf` after a failure, or any
+    randomised/parallel ordering would fail with a bare
+    `KeyError: 'access_token'` that says nothing about the real cause.
+
+    A test you cannot run on its own is a test you cannot debug on its own,
+    and "run the whole file and hope" is not a workflow. Creating the account
+    once at module scope makes each test independently runnable without
+    changing what any of them assert.
+    """
+    client.post(
         "/api/v1/auth/signup",
         json={
-            "email": "e2e_recruiter@example.com",
-            "password": "Password123!",
+            "email": E2E_EMAIL,
+            "password": E2E_PASSWORD,
             "full_name": "E2E Recruiter",
             "company": "E2E Enterprise HR",
         },
     )
-    token = signup_res.json().get("access_token")
+    # A 409 here just means a previous test in this module already made it.
+    yield
+
+
+def test_e2e_health_check_and_diagnostics():
+    # Log in rather than sign up: the shared account is created once by the
+    # module fixture, so a signup here would hit "already registered" and
+    # return no token — which is exactly the ordering fragility the fixture
+    # exists to remove. Every test in this file authenticates the same way.
+    login_res = client.post(
+        "/api/v1/auth/login",
+        json={"email": E2E_EMAIL, "password": E2E_PASSWORD},
+    )
+    assert login_res.status_code == 200, login_res.text
+    token = login_res.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
     res = client.get("/api/v1/health")

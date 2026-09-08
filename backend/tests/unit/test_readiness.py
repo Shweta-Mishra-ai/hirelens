@@ -17,11 +17,19 @@ from app.core.config import settings
 
 @pytest.fixture
 def prod_env(monkeypatch):
-    """A fully-configured production deployment. Individual tests break one
-    setting at a time, so a warning firing is unambiguous about its cause."""
+    """A fully-configured production deployment, with zero warnings expected.
+
+    Deliberately modelled on the *recommended* shape — frontend and API on one
+    registrable domain — rather than the current vercel.app/onrender.com split,
+    so "no warnings" means "nothing left to improve", not "nothing detected".
+    Individual tests below break one setting at a time, so a warning firing is
+    unambiguous about its cause.
+    """
     monkeypatch.setattr(settings, "APP_ENV", "production")
-    monkeypatch.setattr(settings, "ALLOWED_ORIGINS", "https://hirelens.vercel.app")
-    monkeypatch.setattr(settings, "FRONTEND_URL", "https://hirelens.vercel.app")
+    monkeypatch.setattr(settings, "ALLOWED_ORIGINS", "https://app.hirelens.com")
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.hirelens.com")
+    monkeypatch.setattr(settings, "BACKEND_URL", "https://api.hirelens.com")
+    monkeypatch.setattr(settings, "SESSION_COOKIE_CROSS_SITE", None)
     monkeypatch.setattr(settings, "SUPABASE_URL", "https://project.supabase.co")
     monkeypatch.setattr(settings, "SUPABASE_SERVICE_KEY", "service-key")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-key")
@@ -91,13 +99,43 @@ def test_flags_missing_llm_key(monkeypatch, prod_env):
 
 def test_flags_frontend_url_not_matching_cors(monkeypatch, prod_env):
     """Emailed invite/reset links landing on an origin the API will reject."""
-    monkeypatch.setattr(settings, "FRONTEND_URL", "https://old-domain.vercel.app")
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://old-domain.example.com")
     assert "frontend_url_not_in_cors" in _codes(readiness.config_warnings())
 
 
 def test_trailing_slash_does_not_trigger_a_false_frontend_url_warning(monkeypatch, prod_env):
-    monkeypatch.setattr(settings, "FRONTEND_URL", "https://hirelens.vercel.app/")
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://app.hirelens.com/")
     assert "frontend_url_not_in_cors" not in _codes(readiness.config_warnings())
+
+
+def test_flags_backend_url_unset(monkeypatch, prod_env):
+    """Without BACKEND_URL the keep-alive pinger is off and cookie site-ness
+    can't be determined."""
+    monkeypatch.setattr(settings, "BACKEND_URL", "")
+    assert "backend_url_unset" in _codes(readiness.config_warnings())
+
+
+def test_flags_cross_site_session_cookie(monkeypatch, prod_env):
+    """The current vercel.app + onrender.com split — a working deployment,
+    but one where Safari/Firefox/Incognito users get a flaky-feeling session."""
+    monkeypatch.setattr(settings, "ALLOWED_ORIGINS", "https://hirelens.vercel.app")
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://hirelens.vercel.app")
+    monkeypatch.setattr(settings, "BACKEND_URL", "https://hirelens-api.onrender.com")
+
+    codes = _codes(readiness.config_warnings())
+    assert "session_cookie_cross_site" in codes
+    assert "backend_url_unset" not in codes
+
+
+def test_same_registrable_domain_is_not_flagged(monkeypatch, prod_env):
+    """app.example.com + api.example.com is the recommended end state."""
+    assert "session_cookie_cross_site" not in _codes(readiness.config_warnings())
+
+
+def test_explicit_cross_site_override_is_respected(monkeypatch, prod_env):
+    """An operator who knows better than the heuristic can force it."""
+    monkeypatch.setattr(settings, "SESSION_COOKIE_CROSS_SITE", True)
+    assert "session_cookie_cross_site" in _codes(readiness.config_warnings())
 
 
 def test_flags_missing_email_transport(monkeypatch, prod_env):

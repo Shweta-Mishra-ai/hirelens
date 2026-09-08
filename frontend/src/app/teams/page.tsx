@@ -14,6 +14,29 @@ import { color, gradient, radius } from "@/lib/design-tokens";
 import { Card, Button, TextInput, AlertBanner, PageShell } from "@/components/ui/primitives";
 import { AppNavbar } from "@/components/ui/AppNavbar";
 
+/**
+ * What to show as a team member's name.
+ *
+ * The list used to render `m.user_id` — a raw UUID — as the person's name.
+ * The one decision this screen exists for is "should this person still have
+ * access to our candidate reports", and a UUID answers nothing. The backend
+ * now resolves an email/full name where it can; this falls back through
+ * full name -> email -> a short id, so an unresolvable account is still
+ * visible and removable rather than silently missing.
+ */
+function memberLabel(m: TeamMember): string {
+  if (m.full_name) return m.full_name;
+  if (m.email) return m.email;
+  return `Unknown member (${m.user_id.slice(0, 8)})`;
+}
+
+/** A missing/garbage timestamp must not render "Invalid Date". */
+function formatJoined(iso: string | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString();
+}
+
 export default function TeamsPage() {
   const router = useRouter();
   const { user, token, logout, sessionChecked } = useAuthStore();
@@ -236,8 +259,18 @@ export default function TeamsPage() {
                           <UserIcon size={14} color="#FFF" />
                         </div>
                         <div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: color.textPrimary }}>{m.user_id}</div>
-                          <div style={{ fontSize: 11, color: color.textMuted }}>Joined: {new Date(m.joined_at).toLocaleDateString()}</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: color.textPrimary, display: "flex", alignItems: "center", gap: 6 }}>
+                            {memberLabel(m)}
+                            {m.is_you && (
+                              <span style={{ fontSize: 10, fontWeight: 600, color: color.textMuted, border: `1px solid ${color.borderSubtle}`, borderRadius: radius.sm, padding: "1px 5px" }}>
+                                you
+                              </span>
+                            )}
+                          </div>
+                          <div style={{ fontSize: 11, color: color.textMuted }}>
+                            {m.full_name && m.email ? `${m.email} · ` : ""}
+                            Joined {formatJoined(m.joined_at)}
+                          </div>
                         </div>
                       </div>
                       <span style={{ padding: "3px 10px", borderRadius: radius.sm, background: color.surfaceRaised, border: `1px solid ${color.border}`, color: color.brandLight, fontSize: 11, fontWeight: 600, textTransform: "capitalize" }}>

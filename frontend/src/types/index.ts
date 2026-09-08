@@ -301,6 +301,13 @@ export interface TeamMember {
   user_id: string;
   role: "owner" | "admin" | "member";
   joined_at: string;
+  // Resolved server-side from Supabase Auth (or the local user store) so the
+  // members list can show a person instead of a raw UUID. Nullable on
+  // purpose: an account the server can't resolve must still be listed, or you
+  // couldn't see — let alone remove — someone with access to your reports.
+  email?: string | null;
+  full_name?: string | null;
+  is_you?: boolean;
 }
 
 export interface ReportComment {

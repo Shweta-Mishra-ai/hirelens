@@ -112,21 +112,88 @@ async def list_my_teams(current_user: dict = Depends(get_current_user), db=Depen
     return {"teams": teams}
 
 
+def _resolve_member_identity(db, user_id: str) -> dict:
+    """Best-effort display identity for a team member.
+
+    team_members only stores a user_id, so the members list used to render raw
+    UUIDs — "da93a615-5821-4b87-a786-2965f4f5e405" as the name of the person
+    you are about to give access to your candidate reports. Unusable for the
+    one decision the screen exists for: deciding who to remove.
+
+    Resolution is best-effort by design. A member whose identity can't be
+    looked up still renders (with a shortened id), because a members list that
+    silently drops rows is worse than one with an unresolved entry — you would
+    not be able to see, let alone remove, an account you can't name.
+    """
+    identity = {"email": None, "full_name": None}
+
+    # Supabase Auth is the source of truth when configured.
+    if db is not None:
+        try:
+            admin = getattr(getattr(db, "auth", None), "admin", None)
+            if admin is not None:
+                res = admin.get_user_by_id(user_id)
+                user = getattr(res, "user", None) or res
+                email = getattr(user, "email", None)
+                meta = getattr(user, "user_metadata", None) or {}
+                if email:
+                    identity["email"] = email
+                    identity["full_name"] = meta.get("full_name") or None
+                    return identity
+        except Exception as e:
+            logger.debug(f"Could not resolve member {user_id} via Supabase Auth: {e}")
+
+    # Local SQLite / in-memory fallbacks.
+    try:
+        from app.core import local_db
+
+        local_user = local_db.get_user_by_id(user_id)
+        if local_user:
+            identity["email"] = local_user.get("email")
+            identity["full_name"] = local_user.get("full_name") or None
+            return identity
+    except Exception as e:
+        logger.debug(f"Could not resolve member {user_id} locally: {e}")
+
+    try:
+        from app.api.v1.endpoints.auth import _mem_users
+
+        for email, u in _mem_users.items():
+            if u.get("id") == user_id:
+                identity["email"] = email
+                identity["full_name"] = u.get("full_name") or None
+                return identity
+    except Exception:
+        pass
+
+    return identity
+
+
 @router.get("/{team_id}/members")
 async def list_team_members(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     role = get_user_role(db, team_id, current_user["id"])
     if not role:
         raise ForbiddenError("You are not a member of this team.")
 
+    rows = None
     if db:
         try:
             res = db.table("team_members").select("user_id,role,joined_at").eq("team_id", team_id).execute()
             if res.data:
-                return {"members": res.data}
+                rows = res.data
         except Exception as e:
             logger.warning(f"DB list members failed ({e}) — using in-memory fallback")
 
-    members = [m for m in _mem_team_members if m["team_id"] == team_id]
+    if rows is None:
+        rows = [m for m in _mem_team_members if m["team_id"] == team_id]
+
+    members = []
+    for row in rows:
+        member = dict(row)
+        member.update(_resolve_member_identity(db, member.get("user_id", "")))
+        member["is_you"] = member.get("user_id") == current_user["id"]
+        members.append(member)
+
     return {"members": members}
 
 

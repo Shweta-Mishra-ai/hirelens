@@ -7,8 +7,9 @@ import { reportsAPI, authAPI, APIError } from "@/lib/api";
 import type { ReportSummary } from "@/types";
 import { VerdictChip, verdictFromRecommendation } from "@/components/VerdictStamp";
 import { color, gradient, radius } from "@/lib/design-tokens";
-import { Card, Badge, Button, TextInput, StatCard, PageShell } from "@/components/ui/primitives";
+import { Card, Button, TextInput, StatCard, PageShell } from "@/components/ui/primitives";
 import { AppNavbar } from "@/components/ui/AppNavbar";
+import { SystemStatus } from "@/components/ui/SystemStatus";
 import {
   Search,
   FileText,
@@ -112,7 +113,12 @@ export default function DashboardPage() {
       if (e instanceof APIError && e.status === 401) {
         logout(); router.replace("/login");
       } else {
-        setError("Could not load reports.");
+        // Show what the server actually said. The API returns a readable
+        // `message` on every error shape (including validation failures), and
+        // collapsing all of them into one generic string means a rate limit,
+        // a timeout and a real outage are indistinguishable to the person who
+        // has to decide whether to retry or call someone.
+        setError(e instanceof APIError ? e.message : "Could not load reports.");
       }
     } finally {
       setLoading(false);
@@ -167,7 +173,7 @@ export default function DashboardPage() {
           </div>
           
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <Badge tone="success" dot>All systems operational</Badge>
+            <SystemStatus />
             <Link href="/analyze" style={{
               padding: "10px 18px", borderRadius: radius.md,
               background: color.brand,
