@@ -66,6 +66,8 @@ export default function DashboardPage() {
     risk_categories: Record<string, number>;
   } | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Monotonic id of the most recently issued reports request — see loadReports.
+  const reportsRequestRef = useRef(0);
 
   // Handle Supabase OAuth redirect (e.g. Google Sign In: /dashboard#access_token=...)
   useEffect(() => {
@@ -103,13 +105,25 @@ export default function DashboardPage() {
 
   const loadReports = useCallback(async () => {
     if (!token) return;
+    // Sequence guard. Typing in the search box fires a request per debounce
+    // tick, and responses are not guaranteed to come back in order — on a
+    // cold free-tier backend they routinely don't. Without this, an older
+    // response can land after a newer one and repaint the list with results
+    // for a query the user already changed: the box says "adam", the rows
+    // are for "ada", and nothing looks broken. Only the newest request is
+    // allowed to write state.
+    const requestId = ++reportsRequestRef.current;
+    const isCurrent = () => requestId === reportsRequestRef.current;
+
     setLoading(true);
     setError(null);
     try {
       const res = await reportsAPI.list(token, { search: search || undefined, sort });
+      if (!isCurrent()) return;
       setReports(res.reports);
       setTotal(res.total);
     } catch (e) {
+      if (!isCurrent()) return;
       if (e instanceof APIError && e.status === 401) {
         logout(); router.replace("/login");
       } else {
@@ -121,7 +135,9 @@ export default function DashboardPage() {
         setError(e instanceof APIError ? e.message : "Could not load reports.");
       }
     } finally {
-      setLoading(false);
+      // A superseded request must not clear the spinner either — the newer
+      // one is still in flight.
+      if (isCurrent()) setLoading(false);
     }
   }, [token, logout, router, search, sort]);
 
@@ -129,7 +145,14 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!token) return;
-    reportsAPI.analytics(token).then(setAnalytics).catch(() => {});
+    // Same reasoning as above, plus: don't setState after unmount if the
+    // recruiter navigates away while this is in flight.
+    let cancelled = false;
+    reportsAPI
+      .analytics(token)
+      .then((a) => { if (!cancelled) setAnalytics(a); })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, [token]);
 
   const handleExportAll = async () => {

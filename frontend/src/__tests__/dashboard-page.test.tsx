@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 const replace = vi.fn();
 // One stable router object. Returning a fresh `{...}` per call (the obvious
@@ -141,6 +142,44 @@ describe("dashboard page", () => {
     // data is gone. It has to read as an error.
     await waitFor(() => expect(screen.queryByText(/no candidate reports yet/i)).not.toBeInTheDocument());
     expect(await screen.findByText("Something broke.")).toBeInTheDocument();
+  });
+
+  it("does not let a slow earlier search overwrite the newer results", async () => {
+    // The real scenario: the recruiter types "ada", then "adam". On a cold
+    // free-tier backend the first response can land second. Without a
+    // sequence guard the list repaints with results for a query the search
+    // box no longer shows — the UI looks fine and the data is wrong.
+    const user = userEvent.setup();
+
+    let resolveFirst!: (v: unknown) => void;
+    listReports
+      .mockImplementationOnce(
+        () => new Promise((r) => { resolveFirst = r; }),
+      )
+      .mockResolvedValue({
+        reports: [{ ...REPORT_ROW, id: "rep-2", candidate_name: "Adam Newer" }],
+        total: 1,
+        pages: 1,
+      });
+
+    render(<DashboardPage />);
+
+    // Let the first (hanging) request go out, then trigger a second one.
+    await waitFor(() => expect(listReports).toHaveBeenCalledTimes(1));
+    await user.type(screen.getByPlaceholderText(/search by candidate/i), "adam");
+    await waitFor(() => expect(listReports.mock.calls.length).toBeGreaterThan(1));
+    expect(await screen.findByText("Adam Newer")).toBeInTheDocument();
+
+    // Now the stale first response finally arrives.
+    resolveFirst({
+      reports: [{ ...REPORT_ROW, id: "rep-1", candidate_name: "Ada Stale" }],
+      total: 1,
+      pages: 1,
+    });
+
+    await new Promise((r) => setTimeout(r, 60));
+    expect(screen.queryByText("Ada Stale")).not.toBeInTheDocument();
+    expect(screen.getByText("Adam Newer")).toBeInTheDocument();
   });
 
   it("redirects to /login once the session check settles with no token", async () => {

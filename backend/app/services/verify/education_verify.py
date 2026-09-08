@@ -26,7 +26,21 @@ from app.core.config import settings
 
 logger = logging.getLogger("hirelens")
 
-HIPOLABS_URL = "http://universities.hipolabs.com/search"
+# HTTPS, deliberately — this was plain http://.
+#
+# This lookup is what turns into `status: "verified"` on a candidate's degree,
+# which is one of the strongest claims this product makes. Deriving it from an
+# unauthenticated, unencrypted response means anyone on the network path
+# (hosting network, ISP, a spoofed DNS answer) can rewrite the response: forge
+# a match so a fabricated university reads as verified, or blank it so a real
+# one reads as unverifiable and drags the candidate's trust score down.
+#
+# There is deliberately NO http:// fallback. Silently downgrading on a TLS
+# failure would give back exactly the property being fixed, at the moment an
+# attacker is most likely to be interfering. A handshake failure surfaces as
+# status "error" instead — see _search_once — which is honest: we could not
+# check, rather than a verdict we cannot stand behind.
+HIPOLABS_URL = "https://universities.hipolabs.com/search"
 MAX_INSTITUTIONS = 8
 
 # Common qualifiers that appear on resumes but not in an institution's
