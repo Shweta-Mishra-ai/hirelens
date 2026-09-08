@@ -51,11 +51,41 @@ DNS/hosting change, not a code change, so it is documented in the README
 rather than assumed here.
 """
 
+from typing import Literal
+
 from fastapi import Response, Request
 from app.core.config import settings
 from app.core.security import ACCESS_TOKEN_EXPIRE_MINUTES
+from app.core.site import session_cookie_is_cross_site
 
 SESSION_COOKIE_NAME = "hirelens_session"
+
+
+def _cookie_policy() -> tuple[Literal["lax", "none"], bool, bool]:
+    """(samesite, secure, partitioned) for this deployment.
+
+    Derived, not hardcoded, so that moving the frontend and API behind one
+    registrable domain automatically drops the cross-site cookie attributes
+    instead of needing a code change. See app/core/site.py for the detection
+    and why it errs towards cross-site.
+    """
+    if not settings.is_production:
+        # Local dev is http://localhost:3000 -> http://localhost:8000. Same
+        # site, and Secure would make the cookie unusable over plain http.
+        return "lax", False, False
+
+    if session_cookie_is_cross_site(settings):
+        # SameSite=None is required for the cookie to be sent at all, the
+        # spec requires Secure alongside it, and Partitioned (CHIPS) keeps it
+        # working under Chrome's third-party cookie blocking.
+        return "none", True, True
+
+    # Same registrable domain (app.example.com + api.example.com): Lax is
+    # sufficient, works in every browser with no third-party cookie caveat,
+    # and is not vulnerable to the cross-site request shapes SameSite=None
+    # permits. Partitioned would be actively wrong here — it would scope the
+    # cookie per top-level site for no benefit.
+    return "lax", True, False
 
 
 def _mark_partitioned(response: Response) -> None:
@@ -85,27 +115,17 @@ def _mark_partitioned(response: Response) -> None:
 
 
 def set_session_cookie(response: Response, token: str) -> None:
+    samesite, secure, partitioned = _cookie_policy()
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=settings.is_production,
-        # Frontend (Vercel) and backend (Render) are different origins in
-        # production, so the cookie must be usable cross-site to reach the
-        # /auth/session endpoint at all — SameSite=None requires Secure.
-        # In local dev (same-site http://localhost) Lax is the safer
-        # default and doesn't require HTTPS.
-        samesite="none" if settings.is_production else "lax",
+        secure=secure,
+        samesite=samesite,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
-    # CHIPS ("Cookies Having Independent Partitioned State"). See the
-    # THIRD-PARTY COOKIE CAVEAT above: on *.vercel.app + *.onrender.com this
-    # cookie is third-party, and browsers that block third-party cookies drop
-    # it entirely. Partitioned opts it into the partitioned cookie jar, which
-    # Chrome (and Safari 18.4+) still honour under that blocking. It is keyed
-    # by top-level site, which is exactly the scope wanted here anyway.
-    if settings.is_production:
+    if partitioned:
         _mark_partitioned(response)
 
 
@@ -113,17 +133,19 @@ def clear_session_cookie(response: Response) -> None:
     # Not response.delete_cookie(): a partitioned cookie is only overwritten
     # by a Set-Cookie whose attributes match, so a deletion missing
     # `Partitioned` silently leaves the real cookie in place and logout
-    # wouldn't actually log anyone out.
+    # wouldn't actually log anyone out. Same reasoning for SameSite/Secure —
+    # the deletion must mirror whatever _cookie_policy() used to set it.
+    samesite, secure, partitioned = _cookie_policy()
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value="",
         httponly=True,
-        secure=settings.is_production,
-        samesite="none" if settings.is_production else "lax",
+        secure=secure,
+        samesite=samesite,
         max_age=0,
         path="/",
     )
-    if settings.is_production:
+    if partitioned:
         _mark_partitioned(response)
 
 

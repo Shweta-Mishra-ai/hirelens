@@ -51,15 +51,22 @@ export function Badge({
   children,
   tone = "neutral",
   dot = false,
+  icon,
+  title,
 }: {
   children: ReactNode;
   tone?: BadgeTone;
   /** Small status dot, for "live"/"active" indicators — solid, not a pulsing glow. */
   dot?: boolean;
+  /** Leading icon, as an alternative to `dot` when the state needs more than a colour. */
+  icon?: ReactNode;
+  /** Native tooltip — used to carry the detail behind a short status label. */
+  title?: string;
 }) {
   const t = BADGE_TONES[tone];
   return (
     <span
+      title={title}
       style={{
         padding: "4px 10px",
         borderRadius: radius.sm,
@@ -71,11 +78,13 @@ export function Badge({
         display: "inline-flex",
         alignItems: "center",
         gap: 6,
+        cursor: title ? "help" : undefined,
       }}
     >
       {dot && (
         <span style={{ width: 6, height: 6, borderRadius: "50%", background: t.fg }} />
       )}
+      {icon && <span style={{ display: "inline-flex", flexShrink: 0 }}>{icon}</span>}
       {children}
     </span>
   );

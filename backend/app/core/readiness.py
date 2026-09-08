@@ -19,6 +19,7 @@ that does not require shell access to the container.
 """
 
 from app.core.config import settings
+from app.core.site import is_same_site, session_cookie_is_cross_site
 
 DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production-min-32"
 
@@ -114,6 +115,41 @@ def config_warnings() -> list[dict]:
                 f"ALLOWED_ORIGINS ({origins}). Emailed invite/reset links will land "
                 "on a frontend whose API calls the browser then blocks as CORS "
                 "violations. These two settings should agree."
+            ),
+        })
+
+    # ── Session cookie site-ness ────────────────────────────────────────────
+    # The session cookie is what keeps a user logged in across a page reload.
+    # When the frontend and this API are on different registrable domains it
+    # is a THIRD-PARTY cookie, and Safari, Firefox-strict and Chrome Incognito
+    # drop it — so those users fall back to the per-tab sessionStorage stash
+    # and get logged out whenever they close the tab. Nothing errors; it just
+    # quietly feels flaky. Worth surfacing, since the fix is a DNS change
+    # rather than anything findable in the code.
+    if settings.BACKEND_URL:
+        if session_cookie_is_cross_site(settings):
+            warnings.append({
+                "code": "session_cookie_cross_site",
+                "message": (
+                    f"FRONTEND_URL ({settings.FRONTEND_URL}) and BACKEND_URL "
+                    f"({settings.BACKEND_URL}) are on different sites, so the session "
+                    "cookie is third-party. Safari, Firefox (strict) and Chrome "
+                    "Incognito drop it; those users rely on the per-tab "
+                    "sessionStorage fallback and must log in again in each new tab. "
+                    "Serving both from one registrable domain (app.example.com + "
+                    "api.example.com) makes the cookie first-party — no code change "
+                    "needed, the attributes adjust automatically."
+                ),
+            })
+    else:
+        warnings.append({
+            "code": "backend_url_unset",
+            "message": (
+                "BACKEND_URL is not set. The keep-alive self-ping is disabled (on a "
+                "free plan the service will idle-sleep), and the app cannot tell "
+                "whether the session cookie is first- or third-party, so it "
+                "defaults to the wider cross-site cookie. Set it to this service's "
+                "own public URL."
             ),
         })
 
