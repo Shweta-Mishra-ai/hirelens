@@ -21,6 +21,34 @@ header exactly as before — which means this change introduces NO new
 CSRF exposure, since a cookie is never used to authorize a mutating
 request; the header a cross-site attacker page cannot set is still what
 every real action requires.
+
+THIRD-PARTY COOKIE CAVEAT (read this before assuming session restore
+"just works" in production):
+
+In the default deployment the frontend is on `*.vercel.app` and this API
+is on `*.onrender.com`. Both of those are on the Public Suffix List, so
+each deployment is its own registrable site — which makes this cookie a
+*third-party* cookie from the browser's point of view, even though the
+same user's own tab both sets and reads it.
+
+Browsers that block third-party cookies by default therefore drop it:
+Safari (ITP, on by default since 2020), Firefox in strict mode, and
+Chrome in Incognito. On those browsers `GET /auth/session` sees no
+cookie and every page refresh logs the user out.
+
+Two mitigations are in place:
+  1. `partitioned=True` (CHIPS) below — restores this for Chrome under
+     third-party cookie blocking, and Safari 18.4+.
+  2. A per-tab `sessionStorage` fallback in the frontend auth store
+     (see `restoreSession` in frontend/src/store/auth.ts), which keeps a
+     refresh working on browsers that drop the cookie regardless.
+
+The real fix is to stop being cross-site: serve the frontend and this
+API from one registrable domain (e.g. `app.hirelens.com` +
+`api.hirelens.com`). Then `samesite="lax"` first-party cookies work
+everywhere and the sessionStorage fallback becomes dead code. That is a
+DNS/hosting change, not a code change, so it is documented in the README
+rather than assumed here.
 """
 
 from fastapi import Response, Request
@@ -42,16 +70,32 @@ def set_session_cookie(response: Response, token: str) -> None:
         # In local dev (same-site http://localhost) Lax is the safer
         # default and doesn't require HTTPS.
         samesite="none" if settings.is_production else "lax",
+        # CHIPS ("Cookies Having Independent Partitioned State"). See the
+        # THIRD-PARTY COOKIE CAVEAT below: on *.vercel.app + *.onrender.com
+        # this cookie is third-party, and browsers that block third-party
+        # cookies drop it entirely. Marking it Partitioned opts it into the
+        # partitioned cookie jar, which Chrome (and Safari 18.4+) still
+        # honour under third-party cookie blocking. It is keyed by the
+        # top-level site, which is exactly the scope we want anyway.
+        partitioned=settings.is_production,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
 
 
 def clear_session_cookie(response: Response) -> None:
-    response.delete_cookie(
+    # Not response.delete_cookie(): starlette's helper has no `partitioned`
+    # parameter, and a partitioned cookie is only overwritten by a Set-Cookie
+    # whose attributes match — a non-partitioned deletion silently leaves the
+    # real cookie in place, so logout wouldn't actually log anyone out.
+    response.set_cookie(
         key=SESSION_COOKIE_NAME,
+        value="",
+        httponly=True,
         secure=settings.is_production,
         samesite="none" if settings.is_production else "lax",
+        partitioned=settings.is_production,
+        max_age=0,
         path="/",
     )
 

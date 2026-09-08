@@ -83,7 +83,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm install
+        # `npm ci` (not `npm install`): install exactly what the lockfile
+        # pins, so CI tests and audits the same dependency tree that was
+        # verified locally instead of silently resolving newer versions.
+        run: npm ci
 
       # This step didn't exist before — the frontend test suite
       # (src/__tests__, added alongside the shared UI kit) was never
@@ -109,7 +112,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm install
+        # `npm ci` (not `npm install`): install exactly what the lockfile
+        # pins, so CI tests and audits the same dependency tree that was
+        # verified locally instead of silently resolving newer versions.
+        run: npm ci
 
       - name: Audit dependencies for known CVEs
         run: npm audit --audit-level=high || true
@@ -134,12 +140,25 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm install
+        # `npm ci` (not `npm install`): install exactly what the lockfile
+        # pins, so CI tests and audits the same dependency tree that was
+        # verified locally instead of silently resolving newer versions.
+        run: npm ci
 
       - name: Type check
         run: npx tsc --noEmit
 
-      - name: Build (lint runs as part of next build)
+      # Next.js 16 removed BOTH the `next lint` command and the ESLint pass
+      # that `next build` used to run. The old step here was labelled "lint
+      # runs as part of next build" and `package.json` still ran `next lint`
+      # — after the 14 -> 16 upgrade neither was true, so ESLint silently
+      # stopped running anywhere in CI and `npm run lint` errored out with
+      # "Invalid project directory provided, no such directory: .../lint".
+      # Call eslint directly so the linter is actually enforced again.
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
         run: npm run build
         env:
           NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co

@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
 
+    # Whether a reverse proxy sits in front of this app and can be trusted to
+    # append the real client IP to X-Forwarded-For. True for the default
+    # Render/Vercel deployment. Set false when the app is exposed directly —
+    # X-Forwarded-For is then pure client input and must be ignored. See
+    # get_client_ip() in app/core/rate_limit.py.
+    TRUST_PROXY_HEADERS: bool = True
+
     # Limits
     MAX_FILE_SIZE_MB: int = 10
     RATE_LIMIT_PER_MINUTE: int = 20

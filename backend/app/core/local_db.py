@@ -17,9 +17,16 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger("hirelens")
 
-# SQLite database file inside backend/data/
+# SQLite database file inside backend/data/.
+#
+# Overridable via HIRELENS_LOCAL_DB_PATH so the test suite can point at a
+# throwaway file. Without that override the suite wrote to the developer's
+# real backend/data/local.db and leaked state between runs: the accounts
+# created by the auth/e2e tests survived, so a *second* `pytest` on the same
+# machine failed on "email already registered" while a fresh CI runner passed.
+# Tests that only pass on a clean checkout hide real regressions behind noise.
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-DB_PATH = DATA_DIR / "local.db"
+DB_PATH = Path(os.environ.get("HIRELENS_LOCAL_DB_PATH") or (DATA_DIR / "local.db"))
 
 
 def _hash_pw(pw: str) -> str:
@@ -61,7 +68,7 @@ def _legacy_sha256_hash(pw: str) -> str:
 
 
 def _get_connection():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
     conn.row_factory = sqlite3.Row
     return conn

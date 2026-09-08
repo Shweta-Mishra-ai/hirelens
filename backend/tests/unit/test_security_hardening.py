@@ -65,13 +65,90 @@ class TestRateLimitHelper:
             check_rate_limit(None, key, limit=5, window_seconds=60)
 
     def test_get_client_ip_uses_forwarded_for(self):
+        """The real client is the rightmost routable entry, not the leftmost.
+
+        Internal hops (10.0.0.1 here) are skipped — keying the limiter on a
+        private address would put every user in one shared bucket.
+        """
         from app.core.rate_limit import get_client_ip
 
         class FakeRequest:
-            headers = {"x-forwarded-for": "203.0.113.5, 10.0.0.1"}
+            headers = {"x-forwarded-for": "93.184.216.34, 10.0.0.1"}
             client = None
 
-        assert get_client_ip(FakeRequest()) == "203.0.113.5"
+        assert get_client_ip(FakeRequest()) == "93.184.216.34"
+
+    def test_get_client_ip_ignores_client_supplied_forwarded_for(self):
+        """A spoofed X-Forwarded-For prefix must not change the rate-limit key.
+
+        A proxy APPENDS to X-Forwarded-For, so anything the client sent stays
+        at the front of the list. Reading the leftmost entry (the old
+        behaviour) let an attacker send a fresh fake IP on every login attempt
+        and land in a fresh rate-limit bucket each time — unlimited free
+        password guessing. Whatever a client prepends, the value our own edge
+        appended is what must win.
+        """
+        from app.core.rate_limit import get_client_ip
+
+        real_client = "93.184.216.34"
+
+        class SpoofedRequest:
+            headers = {"x-forwarded-for": f"1.2.3.4, 8.8.8.8, {real_client}"}
+            client = None
+
+        assert get_client_ip(SpoofedRequest()) == real_client
+
+        # ...and the spoofed prefix changing on every request must NOT produce
+        # a new key, which is the whole point.
+        class SpoofedRequest2:
+            headers = {"x-forwarded-for": f"9.9.9.9, 5.5.5.5, {real_client}"}
+            client = None
+
+        assert get_client_ip(SpoofedRequest2()) == get_client_ip(SpoofedRequest())
+
+    def test_get_client_ip_ignores_forwarded_for_when_proxy_not_trusted(self):
+        """With no proxy in front, X-Forwarded-For is pure client input."""
+        from app.core import rate_limit
+        from app.core.config import settings
+
+        class FakeClient:
+            host = "203.0.113.9"
+
+        class FakeRequest:
+            headers = {"x-forwarded-for": "1.2.3.4"}
+            client = FakeClient()
+
+        original = settings.TRUST_PROXY_HEADERS
+        try:
+            settings.TRUST_PROXY_HEADERS = False
+            assert rate_limit.get_client_ip(FakeRequest()) == "203.0.113.9"
+        finally:
+            settings.TRUST_PROXY_HEADERS = original
+
+    def test_get_client_ip_handles_all_internal_chain(self):
+        """An all-private chain still returns something usable, not a crash."""
+        from app.core.rate_limit import get_client_ip
+
+        class FakeRequest:
+            headers = {"x-forwarded-for": "10.0.0.5, 10.0.0.1"}
+            client = None
+
+        assert get_client_ip(FakeRequest()) == "10.0.0.1"
+
+    def test_get_client_ip_handles_garbage_forwarded_for(self):
+        """Malformed header values must not throw out of the limiter."""
+        from app.core.rate_limit import get_client_ip
+
+        class FakeClient:
+            host = "198.51.100.7"
+
+        class FakeRequest:
+            headers = {"x-forwarded-for": "not-an-ip, , <script>"}
+            client = FakeClient()
+
+        # No routable entry -> falls back to the rightmost raw value rather
+        # than raising; the caller only needs a stable bucket key.
+        assert get_client_ip(FakeRequest()) == "<script>"
 
     def test_get_client_ip_falls_back_to_client_host(self):
         from app.core.rate_limit import get_client_ip
