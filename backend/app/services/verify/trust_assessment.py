@@ -91,10 +91,31 @@ def compute_trust_assessment(
         )
 
     # ── Credibility score itself (already a blended signal, light weight here) ──
+    #
+    # This adjustment used to be applied WITHOUT a reasoning line, which broke
+    # the one promise this module makes. The docstring says every point added
+    # or subtracted is recorded so a recruiter can see exactly why — and this
+    # was a silent ±8. Two candidates could end up with identical `reasoning`
+    # lists and a 16-point gap between their scores, and the verdict can cross
+    # a threshold on the strength of a line nobody could see. An unexplainable
+    # verdict is worse than no verdict in a tool whose entire pitch is
+    # "evidence you can check".
     if overall_score >= 80:
         points += 8
+        reasoning.append(
+            f"Resume credibility score is high ({overall_score}/100) (+8, light weight — "
+            "this is a blended signal already reflected above)"
+        )
     elif overall_score < 45:
         points -= 8
+        reasoning.append(
+            f"Resume credibility score is low ({overall_score}/100) (−8, light weight — "
+            "this is a blended signal already reflected above)"
+        )
+    else:
+        reasoning.append(
+            f"Resume credibility score is mid-range ({overall_score}/100) (neutral)"
+        )
 
     points = max(-100, min(100, points))
 
