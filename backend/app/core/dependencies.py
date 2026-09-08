@@ -6,7 +6,7 @@ Redis graceful degradation, auth header validation.
 import logging
 from fastapi import Depends, Header
 from app.core.security import decode_token
-from app.core.exceptions import AuthError
+from app.core.exceptions import AuthError, NotFoundError
 from app.core.config import settings
 
 logger = logging.getLogger("hirelens")
@@ -93,3 +93,39 @@ async def get_optional_user(authorization: str = Header(default="")) -> dict | N
         return await get_current_user(authorization)
     except AuthError:
         return None
+
+
+# ── Admin gate ────────────────────────────────────────────────────────────────
+def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    """Restricts an endpoint to operators, not just "anyone who signed up".
+
+    Two endpoints are documented as being for administrators — /auth/stats
+    (total recruiter count and capacity) and /health/diagnostics (process
+    memory, live job counts, rate-limiter internals). Neither actually
+    checked anything beyond a valid token, and signup is open, so the real
+    audience was "any stranger who registers an account": a competitor could
+    read exact user numbers, and an attacker could watch internal counters
+    while probing.
+
+    There is no roles table in this app, so membership is an explicit
+    ADMIN_EMAILS allowlist rather than an invented permission model.
+
+    In production an empty allowlist means NOBODY passes. That is deliberate:
+    the failure mode of an unconfigured gate must be "locked", never "open to
+    everyone", which is exactly the bug being fixed. Local development stays
+    open so the diagnostics endpoint remains useful while working on it.
+
+    Answers 404, not 403 — a 403 would confirm the endpoint exists and is
+    merely gated, which is the same existence-oracle pattern closed
+    elsewhere in this codebase.
+    """
+    admins = settings.admin_emails_list
+    if not admins:
+        if settings.is_production:
+            raise NotFoundError("Not found.")
+        return current_user
+
+    email = str(current_user.get("email") or "").strip().lower()
+    if email not in admins:
+        raise NotFoundError("Not found.")
+    return current_user

@@ -9,8 +9,9 @@ import logging
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, EmailStr, field_validator
 
-from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import HireLensException, NotFoundError, ForbiddenError
+from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.rate_limit import check_rate_limit
+from app.core.exceptions import HireLensException, ForbiddenError
 from app.services.teams.access import (
     get_user_role, can_manage_team,
     _mem_teams, _mem_team_members, _mem_team_invites,
@@ -18,6 +19,24 @@ from app.services.teams.access import (
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
+
+# Per-user cap on team invites.
+#
+# This endpoint SENDS EMAIL to an arbitrary address supplied in the request
+# body, and had no rate limit. The only guard was a duplicate check for the
+# same address on the same team — which a caller bypasses completely just by
+# changing the address each time. So one authenticated account could pump
+# unlimited mail out of the configured Resend account (and Supabase's admin
+# invite mailer), addressed to anyone.
+#
+# That is worse than a normal DoS: the damage lands on third parties who
+# receive spam apparently sent by HireLens, on the sending domain's
+# reputation, and on the mail provider's bill. Deliverability, once lost, is
+# slow and painful to get back.
+#
+# A real team is built once; the limit only bites on automation.
+INVITES_PER_HOUR = 20
+INVITES_PER_DAY = 100
 
 
 class CreateTeamRequest(BaseModel):
@@ -198,9 +217,20 @@ async def list_team_members(team_id: str, current_user: dict = Depends(get_curre
 
 
 @router.post("/{team_id}/invite")
-async def invite_member(team_id: str, body: InviteRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+async def invite_member(
+    team_id: str,
+    body: InviteRequest,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+):
     if not can_manage_team(db, team_id, current_user["id"]):
         raise ForbiddenError("Only team owners or admins can send invites.")
+
+    # Keyed per user, not per team: creating more teams must not buy more
+    # sending capacity, or the limit is trivially sidestepped.
+    check_rate_limit(redis, f"team-invite:{current_user['id']}", INVITES_PER_HOUR, window_seconds=3600)
+    check_rate_limit(redis, f"team-invite-day:{current_user['id']}", INVITES_PER_DAY, window_seconds=86400)
 
     from app.core.config import settings
     from app.services.email.sender import send_team_invite_email

@@ -12,9 +12,9 @@ import bcrypt
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, EmailStr, field_validator
 
-from app.core.dependencies import get_db, get_current_user, get_redis
+from app.core.dependencies import get_db, get_current_user, get_redis, require_admin
 from app.core.security import create_access_token, decode_token
-from app.core.exceptions import AuthError, HireLensException, CapacityLimitExceeded
+from app.core.exceptions import AuthError, CapacityLimitExceeded
 from app.core.rate_limit import check_rate_limit, get_client_ip
 from app.core import local_db
 from app.core.session_cookies import set_session_cookie, clear_session_cookie, read_session_cookie
@@ -466,7 +466,13 @@ async def forgot_password(body: ForgotPasswordRequest, request: Request, db=Depe
         try:
             db.auth.reset_password_for_email(str(body.email))
         except Exception as e:
-            logger.warning(f"Password reset request error for {body.email}: {e}")
+            # The email address is deliberately NOT logged. This endpoint is
+            # unauthenticated, so anyone can drive what lands in the log, and
+            # a reset-request log line is a record of "this person has an
+            # account here" — one of the more sensitive things a recruiting
+            # tool's logs can accumulate. The rate-limit key already carries
+            # the IP if an operator needs to correlate abuse.
+            logger.warning(f"Password reset request failed: {e}")
 
     return {
         "status": "ok",
@@ -504,9 +510,13 @@ async def reset_password(body: ResetPasswordRequest, db=Depends(get_db)):
 
 
 @router.get("/stats")
-async def auth_stats(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+async def auth_stats(current_user: dict = Depends(require_admin), db=Depends(get_db)):
     """
-    User management statistics for administrators.
+    User management statistics — administrators only (see require_admin).
+
+    This used to be reachable by any authenticated caller despite the
+    "for administrators" label, and signup is open, so anyone could register
+    and read the exact number of recruiters on the platform.
     """
     total_users = len(_mem_users)
     if db:

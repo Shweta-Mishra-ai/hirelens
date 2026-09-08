@@ -24,6 +24,7 @@ from pydantic import BaseModel
 import hashlib
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.cache import cache_get, cache_set
+from app.core.rate_limit import check_rate_limit
 from app.core.exceptions import NotFoundError, ForbiddenError
 from app.api.v1.endpoints.analysis import _jobs
 from app.services.verify.github_verify import verify_github, extract_username
@@ -34,6 +35,29 @@ from app.services.verify.trust_assessment import compute_trust_assessment
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
+
+# Per-user cap on verification runs.
+#
+# This is by far the most expensive endpoint in the app: every call fans out
+# to FOUR concurrent outbound HTTP checks (GitHub API, a university-domain
+# registry, a live fetch of each certification link found in the resume, and
+# an employer-domain probe), each with a VERIFY_TIMEOUT_SECONDS budget. It had
+# no limit at all, which meant one authenticated account looping it could:
+#
+#   - saturate the event loop of a single-worker free-tier container and make
+#     the API unresponsive for every other recruiter;
+#   - burn the shared GitHub API quota (60/hr unauthenticated, 5000/hr with a
+#     token) that every user's verification depends on;
+#   - use the server as an outbound request amplifier against third parties,
+#     since certification links come from candidate-supplied resume text.
+#
+# Signup is open, so "authenticated" is not a meaningful barrier here.
+#
+# The number is chosen to be invisible in real use — a recruiter verifies a
+# report once, occasionally re-runs it after pasting a corrected GitHub
+# username — while cutting an automated loop dead.
+VERIFY_RUNS_PER_MINUTE = 10
+VERIFY_RUNS_PER_HOUR = 60
 
 
 class VerifyRequest(BaseModel):
@@ -201,6 +225,12 @@ async def run_verification(
     verification with a fresh one (GitHub is served from a short cache
     when re-run for the same username + skills; see _cached_verify_github).
     """
+    # Both windows: the per-minute cap stops a tight loop, the per-hour cap
+    # stops a slow drip that would stay under it all day.
+    user_id = current_user["id"]
+    check_rate_limit(redis, f"verify-run:{user_id}", VERIFY_RUNS_PER_MINUTE, window_seconds=60)
+    check_rate_limit(redis, f"verify-run-hr:{user_id}", VERIFY_RUNS_PER_HOUR, window_seconds=3600)
+
     report, source = _load_report(report_id, current_user["id"], db)
 
     candidate = report.get("candidate") or {}

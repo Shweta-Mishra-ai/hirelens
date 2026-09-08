@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, BackgroundTasks
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.cache import cache_delete
-from app.core.exceptions import FileTooLarge, UnsupportedFileType, NotFoundError, ForbiddenError
+from app.core.exceptions import FileTooLarge, UnsupportedFileType, NotFoundError
 from app.services.parser.document_parser import extract_text, check_magic_bytes
 from app.services.parser.resume_heuristic import looks_like_resume
 from app.services.ai.engine import engine
@@ -181,10 +181,13 @@ async def get_status(
 ):
     """Poll analysis job status. Returns progress, stage, and report_id when complete."""
     job = _jobs.get(job_id)
-    if not job:
+    # One answer for "no such job" and "not your job". A 403 on the second
+    # case tells a caller that a job id they hold is real and belongs to
+    # somebody else — an existence oracle for a store that also holds report
+    # blobs under predictable `report_<id>` keys. Everywhere else in the app
+    # answers 404 for both; this was the exception.
+    if not job or job["user_id"] != current_user["id"]:
         raise NotFoundError(f"Job '{job_id}' not found. It may have expired (jobs kept 1 hour).")
-    if job["user_id"] != current_user["id"]:
-        raise ForbiddenError()
 
     # Return without internal fields
     return {

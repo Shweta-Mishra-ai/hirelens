@@ -200,6 +200,23 @@ async def _call_anthropic(prompt: str, temperature: float = 0.1, max_tokens: int
             raise LLMError(f"Unexpected Anthropic response: {e}")
 
 
+def _redact_secrets(text: str) -> str:
+    """Strip any configured API key out of text destined for a log.
+
+    Called on every provider error before it is logged or wrapped. Keys are
+    matched by exact value rather than by pattern, so this cannot miss a
+    provider whose key format is unusual, and cannot mangle unrelated text.
+    """
+    for key in (
+        settings.GEMINI_API_KEY,
+        settings.GROQ_API_KEY,
+        settings.ANTHROPIC_API_KEY,
+    ):
+        if key and key in text:
+            text = text.replace(key, "***REDACTED***")
+    return text
+
+
 # ── Provider dispatcher with fallback ─────────────────────────────────────────
 async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> dict:
     """
@@ -235,7 +252,9 @@ async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000
 
             except LLMError as e:
                 last_error = e
-                logger.warning(f"LLM error | provider={provider_name} attempt={attempt+1}: {e}")
+                logger.warning(
+                    f"LLM error | provider={provider_name} attempt={attempt+1}: {_redact_secrets(str(e))}"
+                )
                 if attempt == 0:
                     await asyncio.sleep(2)
                 # Don't retry on rate limit — move to next provider
@@ -249,10 +268,15 @@ async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000
                 break
 
             except Exception as e:
-                error_msg = str(e)
-                if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY in error_msg:
-                    error_msg = error_msg.replace(settings.GEMINI_API_KEY, "********")
-                last_error = LLMError(f"Unexpected error from {provider_name}: {error_msg}")
+                # Redact EVERY configured provider key, not just Gemini's.
+                # Provider SDKs and HTTP layers routinely echo the failing
+                # request — including its Authorization header or an
+                # ?key=... query string — into the exception text, and this
+                # message goes straight into the application log. Redacting
+                # only the Gemini key meant a Groq or Anthropic failure could
+                # print that provider's secret in plaintext to whoever can
+                # read the logs.
+                last_error = LLMError(f"Unexpected error from {provider_name}: {_redact_secrets(str(e))}")
                 logger.warning(str(last_error))
                 if attempt == 0:
                     await asyncio.sleep(2)
