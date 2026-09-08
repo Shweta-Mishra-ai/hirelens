@@ -4,6 +4,8 @@
  * - signup handles requires_email_confirmation response
  * - Token expiry detection
  * - isLoading always reset (even on error)
+ * - Security: the raw JWT is no longer persisted to localStorage (see
+ *   restoreSession below) — only non-sensitive user display info is.
  */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -18,8 +20,15 @@ interface AuthStore {
   error: string | null;
   requiresEmailConfirmation: boolean;
   hasHydrated: boolean;
+  // True once a session-restore attempt (success OR failure) has
+  // completed. Pages should gate their "redirect to /login if not
+  // authenticated" logic on this, not on hasHydrated — token is no
+  // longer in localStorage, so right after hydration there's a brief
+  // window where restoreSession() is still in flight.
+  sessionChecked: boolean;
   setHasHydrated: (v: boolean) => void;
   setAuth: (token: string | null, user: User | null) => void;
+  restoreSession: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   signup: (
     email: string,
@@ -41,8 +50,22 @@ export const useAuthStore = create<AuthStore>()(
       error: null,
       requiresEmailConfirmation: false,
       hasHydrated: false,
+      sessionChecked: false,
       setHasHydrated: (v) => set({ hasHydrated: v }),
-      setAuth: (token, user) => set({ token, user, isLoading: false, error: null, hasHydrated: true }),
+      setAuth: (token, user) => set({ token, user, isLoading: false, error: null, hasHydrated: true, sessionChecked: true }),
+
+      // Silently re-authenticates using the httpOnly session cookie set at
+      // login/signup, so a page reload doesn't need the raw token to have
+      // survived in localStorage. Safe to call even when there's no
+      // session at all — it just resolves with the user logged out.
+      restoreSession: async () => {
+        try {
+          const res = await authAPI.session();
+          set({ token: res.access_token, user: res.user as User, sessionChecked: true });
+        } catch {
+          set({ token: null, user: null, sessionChecked: true });
+        }
+      },
 
       login: async (email, password) => {
         set({ isLoading: true, error: null });
@@ -53,6 +76,7 @@ export const useAuthStore = create<AuthStore>()(
             user: res.user as User,
             isLoading: false,
             error: null,
+            sessionChecked: true,
           });
         } catch (e) {
           const msg =
@@ -89,6 +113,7 @@ export const useAuthStore = create<AuthStore>()(
             isLoading: false,
             requiresEmailConfirmation: false,
             error: null,
+            sessionChecked: true,
           });
           return { requiresEmailConfirmation: false };
         } catch (e) {
@@ -108,6 +133,7 @@ export const useAuthStore = create<AuthStore>()(
             user: res.user,
             isLoading: false,
             error: null,
+            sessionChecked: true,
           });
         } catch (e) {
           const msg =
@@ -119,21 +145,31 @@ export const useAuthStore = create<AuthStore>()(
 
       logout: () => {
         supabase.auth.signOut();
+        authAPI.logout().catch(() => {
+          // Best-effort — if this fails the cookie just expires on its own
+          // (7-day max-age); local state is cleared regardless below.
+        });
         set({
           user: null,
           token: null,
           error: null,
           requiresEmailConfirmation: false,
+          sessionChecked: true,
         });
       },
 
       clearError: () => set({ error: null }),
     }),
     {
-      name: "hirelens-auth-v2", // bumped version clears old stale storage
-      partialize: (s) => ({ user: s.user, token: s.token }),
+      name: "hirelens-auth-v3", // bumped version — v2 persisted the raw token; this one deliberately doesn't
+      // Only non-sensitive display info is persisted now. The token lives
+      // in memory only for the current page session, restored on load via
+      // the httpOnly cookie (see restoreSession) rather than read back out
+      // of localStorage.
+      partialize: (s) => ({ user: s.user }),
       onRehydrateStorage: () => (state) => {
         state?.setHasHydrated(true);
+        state?.restoreSession();
       },
     },
   ),

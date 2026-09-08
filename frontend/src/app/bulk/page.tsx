@@ -1,38 +1,36 @@
 "use client";
 import { useEffect, useCallback, useRef, useState } from "react";
-import { useRouter, usePathname } from "next/navigation";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuthStore } from "@/store/auth";
 import { useBulkAnalysis } from "@/hooks/useBulkAnalysis";
 import { bulkAPI, APIError } from "@/lib/api";
 import {
   Search,
-  LayoutDashboard,
-  Zap,
   Files,
-  Target,
-  Users,
   AlertCircle,
   X,
   Download,
   CheckCircle2,
 } from "lucide-react";
-import type { DuplicateCheckResult } from "@/types";
+import type { DuplicateCheckResult, RankedCandidate } from "@/types";
 import { VerdictChip, verdictFromRecommendation } from "@/components/VerdictStamp";
+import { color, gradient, radius } from "@/lib/design-tokens";
+import { Card, Button, PageShell } from "@/components/ui/primitives";
+import { AppNavbar } from "@/components/ui/AppNavbar";
 
 const MAX_FILES = 50;
 const MAX_MB = 10;
 
 function scoreColor(n: number) {
-  if (n >= 75) return "#10B981";
-  if (n >= 55) return "#F59E0B";
-  return "#EF4444";
+  if (n >= 75) return color.success;
+  if (n >= 55) return color.warning;
+  return color.danger;
 }
 
 export default function BulkUploadPage() {
   const router = useRouter();
-  const pathname = usePathname();
-  const { user, token, logout, hasHydrated } = useAuthStore();
+  const { token, sessionChecked } = useAuthStore();
   const { state, upload, exportCsv, exporting, exportError, reset } = useBulkAnalysis();
   const inputRef = useRef<HTMLInputElement>(null);
   const [pending, setPending] = useState<File[]>([]);
@@ -42,8 +40,8 @@ export default function BulkUploadPage() {
   const [dupError, setDupError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (hasHydrated && !token) router.replace("/login");
-  }, [hasHydrated, token, router]);
+    if (sessionChecked && !token) router.replace("/login");
+  }, [sessionChecked, token, router]);
 
   const addFiles = useCallback((incoming: FileList | File[]) => {
     setPickError(null);
@@ -98,98 +96,32 @@ export default function BulkUploadPage() {
     }
   };
 
-  const isBusy = state.phase === "uploading" || state.phase === "processing";
   const batch = state.phase === "processing" || state.phase === "done" ? state.batch : null;
 
-  const NAV_LINKS = [
-    { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={14} /> },
-    { href: "/analyze", label: "Analyze", icon: <Zap size={14} /> },
-    { href: "/bulk", label: "Bulk Upload", icon: <Files size={14} /> },
-    { href: "/match", label: "JD Match", icon: <Target size={14} /> },
-    { href: "/teams", label: "Teams", icon: <Users size={14} /> },
-  ];
-
   return (
-    <div style={{ minHeight: "100vh", background: "#0B0F17", color: "#F8FAFC" }}>
-      {/* Navbar */}
-      <nav style={{
-        height: 64, borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
-        display: "flex", alignItems: "center", paddingInline: 28, gap: 24,
-        position: "sticky", top: 0, background: "rgba(11, 15, 23, 0.85)",
-        backdropFilter: "blur(16px)", zIndex: 100
-      }}>
-        <Link href="/dashboard" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 10,
-            background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            boxShadow: "0 0 16px rgba(99,102,241,0.4)"
-          }}><Search size={16} color="#FFFFFF" strokeWidth={2.5} /></div>
-          <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
-        </Link>
+    <PageShell>
+      <AppNavbar />
 
-        {/* Tab Pills */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(30, 41, 59, 0.5)", padding: 4, borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)" }}>
-          {NAV_LINKS.map(link => {
-            const active = pathname === link.href;
-            return (
-              <Link key={link.href} href={link.href} style={{
-                padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
-                color: active ? "#F8FAFC" : "#94A3B8",
-                background: active ? "rgba(99, 102, 241, 0.2)" : "transparent",
-                border: active ? "1px solid rgba(99, 102, 241, 0.4)" : "1px solid transparent",
-                display: "flex", alignItems: "center", gap: 7, textDecoration: "none",
-                transition: "all 0.15s ease",
-              }}>
-                <span style={{ display: "inline-flex", alignItems: "center" }}>{link.icon}</span>
-                <span>{link.label}</span>
-              </Link>
-            );
-          })}
-        </div>
-
-        <div style={{ flex: 1 }} />
-
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 12px", borderRadius: 99, background: "rgba(30,41,59,0.6)", border: "1px solid rgba(255,255,255,0.08)" }}>
-            <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
-              {user?.full_name ? user.full_name[0].toUpperCase() : "U"}
-            </div>
-            <span style={{ fontSize: 12, color: "#CBD5E1", fontWeight: 500 }}>{user?.email}</span>
-          </div>
-          <button onClick={() => { logout(); router.replace("/login"); }}
-            style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(30,41,59,0.4)", color: "#94A3B8", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
-            Sign Out
-          </button>
-        </div>
-      </nav>
-
-      {/* Main Container */}
-      <div style={{ maxWidth: 1080, margin: "0 auto", padding: "36px 24px 80px" }}>
-        
-        <div style={{ marginBottom: 32 }}>
-          <h1 style={{ fontSize: 30, fontWeight: 800, color: "#F8FAFC", margin: "0 0 8px", letterSpacing: -0.7 }}>
-            Bulk Candidate Upload & Ranking
-          </h1>
-          <p style={{ fontSize: 14, color: "#94A3B8", margin: 0 }}>
-            Upload up to {MAX_FILES} resumes at once. HireLens ranks candidates by credibility and flags duplicates automatically.
-          </p>
-        </div>
-
-        {/* ── Dropzone & Upload Queue ── */}
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: "48px 24px" }}>
+        {/* ── IDLE: Upload form ── */}
         {state.phase === "idle" && (
           <div className="animate-fade-up">
+            <div style={{ marginBottom: 28, textAlign: "center" }}>
+              <h1 className="font-display" style={{ fontSize: 28, fontWeight: 600, color: color.textPrimary, margin: "0 0 10px" }}>Bulk resume analysis</h1>
+              <p style={{ fontSize: 15, color: color.textMuted, margin: 0 }}>Upload up to {MAX_FILES} resumes at once — ranked, scored, and cross-checked for duplicates.</p>
+            </div>
+
             <div
               onDragOver={e => e.preventDefault()}
               onDrop={onDrop}
               onClick={() => inputRef.current?.click()}
               style={{
-                border: "2px dashed rgba(99, 102, 241, 0.4)",
-                borderRadius: 24, padding: "48px 32px",
+                border: `1.5px dashed ${color.border}`,
+                borderRadius: radius.lg, padding: "44px 32px",
                 display: "flex", flexDirection: "column", alignItems: "center", gap: 16,
-                cursor: "pointer", background: "rgba(30, 41, 59, 0.5)",
-                backdropFilter: "blur(16px)", textAlign: "center",
-                transition: "all 0.2s ease"
+                cursor: "pointer", background: color.surface,
+                textAlign: "center",
+                transition: "border-color 0.15s ease",
               }}
             >
               <input
@@ -200,17 +132,17 @@ export default function BulkUploadPage() {
                 style={{ display: "none" }}
                 onChange={(e) => { if (e.target.files?.length) addFiles(e.target.files); }}
               />
-              <div style={{ width: 68, height: 68, borderRadius: 20, background: "rgba(99, 102, 241, 0.15)", border: "1px solid rgba(99, 102, 241, 0.3)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Files size={28} color="#818CF8" />
+              <div style={{ width: 60, height: 60, borderRadius: radius.lg, background: color.surfaceRaised, border: `1px solid ${color.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Files size={28} color={color.brandLight} />
               </div>
               <div>
-                <div style={{ fontSize: 17, fontWeight: 700, color: "#F8FAFC", marginBottom: 4 }}>Drop candidate resumes here</div>
-                <div style={{ fontSize: 13, color: "#94A3B8" }}>PDF or DOCX · Max {MAX_FILES} files per batch · Under {MAX_MB}MB each</div>
+                <div className="font-display" style={{ fontSize: 17, fontWeight: 600, color: color.textPrimary, marginBottom: 4 }}>Drop candidate resumes here</div>
+                <div style={{ fontSize: 13, color: color.textMuted }}>PDF or DOCX · Max {MAX_FILES} files per batch · Under {MAX_MB}MB each</div>
               </div>
             </div>
 
             {pickError && (
-              <div style={{ marginTop: 16, padding: "12px 16px", borderRadius: 12, background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)", color: "#EF4444", fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ marginTop: 16, padding: "12px 16px", borderRadius: radius.md, background: color.dangerBg, border: `1px solid ${color.dangerBorder}`, color: color.danger, fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
                 <AlertCircle size={15} style={{ flexShrink: 0 }} />
                 <span>{pickError}</span>
               </div>
@@ -218,24 +150,22 @@ export default function BulkUploadPage() {
 
             {/* Pending files list */}
             {pending.length > 0 && (
-              <div style={{ marginTop: 24, background: "rgba(30, 41, 59, 0.6)", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 20, padding: 24 }}>
+              <Card style={{ marginTop: 24, padding: 24 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC" }}>Selected Files ({pending.length}/{MAX_FILES})</span>
-                  <button onClick={startUpload} style={{ padding: "10px 24px", borderRadius: 10, background: "linear-gradient(135deg, #6366F1, #4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer" }}>
-                    Start Batch Analysis
-                  </button>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: color.textPrimary }}>Selected Files ({pending.length}/{MAX_FILES})</span>
+                  <Button onClick={startUpload}>Start Batch Analysis</Button>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10 }}>
                   {pending.map((f, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(15, 23, 42, 0.6)", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 10, fontSize: 12 }}>
-                      <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160, color: "#CBD5E1" }}>{f.name}</span>
-                      <button onClick={(e) => { e.stopPropagation(); removeFile(i); }} style={{ background: "none", border: "none", color: "#EF4444", cursor: "pointer", display: "flex", alignItems: "center" }}>
+                    <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(15, 23, 42, 0.6)", border: `1px solid ${color.borderSubtle}`, borderRadius: radius.sm, fontSize: 12 }}>
+                      <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 160, color: color.textSecondary }}>{f.name}</span>
+                      <button onClick={(e) => { e.stopPropagation(); removeFile(i); }} style={{ background: "none", border: "none", color: color.danger, cursor: "pointer", display: "flex", alignItems: "center" }}>
                         <X size={14} />
                       </button>
                     </div>
                   ))}
                 </div>
-              </div>
+              </Card>
             )}
           </div>
         )}
@@ -243,89 +173,90 @@ export default function BulkUploadPage() {
         {/* ── Processing / Results ── */}
         {(state.phase === "uploading" || state.phase === "processing" || state.phase === "done") && batch && (
           <div className="animate-fade-up">
-            <div style={{ background: "rgba(30, 41, 59, 0.7)", backdropFilter: "blur(16px)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 20, padding: 28, marginBottom: 24 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <Card style={{ padding: 28, marginBottom: 24 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
                 <div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: "#F8FAFC", marginBottom: 4 }}>Batch Progress</div>
-                  <div style={{ fontSize: 13, color: "#94A3B8" }}>{batch.complete} of {batch.total} resumes analyzed</div>
+                  <div style={{ fontSize: 18, fontWeight: 600, color: color.textPrimary, marginBottom: 4 }}>Batch Progress</div>
+                  <div style={{ fontSize: 13, color: color.textMuted }}>{batch.complete} of {batch.total} resumes analyzed</div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-                  <div style={{ display: "flex", gap: 10 }}>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                     {state.phase === "done" && (
                       <>
-                        <button onClick={() => checkDuplicates(batch.batch_id)} disabled={dupLoading} style={{ padding: "8px 16px", borderRadius: 10, background: "rgba(99,102,241,0.2)", border: "1px solid rgba(99,102,241,0.4)", color: "#818CF8", fontWeight: 600, fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                        <Button variant="secondary" onClick={() => checkDuplicates(batch.batch_id)} disabled={dupLoading}>
                           <Search size={13} />
                           <span>{dupLoading ? "Checking…" : "Check Duplicates"}</span>
-                        </button>
-                        <button onClick={() => exportCsv(batch.batch_id)} disabled={exporting} style={{ padding: "8px 16px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 12, border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                        </Button>
+                        <Button onClick={() => exportCsv(batch.batch_id)} disabled={exporting}>
                           <Download size={13} />
                           <span>{exporting ? "Exporting…" : "Export CSV"}</span>
-                        </button>
-                        <button onClick={() => { reset(); setPending([]); }} style={{ padding: "8px 16px", borderRadius: 10, background: "rgba(30,41,59,0.8)", border: "1px solid rgba(255,255,255,0.1)", color: "#CBD5E1", fontSize: 12, cursor: "pointer" }}>
-                          New Batch
-                        </button>
+                        </Button>
+                        <Button variant="ghost" onClick={() => { reset(); setPending([]); }}>New Batch</Button>
                       </>
                     )}
                   </div>
-                  {exportError && (
-                    <div style={{ fontSize: 11, color: "#F87171" }}>{exportError}</div>
+                  {(exportError || dupError) && (
+                    <div style={{ fontSize: 11, color: color.danger }}>{exportError || dupError}</div>
                   )}
                 </div>
               </div>
 
               {/* Progress bar */}
-              <div style={{ height: 6, background: "rgba(255,255,255,0.08)", borderRadius: 99, overflow: "hidden" }}>
-                <div style={{ height: "100%", background: "linear-gradient(90deg, #6366F1, #10B981)", width: `${batch.total ? Math.round((batch.complete / batch.total) * 100) : 0}%`, transition: "width 0.4s ease" }} />
+              <div style={{ height: 6, background: "rgba(255,255,255,0.08)", borderRadius: radius.pill, overflow: "hidden" }}>
+                <div style={{ height: "100%", background: `linear-gradient(90deg, ${color.brand}, ${color.success})`, width: `${batch.total ? Math.round((batch.complete / batch.total) * 100) : 0}%`, transition: "width 0.4s ease" }} />
               </div>
-            </div>
+            </Card>
 
             {/* Duplicate check results card */}
             {dupResult && (
-              <div style={{ background: "rgba(30, 41, 59, 0.7)", border: "1px solid rgba(245, 158, 11, 0.3)", borderRadius: 20, padding: 24, marginBottom: 24 }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "#F59E0B", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
-                  <Search size={15} color="#F59E0B" />
+              <Card style={{ border: `1px solid ${color.warningBorder}`, padding: 24, marginBottom: 24 }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: color.warning, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                  <Search size={15} color={color.warning} />
                   <span>Duplicate Candidate Scan</span>
                 </div>
                 {dupResult.clusters.length === 0 ? (
-                  <div style={{ fontSize: 13, color: "#10B981", display: "flex", alignItems: "center", gap: 6 }}>
-                    <CheckCircle2 size={15} color="#10B981" />
-                    <span>No duplicate candidates detected in this batch.</span>
+                  <div style={{ fontSize: 13, color: color.success, display: "flex", alignItems: "center", gap: 6 }}>
+                    <CheckCircle2 size={15} color={color.success} />
+                    <span>No duplicate candidates detected in this batch ({dupResult.candidates_compared} compared).</span>
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {dupResult.clusters.map((c: any, i: number) => (
-                      <div key={i} style={{ fontSize: 13, color: "#CBD5E1", background: "rgba(15,23,42,0.6)", padding: "10px 14px", borderRadius: 10 }}>
-                        <span style={{ color: "#EF4444", fontWeight: 700 }}>Duplicate Group ({c.candidates.length}):</span> {c.candidates.map((x: any) => x.candidate_name).join(" & ")}
+                    {dupResult.clusters.map((c, i) => (
+                      <div key={i} style={{ fontSize: 13, color: color.textSecondary, background: "rgba(15,23,42,0.6)", padding: "10px 14px", borderRadius: radius.sm }}>
+                        <span style={{ color: color.danger, fontWeight: 600 }}>
+                          Duplicate Group ({c.members.length}, {Math.round(c.similarity * 100)}% similar):
+                        </span>{" "}
+                        {c.members.map((m) => m.name).join(" & ")}
                       </div>
                     ))}
                   </div>
                 )}
-              </div>
+              </Card>
             )}
 
             {/* Candidate Rankings Table */}
-            <div style={{ background: "rgba(30, 41, 59, 0.6)", backdropFilter: "blur(16px)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 20, overflow: "hidden" }}>
-              <div style={{ padding: "16px 24px", borderBottom: "1px solid rgba(255,255,255,0.08)", fontSize: 13, fontWeight: 700, color: "#CBD5E1" }}>
+            <Card style={{ overflow: "hidden" }}>
+              <div style={{ padding: "16px 24px", borderBottom: `1px solid ${color.border}`, fontSize: 13, fontWeight: 600, color: color.textSecondary }}>
                 Candidate Credibility Rankings ({batch.ranking.length})
               </div>
-              {batch.ranking.map((c: any, i: number) => (
-                <div key={c.report_id || i} style={{ display: "flex", alignItems: "center", padding: "14px 24px", gap: 16, borderBottom: i < batch.ranking.length - 1 ? "1px solid rgba(255,255,255,0.05)" : "none" }}>
-                  <div style={{ fontSize: 14, fontWeight: 800, color: "#64748B", width: 24 }}>#{i + 1}</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC" }}>{c.candidate_name || "Unknown"}</div>
-                    <div style={{ fontSize: 12, color: "#94A3B8", fontFamily: "var(--font-mono), monospace" }}>{c.file_name}</div>
+              {batch.ranking.map((c: RankedCandidate, i: number) => (
+                <div key={c.report_id || i} style={{ display: "flex", alignItems: "center", padding: "14px 24px", gap: 16, borderBottom: i < batch.ranking.length - 1 ? `1px solid ${color.borderSubtle}` : "none", flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: color.textFaint, width: 24 }}>#{i + 1}</div>
+                  <div style={{ flex: 1, minWidth: 120 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: color.textPrimary }}>{c.candidate_name || "Unknown"}</div>
+                    <div style={{ fontSize: 12, color: color.textMuted, fontFamily: "var(--font-mono), monospace" }}>{c.file_name}</div>
                   </div>
-                  <div style={{ fontSize: 20, fontWeight: 900, color: scoreColor(c.overall_score), fontFamily: "var(--font-mono), monospace" }}>{c.overall_score}</div>
+                  <div style={{ fontSize: 20, fontWeight: 600, color: scoreColor(c.overall_score), fontFamily: "var(--font-mono), monospace" }}>{c.overall_score}</div>
                   <VerdictChip verdict={verdictFromRecommendation(c.recommendation)} />
-                  <Link href={`/report/${c.report_id}`} style={{ padding: "6px 14px", borderRadius: 8, background: "rgba(99,102,241,0.15)", color: "#818CF8", fontSize: 12, fontWeight: 600, textDecoration: "none" }}>
-                    View Report →
+                  <Link href={`/report/${c.report_id}`} style={{ padding: "6px 14px", borderRadius: radius.sm, background: color.surfaceRaised, border: `1px solid ${color.border}`, color: color.brandLight, fontSize: 12, fontWeight: 600, textDecoration: "none" }}>
+                    View report
                   </Link>
                 </div>
               ))}
-            </div>
+            </Card>
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

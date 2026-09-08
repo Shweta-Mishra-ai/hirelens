@@ -1,0 +1,50 @@
+<svg width="1200" height="260" viewBox="0 0 1200 260" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1200" y2="260" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#12141A"/>
+      <stop offset="1" stop-color="#191B22"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3B7D78"/>
+      <stop offset="1" stop-color="#3B7D78"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="35%" r="65%">
+      <stop offset="0" stop-color="#3B7D78" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#3B7D78" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="scoreRing" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5C9A6C"/>
+      <stop offset="1" stop-color="#3B7D78"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="260" fill="url(#bg)"/>
+  <rect width="1200" height="260" fill="url(#glow)"/>
+
+  <!-- subtle grid texture -->
+  <g stroke="#FFFFFF" stroke-opacity="0.035">
+    <line x1="0" y1="65" x2="1200" y2="65"/>
+    <line x1="0" y1="130" x2="1200" y2="130"/>
+    <line x1="0" y1="195" x2="1200" y2="195"/>
+  </g>
+
+  <!-- Brand mark -->
+  <g transform="translate(72,84)">
+    <rect width="92" height="92" rx="24" fill="url(#brand)"/>
+    <circle cx="36" cy="36" r="17" fill="none" stroke="#FFFFFF" stroke-width="7"/>
+    <line x1="49" y1="49" x2="67" y2="67" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="192" y="118" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="800" fill="#EDEDEA" letter-spacing="-1.5">HireLens</text>
+  <text x="194" y="152" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="500" fill="#B4B4AC">AI Candidate Credibility &amp; Verification Intelligence</text>
+
+  <!-- Score ring motif, right side -->
+  <g transform="translate(1010,130)">
+    <circle r="72" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="14"/>
+    <circle r="72" fill="none" stroke="url(#scoreRing)" stroke-width="14" stroke-linecap="round"
+      stroke-dasharray="384" stroke-dashoffset="96" transform="rotate(-90)"/>
+    <text x="0" y="12" text-anchor="middle" font-family="Menlo, monospace" font-size="34" font-weight="800" fill="#EDEDEA">82</text>
+    <text x="0" y="34" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="600" fill="#B4B4AC" letter-spacing="1">SCORE</text>
+  </g>
+</svg>

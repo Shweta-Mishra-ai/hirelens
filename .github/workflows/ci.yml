@@ -66,6 +66,57 @@ jobs:
         # every transitive advisory; tighten this once the project has a
         # process for triaging/patching flagged dependencies.
 
+  frontend-tests:
+    name: Frontend — unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+
+      # This step didn't exist before — the frontend test suite
+      # (src/__tests__, added alongside the shared UI kit) was never
+      # actually run in CI, only typecheck+build were. A test suite that
+      # nothing runs on every PR isn't much different from no test suite.
+      - name: Run tests
+        run: npm test
+
+  frontend-security:
+    name: Frontend — dependency audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Audit dependencies for known CVEs
+        run: npm audit --audit-level=high || true
+        # `|| true` for the same reason as the backend's pip-audit step —
+        # surface findings without hard-failing on every transitive
+        # advisory until there's a triage process for them.
+
   frontend-build:
     name: Frontend — typecheck + build
     runs-on: ubuntu-latest

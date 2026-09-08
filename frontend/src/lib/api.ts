@@ -6,7 +6,7 @@
  * - Timeout handling
  * - 204 No Content handled correctly
  */
-import type { Report, AnalysisJob, User, BulkUploadResponse, BatchStatus, MatchBatchStatus, VerificationResult, DuplicateCheckResult, Team, TeamMember, ReportComment, VotesResult } from "@/types";
+import type { Report, ReportSummary, AnalysisJob, User, BulkUploadResponse, BatchStatus, MatchBatchStatus, VerificationResult, DuplicateCheckResult, Team, TeamMember, ReportComment, VotesResult } from "@/types";
 
 const BASE =
   (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -51,6 +51,11 @@ async function req<T>(
     res = await fetch(`${BASE}${path}`, {
       ...rest,
       headers,
+      // Include the httpOnly session cookie on every request. It's never
+      // used to authorize anything by the backend (see
+      // app/api/v1/endpoints/auth.py's /session endpoint) — this is only
+      // so /auth/session can read it during session restore.
+      credentials: "include",
       // 60 second timeout via AbortController
       signal: rest.signal ?? AbortSignal.timeout(60_000),
     });
@@ -121,6 +126,15 @@ export const authAPI = {
 
   me: (token: string) =>
     req<{ id: string; email: string }>("/api/v1/auth/me", { token }),
+
+  // Restores a session from the httpOnly cookie set at login/signup — used
+  // on app load instead of persisting the raw token to localStorage.
+  // Throws APIError(401) if there's no valid session cookie.
+  session: () =>
+    req<{ access_token: string; user: User }>("/api/v1/auth/session"),
+
+  logout: () =>
+    req<{ status: string }>("/api/v1/auth/logout", { method: "POST" }),
 
   oauthVerify: (accessToken: string) =>
     req<{ access_token: string; user: User }>(
@@ -331,7 +345,7 @@ export const reportsAPI = {
     if (params?.recommendation) qs.set("recommendation", params.recommendation);
     if (params?.search) qs.set("search", params.search);
     if (params?.sort) qs.set("sort", params.sort);
-    return req<{ reports: Report[]; total: number; pages: number }>(
+    return req<{ reports: ReportSummary[]; total: number; pages: number }>(
       `/api/v1/reports?${qs.toString()}`,
       { token },
     );

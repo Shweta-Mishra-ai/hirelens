@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
 from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.cache import cache_get, cache_set, cache_delete
 from app.core.exceptions import NotFoundError, ForbiddenError, HireLensException, ValidationError
 from app.core.rate_limit import check_rate_limit
 from app.core.config import settings
@@ -221,10 +222,18 @@ async def list_reports(
         )
 
 
+ANALYTICS_CACHE_TTL_SECONDS = 60
+
+
+def _analytics_cache_key(user_id: str) -> str:
+    return f"analytics:{user_id}"
+
+
 @router.get("/analytics")
 async def get_talent_analytics(
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
+    redis=Depends(get_redis),
 ):
     """
     Enterprise Talent Analytics & Workforce Intelligence (Feature C)
@@ -233,7 +242,20 @@ async def get_talent_analytics(
     - Top skill clusters
     - Risk flag breakdown
     - Average candidate credibility score
+
+    Previously recomputed from every report row on every single dashboard
+    load. Cached per-user for a short TTL (60s) — cheap enough to feel
+    real-time to a recruiter refreshing the dashboard, but avoids
+    re-scanning the full report set on every request. Invalidated
+    immediately on anything that changes the underlying numbers (a new
+    report finishing analysis, or a decision being recorded) rather than
+    waiting out the TTL — see analysis.py and submit_decision() below.
     """
+    cache_key = _analytics_cache_key(current_user["id"])
+    cached = cache_get(redis, cache_key)
+    if cached is not None:
+        return cached
+
     items = []
     if db:
         try:
@@ -254,13 +276,15 @@ async def get_talent_analytics(
 
     total = len(items)
     if total == 0:
-        return {
+        empty = {
             "total_candidates": 0,
             "avg_credibility_score": 0,
             "distribution": {"recommended": 0, "manual_review": 0, "high_risk": 0},
             "top_skills": [],
             "risk_categories": {},
         }
+        cache_set(redis, cache_key, empty, ANALYTICS_CACHE_TTL_SECONDS)
+        return empty
 
     scores = [int(i.get("overall_score") or 0) for i in items]
     avg_score = round(sum(scores) / len(scores)) if scores else 0
@@ -292,13 +316,15 @@ async def get_talent_analytics(
         reverse=True
     )[:10]
 
-    return {
+    payload = {
         "total_candidates": total,
         "avg_credibility_score": avg_score,
         "distribution": dist,
         "top_skills": top_skills,
         "risk_categories": risk_cats,
     }
+    cache_set(redis, cache_key, payload, ANALYTICS_CACHE_TTL_SECONDS)
+    return payload
 
 
 

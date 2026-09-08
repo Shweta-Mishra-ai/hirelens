@@ -43,10 +43,24 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
     if "error" in db_status and db_status != "not_configured":
         overall = "degraded"
 
+    # Durable ("supabase") vs ephemeral ("local_fallback") storage — see the
+    # startup log in main.py for why this distinction matters in production.
+    # Surfacing it here too means it can be checked without reading logs.
+    storage_mode = "supabase" if db_status == "ok" else "local_fallback"
+    if storage_mode == "local_fallback" and settings.is_production:
+        overall = "degraded"
+
     return {
         "status": overall,
         "version": "1.0.0",
         "env": settings.APP_ENV,
+        "storage_mode": storage_mode,
+        "storage_warning": (
+            None if storage_mode == "supabase" else
+            "Accounts/reports are on local SQLite or in-memory storage — this is "
+            "wiped on restart/redeploy/idle spin-down and is not safe for "
+            "production. Configure SUPABASE_URL/SUPABASE_SERVICE_KEY."
+        ),
         "services": {
             "database": db_status,
             "redis": redis_status,
@@ -75,6 +89,7 @@ async def diagnostics(
     import os, time
     from app.api.v1.endpoints.analysis import _jobs
     from app.core.rate_limit import _mem_rate_limit
+    from app.api.v1.endpoints.auth import MAX_RECRUITERS_CAPACITY
 
     h = await health(db, redis)
     
@@ -90,7 +105,7 @@ async def diagnostics(
     return {
         "health": h,
         "capacity": {
-            "max_supported_users": 5000,
+            "max_supported_users": MAX_RECRUITERS_CAPACITY,
             "bulk_concurrency": settings.BULK_CONCURRENCY,
             "rate_limit_per_minute": settings.RATE_LIMIT_PER_MINUTE,
             "max_file_size_mb": settings.MAX_FILE_SIZE_MB,

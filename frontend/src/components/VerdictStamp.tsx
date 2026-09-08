@@ -7,9 +7,9 @@
 export type VerdictKind = "recommended" | "manual_review" | "high_risk";
 
 const VERDICT_META: Record<VerdictKind, { label: string; color: string; bg: string; border: string; dot: string }> = {
-  recommended:   { label: "Recommended",  color: "#10B981", bg: "rgba(16, 185, 129, 0.12)", border: "rgba(16, 185, 129, 0.3)", dot: "#10B981" },
-  manual_review: { label: "Needs Review", color: "#F59E0B", bg: "rgba(245, 158, 11, 0.12)", border: "rgba(245, 158, 11, 0.3)", dot: "#F59E0B" },
-  high_risk:     { label: "High Risk",    color: "#EF4444", bg: "rgba(239, 68, 68, 0.12)",  border: "rgba(239, 68, 68, 0.3)",  dot: "#EF4444" },
+  recommended:   { label: "Recommended",  color: "#5C9A6C", bg: "rgba(92, 154, 108, 0.12)", border: "rgba(92, 154, 108, 0.3)", dot: "#5C9A6C" },
+  manual_review: { label: "Needs Review", color: "#B98A3E", bg: "rgba(185, 138, 62, 0.12)", border: "rgba(185, 138, 62, 0.3)", dot: "#B98A3E" },
+  high_risk:     { label: "High Risk",    color: "#B3543A", bg: "rgba(179, 84, 58, 0.12)",  border: "rgba(179, 84, 58, 0.3)",  dot: "#B3543A" },
 };
 
 export function verdictFromRecommendation(rec: string): VerdictKind {

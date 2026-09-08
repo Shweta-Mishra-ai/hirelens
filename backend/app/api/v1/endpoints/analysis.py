@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, BackgroundTasks
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.cache import cache_delete
 from app.core.exceptions import FileTooLarge, UnsupportedFileType, NotFoundError, ForbiddenError
 from app.services.parser.document_parser import extract_text, check_magic_bytes
 from app.services.parser.resume_heuristic import looks_like_resume
@@ -296,6 +297,13 @@ async def _run_analysis(
             result["_owner_user_id"] = user_id
             result["_owner_file_name"] = filename
             _jobs[f"report_{report_id}"] = result
+
+        # A new report changes total/avg/distribution/skills — don't make
+        # the recruiter wait out the analytics cache's TTL to see it.
+        try:
+            cache_delete(get_redis(), f"analytics:{user_id}")
+        except Exception as e:
+            logger.warning(f"[{job_id}] analytics cache invalidation failed (non-fatal): {e}")
 
         upd(status="complete", stage="complete", progress=100, report_id=report_id)
         logger.info(

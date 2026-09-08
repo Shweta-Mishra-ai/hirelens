@@ -186,7 +186,18 @@ def test_e2e_copilot_and_talent_analytics_flow():
         json={"email": "e2e_recruiter@example.com", "password": "Password123!"},
     )
     token = login_res.json()["access_token"]
+    user_id = login_res.json()["user"]["id"]
     headers = {"Authorization": f"Bearer {token}"}
+
+    # Seed an owned in-memory report to save co-pilot data against. Co-pilot
+    # save now requires the report to actually resolve and be owned by the
+    # caller (previously it accepted writes against ANY report_id string
+    # with no ownership check at all — a real access-control gap).
+    _jobs["report_rep_test123"] = {
+        "id": "rep_test123",
+        "_owner_user_id": user_id,
+        "candidate_name": "Copilot Test Candidate",
+    }
 
     # 1. Feature A: Save Interview Co-Pilot Scorecard & Notes
     copilot_save = client.post(
@@ -215,6 +226,43 @@ def test_e2e_copilot_and_talent_analytics_flow():
     analytics_res = client.get("/api/v1/reports/analytics", headers=headers)
     assert analytics_res.status_code == 200
     assert "distribution" in analytics_res.json()
+
+
+def test_e2e_copilot_save_rejects_unowned_or_unknown_report():
+    """
+    Regression test for the access-control gap above: saving co-pilot data
+    against a report_id that doesn't exist, or that belongs to a different
+    recruiter, must be refused — not silently accepted into the in-memory
+    store with a false "status: ok".
+    """
+    login_res = client.post(
+        "/api/v1/auth/login",
+        json={"email": "e2e_recruiter@example.com", "password": "Password123!"},
+    )
+    token = login_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Unknown report_id — never seeded anywhere.
+    res = client.post(
+        "/api/v1/reports/rep_never_existed_xyz/copilot",
+        headers=headers,
+        json={"scorecard": [], "custom_questions": []},
+    )
+    assert res.status_code == 404
+
+    # Report owned by someone else.
+    _jobs["report_rep_owned_by_other"] = {
+        "id": "rep_owned_by_other",
+        "_owner_user_id": "some-other-user-id",
+        "candidate_name": "Not Yours",
+    }
+    res2 = client.post(
+        "/api/v1/reports/rep_owned_by_other/copilot",
+        headers=headers,
+        json={"scorecard": [], "custom_questions": []},
+    )
+    assert res2.status_code == 404
+
 
 
 @patch("app.services.parser.document_parser.extract_text", return_value=REALISTIC_RESUME)

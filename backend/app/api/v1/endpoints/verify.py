@@ -21,7 +21,9 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.core.dependencies import get_current_user, get_db
+import hashlib
+from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.cache import cache_get, cache_set
 from app.core.exceptions import NotFoundError, ForbiddenError
 from app.api.v1.endpoints.analysis import _jobs
 from app.services.verify.github_verify import verify_github, extract_username
@@ -101,6 +103,38 @@ def _safe(result, fallback):
     return fallback if isinstance(result, BaseException) else result
 
 
+GITHUB_VERIFY_CACHE_TTL_SECONDS = 3600  # 1 hour — see app/core/cache.py
+
+
+async def _cached_verify_github(redis, username: str | None, claimed_skills: list[str]) -> dict:
+    """
+    Wraps verify_github() with a short Redis cache keyed on the username +
+    the exact claimed-skills set, so re-verifying the same candidate (a
+    recruiter double-checking, or a second teammate opening the same
+    report) doesn't re-spend GitHub API rate-limit budget for an answer
+    that's still fresh. A no-username call is never cached — there's
+    nothing to key it on, and it's already free (no network call).
+    """
+    if not username:
+        return await verify_github(username, claimed_skills)
+
+    skills_fingerprint = hashlib.sha256(
+        ",".join(sorted(s.lower().strip() for s in claimed_skills)).encode()
+    ).hexdigest()[:16]
+    cache_key = f"github_verify:{username.lower()}:{skills_fingerprint}"
+
+    cached = cache_get(redis, cache_key)
+    if cached is not None:
+        return cached
+
+    result = await verify_github(username, claimed_skills)
+    # Don't cache transient failures — a rate-limit or network blip should
+    # be retried on the next run, not frozen into the cache for an hour.
+    if result.get("status") not in ("error", "rate_limited"):
+        cache_set(redis, cache_key, result, GITHUB_VERIFY_CACHE_TTL_SECONDS)
+    return result
+
+
 RECOMMENDATION_RANK = {"recommended": 2, "manual_review": 1, "high_risk": 0}
 RANK_TO_RECOMMENDATION = {v: k for k, v in RECOMMENDATION_RANK.items()}
 
@@ -159,11 +193,13 @@ async def run_verification(
     body: VerifyRequest = VerifyRequest(),
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
+    redis=Depends(get_redis),
 ):
     """
     Runs all four public-data verification checks in parallel and stores
     the result on the report. Safe to re-run — it overwrites the previous
-    verification with a fresh one.
+    verification with a fresh one (GitHub is served from a short cache
+    when re-run for the same username + skills; see _cached_verify_github).
     """
     report, source = _load_report(report_id, current_user["id"], db)
 
@@ -174,7 +210,7 @@ async def run_verification(
     username = body.github_username or extract_username(candidate.get("github") or candidate.get("github_url"))
 
     github_res, edu_res, cert_res, exp_res = await asyncio.gather(
-        verify_github(username, claimed_skills),
+        _cached_verify_github(redis, username, claimed_skills),
         verify_education(list(report.get("education") or [])),
         verify_certifications(list(report.get("certifications") or []), candidate.get("name")),
         verify_experience_companies(list(report.get("experience") or [])),
