@@ -234,9 +234,13 @@ export const useAuthStore = create<AuthStore>()(
       },
 
       logout: () => {
+        // Capture the token BEFORE clearing local state — it is what the
+        // backend needs in order to revoke the session rather than just
+        // forget it locally.
+        const token = get().token;
         stashToken(null);
         supabase.auth.signOut();
-        authAPI.logout().catch(() => {
+        authAPI.logout(token ?? undefined).catch(() => {
           // Best-effort — if this fails the cookie just expires on its own
           // (7-day max-age); local state is cleared regardless below.
         });

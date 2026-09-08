@@ -34,6 +34,7 @@ def prod_env(monkeypatch):
     monkeypatch.setattr(settings, "SUPABASE_SERVICE_KEY", "service-key")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-key")
     monkeypatch.setattr(settings, "RESEND_API_KEY", "resend-key")
+    monkeypatch.setattr(settings, "REDIS_URL", "redis://localhost:6379/0")
     return settings
 
 
@@ -136,6 +137,13 @@ def test_explicit_cross_site_override_is_respected(monkeypatch, prod_env):
     """An operator who knows better than the heuristic can force it."""
     monkeypatch.setattr(settings, "SESSION_COOKIE_CROSS_SITE", True)
     assert "session_cookie_cross_site" in _codes(readiness.config_warnings())
+
+
+def test_flags_non_durable_token_revocation(monkeypatch, prod_env):
+    """Without Redis, a signed-out token starts working again after a restart."""
+    monkeypatch.setattr(settings, "REDIS_URL", "")
+    codes = _codes(readiness.config_warnings())
+    assert "revocation_not_durable" in codes
 
 
 def test_flags_missing_email_transport(monkeypatch, prod_env):

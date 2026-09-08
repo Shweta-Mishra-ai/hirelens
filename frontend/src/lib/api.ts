@@ -133,8 +133,14 @@ export const authAPI = {
   session: () =>
     req<{ access_token: string; user: User }>("/api/v1/auth/session"),
 
-  logout: () =>
-    req<{ status: string }>("/api/v1/auth/logout", { method: "POST" }),
+  // The token MUST be sent. The backend revokes only what the Authorization
+  // header presents — the session cookie alone deliberately cannot terminate
+  // a session, because it is SameSite=None and a browser would attach it to a
+  // logout request from any site. Calling this without the header clears the
+  // cookie but leaves the token itself valid until it expires, which is the
+  // exact bug revocation was added to fix.
+  logout: (token?: string) =>
+    req<{ status: string }>("/api/v1/auth/logout", { method: "POST", token }),
 
   oauthVerify: (accessToken: string) =>
     req<{ access_token: string; user: User }>(

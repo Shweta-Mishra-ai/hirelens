@@ -17,6 +17,36 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
     Returns status of all services.
     Used by Render for health checks.
     """
+    # Tables the app needs, and the migration that creates each. Checked
+    # individually because `storage_mode` only ever probed `reports` — so a
+    # deploy that ran 001 but not 002 reported itself fully healthy right up
+    # until the first recruiter opened /teams and everything there failed.
+    # Half-applied migrations are the normal way this goes wrong, not the
+    # exotic one.
+    REQUIRED_TABLES = {
+        "reports": "001_initial_schema.sql",
+        "teams": "002_team_collaboration.sql",
+        "team_members": "002_team_collaboration.sql",
+        "report_comments": "002_team_collaboration.sql",
+        "report_votes": "002_team_collaboration.sql",
+        "team_invites": "002_team_collaboration.sql",
+    }
+
+    def _missing_tables(client) -> list[str]:
+        """Names of required tables that are absent or unreadable.
+
+        Wrapped so a probe failure can never take down the health endpoint
+        itself — Render uses it for liveness, and a health check that 500s
+        turns a schema problem into a restart loop.
+        """
+        missing = []
+        for table in REQUIRED_TABLES:
+            try:
+                client.table(table).select("*").limit(1).execute()
+            except Exception:
+                missing.append(table)
+        return missing
+
     # Test DB connection
     db_status = "not_configured"
     if db:
@@ -56,6 +86,27 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
     # localhost being the big one. See app/core/readiness.py. Empty list in
     # development and in a correctly configured deploy.
     warnings = config_warnings()
+
+    # Only meaningful once the DB is actually reachable; with no Supabase the
+    # local fallback has its own (already reported) storage warning.
+    missing_tables = []
+    if db and db_status == "ok":
+        try:
+            missing_tables = _missing_tables(db)
+        except Exception as e:
+            logger.warning(f"Schema check failed: {e}")
+        if missing_tables:
+            needed = sorted({REQUIRED_TABLES[t] for t in missing_tables})
+            warnings.append({
+                "code": "schema_incomplete",
+                "message": (
+                    f"Missing or unreadable table(s): {', '.join(missing_tables)}. "
+                    f"Run {' then '.join(needed)} from backend/sql/ in the Supabase "
+                    "SQL editor (001 -> 002 -> 003, in that order). Features backed by "
+                    "these tables will fail while they are missing."
+                ),
+            })
+
     if warnings:
         overall = "degraded"
 
@@ -65,6 +116,7 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
         "env": settings.APP_ENV,
         "storage_mode": storage_mode,
         "config_warnings": warnings,
+        "missing_tables": missing_tables,
         "storage_warning": (
             None if storage_mode == "supabase" else
             "Accounts/reports are on local SQLite or in-memory storage — this is "

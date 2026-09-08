@@ -81,9 +81,12 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
-      # Redis is what makes job/batch state survive a restart and lets the
-      # app run more than one worker. Read the comment above the uvicorn CMD
-      # in backend/Dockerfile before raising --workers.
+      # Redis is what makes job/batch state survive a restart, lets the app
+      # run more than one worker, AND makes token revocation durable —
+      # without it, a token that was signed out starts working again after a
+      # restart. Reported as `revocation_not_durable` in /api/v1/health. Read
+      # the comment above the uvicorn CMD in backend/Dockerfile before
+      # raising --workers.
       - key: REDIS_URL
         sync: false
       - key: REDIS_PASSWORD
@@ -99,6 +102,12 @@ services:
         value: "20"
       - key: ANALYSIS_TIMEOUT_SECONDS
         value: "120"
+      # How long a session token stays valid, in minutes (default 10080 = 7
+      # days). Shorter means a leaked token is useful for less time, at the
+      # cost of more frequent logins. Tokens can be revoked before this
+      # elapses — see app/core/token_revocation.py.
+      # - key: ACCESS_TOKEN_EXPIRE_MINUTES
+      #   value: "10080"
       # Render terminates TLS at its edge and appends the real client IP to
       # X-Forwarded-For, which is how the brute-force limiter identifies
       # callers. Only set this to false if the app is ever exposed directly
