@@ -19,7 +19,7 @@ import re
 import logging
 import httpx
 from app.core.config import settings
-from app.services.verify.ssrf_guard import is_public_http_url
+from app.services.verify.ssrf_guard import is_public_http_url, safe_fetch
 
 logger = logging.getLogger("hirelens")
 
@@ -35,14 +35,18 @@ def _extract_url(text: str) -> str | None:
 
 async def _safe_fetch(client: httpx.AsyncClient, url: str) -> httpx.Response | None:
     """GET with manual redirect handling — re-validates SSRF safety on every
-    hop, since a URL that's safe can still redirect to an internal address."""
+    hop (a URL that's safe can still redirect to an internal address), and
+    pins each hop's DNS resolution to the exact IP just validated (see
+    safe_fetch() in ssrf_guard.py) so there's no gap between checking a
+    hostname and connecting to it for an attacker's DNS to land a
+    different answer in."""
     current_url = url
     for _ in range(MAX_REDIRECT_HOPS + 1):
-        if not is_public_http_url(current_url):
+        try:
+            r = await safe_fetch(client, current_url)
+        except ValueError:
             logger.warning(f"Blocked unsafe/internal URL during cert verification: {current_url}")
             return None
-        try:
-            r = await client.get(current_url, follow_redirects=False)
         except httpx.HTTPError as e:
             logger.warning(f"Certification link unreachable: {current_url} — {e}")
             return None

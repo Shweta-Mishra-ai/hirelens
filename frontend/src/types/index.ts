@@ -145,6 +145,23 @@ export interface Report {
 }
 
 
+// Lightweight row shape returned by GET /api/v1/reports (list_reports) and
+// the CSV/analytics endpoints — NOT the full Report detail shape above.
+// The dashboard's report list was previously (mis)typed as `Report[]`
+// without even importing `Report` — which meant it silently bound to the
+// unrelated global DOM `Report` type (part of the browser Reporting API)
+// instead, and only "worked" because every read was force-cast through
+// `any`. This type matches what list_reports actually returns.
+export interface ReportSummary {
+  id: string;
+  file_name: string;
+  candidate_name: string;
+  overall_score: number;
+  recommendation: Recommendation;
+  created_at: string;
+  recruiter_decision: Decision | null;
+}
+
 export interface AnalysisJob {
   id: string;
   status: JobStatus;

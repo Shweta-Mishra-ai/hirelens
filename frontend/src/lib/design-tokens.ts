@@ -1,76 +1,101 @@
 /**
- * HireLens — Design Tokens
+ * HireLens — Design Tokens ("The Verification Desk")
  *
- * Single source of truth for the app's visual language. Every page should
- * import from here instead of hardcoding hex values — that inconsistency
- * (multiple competing palettes across pages) was the single biggest visual
- * quality gap found in the July 2026 UI audit and is what this file fixes
- * going forward.
+ * Design plan (see /mnt/skills/public/frontend-design for the process this
+ * followed): the previous system — near-black canvas, bright indigo/violet
+ * gradient, glassmorphic blurred cards, colored glow shadows, uniform 16–24px
+ * radius, uppercase pill labels — is the generic "AI-generated dark SaaS"
+ * look almost by definition. It reads as a demo because it *is* the default
+ * treatment for "make me a dashboard," not a choice made for this product.
  *
- * Palette identity: dark slate base + indigo/violet brand accent, matching
- * the dashboard/analyze/match/teams pages, which were already the most
- * consistent and closest to a "Linear/Stripe/Vercel"-grade look. This file
- * documents that palette so every other page can be brought in line with it,
- * rather than introducing a new theme.
+ * HireLens's actual subject is verification and evidence — recruiters
+ * deciding whether to trust a resume. That points somewhere more like an
+ * audit ledger than a startup pitch deck: flat ink surfaces, hairline rules
+ * instead of blur-and-glow, restrained radius, a single deliberate accent
+ * (a petrol teal — verification/seal-adjacent, and not the indigo-violet
+ * every AI tool defaults to), and real typographic hierarchy carrying the
+ * personality instead of decoration.
+ *
+ * Color: ink (#12141A), surface (#191B22), line (#2A2D37), paper-toned text
+ * (#EDEDEA / warm off-white, not cool #F8FAFC), petrol-teal accent (#3B7D78).
+ * Type: Fraunces (serif, headings — set via --font-display) carries the
+ * personality; IBM Plex Sans (--font-body) is quiet UI text; IBM Plex Mono
+ * (--font-mono) is used ONLY for real data values (scores, ids, timestamps).
+ * Layout: flat surfaces + hairline borders, no blur, no glow shadows —
+ * elevation comes from a single soft neutral shadow used sparingly.
  */
 
 export const color = {
-  // Backgrounds
-  bg: "#0B0F17",
-  bgAlt: "#0F172A",
-  surface: "rgba(30, 41, 59, 0.6)",
-  surfaceSolid: "#1E293B",
-  surfaceHover: "rgba(255, 255, 255, 0.03)",
+  // Backgrounds — flat, no transparency/blur layering
+  bg: "#12141A",
+  bgAlt: "#0E0F13",
+  surface: "#191B22",
+  surfaceSolid: "#191B22",
+  surfaceRaised: "#1F222B",
+  surfaceHover: "#20232C",
 
-  // Borders
-  border: "rgba(255, 255, 255, 0.08)",
-  borderStrong: "rgba(255, 255, 255, 0.12)",
-  borderSubtle: "rgba(255, 255, 255, 0.05)",
+  // Borders — hairline rules, not glows
+  border: "#2A2D37",
+  borderStrong: "#383C48",
+  borderSubtle: "#22242D",
 
-  // Text
-  textPrimary: "#F8FAFC",
-  textSecondary: "#CBD5E1",
-  textMuted: "#94A3B8",
-  textFaint: "#64748B",
+  // Text — warm off-white (ledger paper on dark ink), not cool white
+  textPrimary: "#EDEDEA",
+  textSecondary: "#B4B4AC",
+  textMuted: "#8A8B82",
+  textFaint: "#5F6058",
 
-  // Brand (indigo/violet)
-  brand: "#6366F1",
-  brandLight: "#818CF8",
-  brandDark: "#4F46E5",
-  brandGlow: "rgba(99, 102, 241, 0.4)",
-  violet: "#8B5CF6",
+  // Brand — deep petrol teal (verification/seal), deliberately not
+  // indigo/violet/blue
+  brand: "#3B7D78",
+  brandLight: "#5FA39D",
+  brandDark: "#2A5D59",
+  brandGlow: "rgba(59, 125, 120, 0.35)", // kept only for focus rings, never decorative glow
+  violet: "#3B7D78", // legacy alias — same as brand, no separate violet accent anymore
 
-  // Semantic
-  success: "#10B981",
-  successBg: "rgba(16, 185, 129, 0.12)",
-  successBorder: "rgba(16, 185, 129, 0.3)",
+  // Semantic — muted/desaturated rather than saturated "AI dashboard" hues
+  success: "#5C9A6C",
+  successBg: "rgba(92, 154, 108, 0.14)",
+  successBorder: "rgba(92, 154, 108, 0.35)",
 
-  warning: "#F59E0B",
-  warningBg: "rgba(245, 158, 11, 0.12)",
-  warningBorder: "rgba(245, 158, 11, 0.3)",
+  warning: "#B98A3E",
+  warningBg: "rgba(185, 138, 62, 0.14)",
+  warningBorder: "rgba(185, 138, 62, 0.35)",
 
-  danger: "#EF4444",
-  dangerBg: "rgba(239, 68, 68, 0.12)",
-  dangerBorder: "rgba(239, 68, 68, 0.3)",
+  danger: "#B3543A",
+  dangerBg: "rgba(179, 84, 58, 0.14)",
+  dangerBorder: "rgba(179, 84, 58, 0.35)",
 
-  info: "#3B82F6",
-  infoBg: "rgba(59, 130, 246, 0.1)",
-  infoBorder: "rgba(59, 130, 246, 0.25)",
+  info: "#5B84A6",
+  infoBg: "rgba(91, 132, 166, 0.14)",
+  infoBorder: "rgba(91, 132, 166, 0.35)",
 } as const;
 
+// No decorative gradients — a flat brand fill stands in for what used to be
+// a gradient button/glow. Kept as an export so existing call sites don't all
+// need touching at once; new code should just use color.brand directly.
 export const gradient = {
-  brand: `linear-gradient(135deg, ${color.brand}, ${color.violet})`,
-  brandButton: `linear-gradient(135deg, ${color.brand}, ${color.brandDark})`,
+  brand: color.brand,
+  brandButton: color.brand,
 } as const;
 
 export const radius = {
-  sm: 8,
-  md: 12,
-  lg: 16,
-  xl: 20,
+  sm: 4,
+  md: 6,
+  lg: 8,
+  xl: 10,
   pill: 9999,
 } as const;
 
 export const font = {
-  mono: "monospace",
+  display: "var(--font-display)",
+  body: "var(--font-body)",
+  mono: "var(--font-mono)",
+} as const;
+
+// Single restrained elevation shadow — neutral (no color tint), used only
+// where something genuinely floats above the page (menus, modals). Cards
+// on the page surface use a hairline border instead, never a shadow.
+export const shadow = {
+  raised: "0 4px 16px -4px rgba(0, 0, 0, 0.45)",
 } as const;

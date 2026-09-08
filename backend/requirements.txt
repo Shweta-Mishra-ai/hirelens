@@ -24,8 +24,23 @@ python-docx>=1.1.0,<2.0.0
 httpx>=0.27.0,<1.0.0
 
 # ── Auth & Security ───────────────────────────────────────────────────────────
-python-jose[cryptography]>=3.3.0,<4.0.0
+python-jose[cryptography]>=3.4.0,<4.0.0  # >=3.4.0: fixes known JWE/algorithm-handling CVEs (this app only uses HS256 JWS, but pin the safe floor anyway)
+# KNOWN, ASSESSED, ACCEPTED: pip-audit flags a transitive dependency of
+# python-jose — `ecdsa` (PYSEC-2026-1325, a Minerva timing attack against
+# ECDSA P-256 signing, which upstream has no planned fix for). This app
+# never imports ecdsa directly and app/core/security.py hardcodes
+# ALGORITHM = "HS256" everywhere — HMAC, a completely different primitive
+# from ECDSA — so the vulnerable code path (ecdsa.SigningKey.sign_digest())
+# is never reachable by anything this app actually does. Re-check this
+# note if the JWT algorithm here is ever changed to an EC-based one
+# (ES256/ES384/etc).
+# passlib's bcrypt backend is broken against bcrypt>=4.0 (a known, unfixed
+# passlib/bcrypt compatibility issue), so app/core/local_db.py calls the
+# bcrypt library directly instead. bcrypt itself is still listed here as a
+# direct dependency (it used to only be pulled in transitively via
+# passlib[bcrypt]) since it's now imported directly, not just by passlib.
 passlib[bcrypt]>=1.7.4,<2.0.0
+bcrypt>=4.0.0,<5.1.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 python-dateutil>=2.9.0,<3.0.0

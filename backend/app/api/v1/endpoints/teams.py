@@ -51,8 +51,18 @@ async def create_team(body: CreateTeamRequest, current_user: dict = Depends(get_
             }).execute()
             team = team_res.data[0] if team_res.data else {"id": team_id, "name": body.name, "owner_id": user_id}
             
+            # NOTE: public.team_members has a composite primary key
+            # (team_id, user_id) and no `id` column at all (see
+            # sql/002_team_collaboration.sql) — this insert used to send an
+            # "id" field anyway. PostgREST rejects inserts containing a
+            # column that doesn't exist, so every real Supabase insert here
+            # was failing and silently falling through to the in-memory
+            # fallback below. The practical effect: team creation always
+            # *looked* successful, but the membership row (and therefore
+            # the team, functionally) never actually persisted to Supabase
+            # — it quietly lived in-process memory only, even with a fully
+            # configured database.
             db.table("team_members").insert({
-                "id": str(uuid.uuid4()),
                 "team_id": team_id,
                 "user_id": user_id,
                 "role": "owner",

@@ -1,16 +1,16 @@
 <div align="center">
 
-# 🔎 HireLens
+<img src="assets/banner.svg" alt="HireLens" width="100%" />
 
 ### AI-Powered Resume Credibility, Fraud Detection & Recruiter Intelligence Platform
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Next.js](https://img.shields.io/badge/Next.js-14.2-000?style=flat-square&logo=next.js)](https://nextjs.org)
-[![Tests](https://img.shields.io/badge/backend%20tests-336%20passing-10B981?style=flat-square)](backend/tests)
-[![Capacity](https://img.shields.io/badge/Capacity-5%2C000%20Recruiters-6366F1?style=flat-square)](#capacity--scale-hardening-5000-active-users)
+[![Backend Tests](https://img.shields.io/badge/backend%20tests-passing-10B981?style=flat-square)](backend/tests)
+[![Frontend Tests](https://img.shields.io/badge/frontend%20tests-vitest-6E9F18?style=flat-square&logo=vitest&logoColor=white)](frontend/src/__tests__)
+[![License](https://img.shields.io/badge/license-MIT-64748B?style=flat-square)](#)
 
-
-**Upload a resume → get a 6-dimension credibility score, AI-content detection, risk flags anchored to exact text, predictive talent velocity, and real-time public-data verification — built for production scale.**
+**Upload a resume → get a 6-dimension credibility score, AI-content detection, risk flags anchored to exact text, predictive talent velocity, and real-time public-data verification.**
 
 </div>
 
@@ -22,9 +22,9 @@ HireLens is a decision-support platform, not an automated gatekeeper. Every scor
 
 ---
 
-## What HireLens Does Today
+## What HireLens Does
 
-HireLens ships with **six working analysis and intelligence modules** plus **real-time public verification** and **5,000 active user capacity hardening** — fully wired and verified end-to-end.
+Six analysis/intelligence modules, wired end-to-end, plus real-time public verification:
 
 ### 1. Single / Bulk Resume Credibility Analysis
 Upload one resume, or up to 50 at once (`/bulk`). Each one gets:
@@ -36,32 +36,33 @@ Upload one resume, or up to 50 at once (`/bulk`). Each one gets:
 
 Bulk upload auto-ranks candidates by score with CSV export.
 
-### 2. Live Interactive Candidate Interview Co-Pilot & Question Customizer (`/report/[id]` → Co-Pilot Tab) *(Feature A)*
+### 2. Live Interactive Candidate Interview Co-Pilot & Question Customizer (`/report/[id]` → Co-Pilot Tab)
 - Customize probe questions and check them off during live candidate interviews.
 - Record structured interviewer ratings across **Technical Depth**, **Problem Solving**, **Culture Fit**, and **Authenticity**.
 - Store live evaluation notes and recommendation overrides via `POST /api/v1/reports/{report_id}/copilot`.
 
-### 3. Predictive Talent Velocity & Career Growth Index *(Feature B)*
+### 3. Predictive Talent Velocity & Career Growth Index
 - Projects 5–10 year candidate career growth trajectory.
 - Calculates **Promotion Cadence** (months/promotion), **Growth Velocity Index** (0–100), and **Retention Stability Score**.
 - Embedded directly into the Candidate Intelligence Report (`report["talent_velocity"]`).
 
-### 4. Enterprise Talent Analytics & Workforce Intelligence (`/dashboard` / `GET /api/v1/reports/analytics`) *(Feature C)*
+### 4. Enterprise Talent Analytics & Workforce Intelligence (`/dashboard` · `GET /api/v1/reports/analytics`)
 - Aggregate metrics analyzing overall candidate pool health.
 - Credibility distribution (Recommended vs High Risk vs Manual Review).
 - Top identified skill clusters and risk flag category breakdown.
+- Cached per-recruiter for 60s (Redis) and invalidated the moment a new report finishes, so it stays cheap without ever feeling stale.
 
 ### 5. JD Match (`/match`)
 Paste or upload a job description, upload multiple resumes, get each candidate's match %, missing skills, and a highlighted best-fit — reusing the same credibility pipeline.
 
 ### 6. Real-Time Public Data Verification (`/report/[id]` → Verify tab)
-Real-time (not cached, not mocked) checks against:
-- **GitHub** — live `api.github.com` calls cross-checking claimed skills against full repo language breakdowns.
+Checks against:
+- **GitHub** — live `api.github.com` calls cross-checking claimed skills against full repo language breakdowns. Results are cached per username+skillset for 1 hour so re-verifying the same candidate doesn't burn API rate-limit budget for an answer that hasn't changed.
 - **Education** — university-domain registry lookup with automatic multi-variant retry logic.
 - **Certifications** — live URL verification for embedded certificate links.
 - **Employers** — company-website domain check.
 
-Feed into a **Combined Trust Assessment** weighing real-world verification evidence far more heavily than writing-style signals.
+Feeds into a **Combined Trust Assessment** weighing real-world verification evidence far more heavily than writing-style signals.
 
 ### 7. ATS CSV Import & Cross-Candidate Fraud Detection
 - **ATS Import**: Import candidate CSV exports from Greenhouse/Lever/Workday/BambooHR.
@@ -72,26 +73,40 @@ Create a team, invite teammates by email, share reports, comment, and vote (Adva
 
 ---
 
-## Capacity & Scale Hardening (5,000 Active Users)
+## Architecture
 
-HireLens is hardened for production launch supporting **5,000 active recruiters/users**:
-1. **5,000 Recruiter Capacity Enforcement**:
-   - Signup (`/api/v1/auth/signup`) checks active user capacity. When count reaches 5,000, signups return `429 Too Many Requests` (`CapacityLimitExceeded`).
-2. **Database Connection Pooling**:
-   - `get_db()` in `dependencies.py` reuses a thread-safe singleton Supabase client (`_supabase_client`), eliminating socket churn under high traffic.
-3. **Dual-Layer Authentication Resilience**:
-   - Uses Supabase Auth when configured, and falls back to a secure local in-memory store (`_mem_users`) for standalone/dev environments without throwing database errors.
-4. **Auto-Redirection**:
-   - Authenticated users on `/login` and `/signup` automatically redirect to `/dashboard`.
+<img src="assets/architecture.svg" alt="HireLens architecture" width="100%" />
+
+Supabase (Postgres + Auth) is the durable system of record. Local SQLite and an in-memory job store exist **only** as zero-config fallbacks for local development when Supabase env vars aren't set — see [Storage & Durability](#storage--durability-read-this-before-deploying) below before deploying anywhere real users will sign up.
 
 ---
 
-## Load Handling, Error Handling & Validation
+## Storage & Durability (read this before deploying)
+
+If `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` are missing or unreachable, HireLens degrades gracefully to a local SQLite file and an in-process dict instead of crashing — that's deliberate, so you can run the whole app with zero cloud setup while developing. It is **not** durable in production: on platforms with ephemeral disks or idle spin-down (e.g. a free-tier host), that fallback storage is wiped on every restart, and accounts/reports quietly disappear.
+
+Two things make this impossible to miss instead of a silent trap:
+- **Startup log**: a `CRITICAL` line fires at boot if the app is running in `APP_ENV=production` without Supabase configured.
+- **`GET /api/v1/health`**: returns `"storage_mode": "supabase" | "local_fallback"` and a human-readable `storage_warning` — check this after every deploy.
+
+**Before deploying anywhere real users will use it:** set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` directly in your hosting provider's environment settings (not just in `render.yaml`, which declares them as `sync: false` — placeholders you fill in yourself, not values it sets for you).
+
+---
+
+## Load Handling, Caching & Error Handling
 
 ### Load Handling
 - **Redis Rate Limiting**: Per-IP limits on auth endpoints (login: 10/15min, signup: 8/hr) + per-user limits on analysis endpoints.
 - **Concurrency Control**: Bulk & JD match uploads use `asyncio.Semaphore(BULK_CONCURRENCY)` to prevent event-loop starvation and stay within LLM rate limits.
 - **File Size Ceiling**: Max file size capped at 10MB (`MAX_FILE_SIZE_MB`).
+- **Registration capacity gate**: signups are capped and checked against a count of distinct Supabase Auth users (via the admin API) — not a proxy metric — so one recruiter uploading many reports can never block everyone else from signing up.
+
+### Caching (`app/core/cache.py`)
+A small Redis-backed JSON cache, used in two places so far:
+- GitHub verification results — 1 hour TTL, keyed by username + claimed-skills fingerprint.
+- Talent analytics — 60s TTL per recruiter, invalidated immediately when a new report finishes analysis.
+
+Both degrade to "always miss, recompute" if Redis isn't configured — caching is a performance layer, never a hard dependency.
 
 ### Input & Security Validation
 - **MIME & Magic Byte Verification**: `validate_upload()` checks PDF/DOCX magic bytes to reject executable/malicious uploads.
@@ -99,11 +114,11 @@ HireLens is hardened for production launch supporting **5,000 active recruiters/
 - **Injection Defense**: Multi-stage prompt fencing + heuristic injection scan.
 
 ### Error Handling
-- All endpoints return structured JSON payloads with tracking `x-request-id` headers on every response:
+All endpoints return structured JSON payloads with tracking `x-request-id` headers on every response:
 ```json
 {
   "error": "capacity_limit_exceeded",
-  "message": "Registration capacity limit of 5,000 active recruiters reached.",
+  "message": "Registration capacity limit reached.",
   "request_id": "req_xyz123"
 }
 ```
@@ -114,13 +129,13 @@ HireLens is hardened for production launch supporting **5,000 active recruiters/
 
 | Layer | Technology |
 |---|---|
-| AI Engine | **Gemini 2.5 Flash** (primary) → **Groq `openai/gpt-oss-120b`** (fallback) → Claude Sonnet 5 (optional 3rd fallback) |
+| AI Engine | **Gemini 2.5 Flash** (primary) → **Groq `openai/gpt-oss-120b`** (fallback) → Claude Sonnet (optional 3rd fallback) |
 | Backend | **FastAPI** 0.110 · Python 3.12 / 3.14 · pdfminer.six · python-docx |
 | Frontend | **Next.js 14.2** (App Router) · TypeScript · Tailwind CSS |
-| Auth & DB | **Supabase** (PostgreSQL + Auth) + Local Fallback Auth Store |
-| Cache & Queue | **Upstash Redis** — rate limiting + bulk-batch state |
+| Auth & DB | **Supabase** (PostgreSQL + Auth) — durable primary store, with a local fallback for zero-config dev only |
+| Cache & Queue | **Upstash Redis** — rate limiting, GitHub/analytics caching, bulk-batch state |
 | Deploy | **Vercel** (frontend) · **Render** (backend) |
-| Testing & CI | **pytest** (336 passing tests) + **TypeScript type-check** + GitHub Actions CI |
+| Testing & CI | **pytest** (backend) + **Vitest + React Testing Library** (frontend) + TypeScript type-check + GitHub Actions CI |
 
 ---
 
@@ -153,20 +168,29 @@ npm run dev
 
 ## Testing
 
-Run the automated test suite (336 passing unit, integration, capacity limit, load handling, and E2E tests):
-
 ```bash
-# Backend Test Suite
+# Backend test suite (unit, integration, capacity, load-handling, E2E)
 cd backend
 python -m pytest tests/ -v
 
-# Frontend Type Check
+# Frontend unit/component tests (Vitest + React Testing Library)
 cd frontend
+npm test
+
+# Frontend type check
 npm run type-check
 
-# Frontend Production Build
+# Frontend production build
 npm run build
 ```
+
+The frontend suite currently covers the API client's error/timeout/auth-header handling, the auth store's login/logout/error-reset flows, and the shared UI primitives (`src/components/ui/primitives.tsx`) — the foundation to build page-level coverage on top of as more pages migrate onto the shared component kit.
+
+---
+
+## UI Component Kit
+
+Pages were previously built with hand-rolled inline styles duplicated across files. `src/components/ui/primitives.tsx` now centralizes the repeated patterns — `Card`, `Button`, `Badge`, `TextInput`, `StatCard`, `PageShell`, `AlertBanner` — all driven by `src/lib/design-tokens.ts`, so a spacing or color change happens in one place instead of a dozen. `/login` and `/dashboard` are migrated onto it; the same pattern applies cleanly to the remaining pages (`/bulk`, `/match`, `/teams`, `/report/[id]`, `/analyze`) going forward.
 
 ---
 
@@ -177,7 +201,7 @@ npm run build
 APP_ENV=production
 SECRET_KEY=<32+ char random string>
 
-# Supabase (app falls back to local auth store if unconfigured)
+# Supabase — required for durable storage in production; see "Storage & Durability" above
 SUPABASE_URL=https://xyz.supabase.co
 SUPABASE_SERVICE_KEY=...
 SUPABASE_ANON_KEY=...
@@ -187,14 +211,18 @@ GEMINI_API_KEY=...
 GROQ_API_KEY=...
 ANTHROPIC_API_KEY=...
 
-# Public Verification (raises limit 60/hr → 5000/hr)
+# Public Verification (raises GitHub rate limit 60/hr → 5000/hr)
 GITHUB_TOKEN=...
 
-# Redis (rate limiting & batch state)
+# Redis (rate limiting, caching, batch state)
 REDIS_URL=rediss://default:xxx@your-db.upstash.io:6379
 
 ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 ```
+
+**First-time Supabase setup:** run the SQL migrations in `backend/sql/` **in order** in the Supabase SQL Editor before connecting the app — `001_initial_schema.sql` (base `reports` table), then `002_team_collaboration.sql`, then `003_candidate_notifications.sql`. Skipping 001 is the most likely reason `/api/v1/health` shows `storage_mode: "local_fallback"` even with correct env vars — the app can authenticate to Supabase fine but has nowhere to write reports until that table exists.
+
+> **Deploying to Render:** the vars above marked in `render.yaml` as `sync: false` are placeholders — you still need to fill in the actual values in Render's dashboard under the service's Environment tab. Skipping this is the single most common cause of "it worked locally but logins/reports don't persist in production" — see [Storage & Durability](#storage--durability-read-this-before-deploying).
 
 ---
 
@@ -202,19 +230,19 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/v1/auth/signup` | POST | Signup recruiter account (Capacity: 5,000) |
+| `/api/v1/auth/signup` | POST | Signup recruiter account |
 | `/api/v1/auth/login` | POST | Login recruiter account |
 | `/api/v1/analysis/upload` | POST | Single resume upload |
 | `/api/v1/analysis/{job_id}/status` | GET | Poll analysis status |
 | `/api/v1/reports` | GET | List reports (search, sort, pagination) |
 | `/api/v1/reports/{id}/copilot` | POST/GET | Candidate Interview Co-Pilot & Scorecard |
-| `/api/v1/reports/analytics` | GET | Enterprise Talent Analytics & Pool Intelligence |
+| `/api/v1/reports/analytics` | GET | Enterprise Talent Analytics & Pool Intelligence (Redis-cached) |
 | `/api/v1/bulk/upload` | POST | Bulk upload up to 50 resumes |
 | `/api/v1/bulk/{id}/duplicates` | GET | Cross-candidate duplicate fraud detection |
 | `/api/v1/match/upload` | POST | JD match upload |
-| `/api/v1/verify/{id}/run` | POST | Real-time public data verification |
+| `/api/v1/verify/{id}/run` | POST | Real-time public data verification (GitHub result Redis-cached) |
 | `/api/v1/teams` | POST/GET | Team workspace creation and listing |
-| `/api/v1/health` | GET | System health check |
+| `/api/v1/health` | GET | System health check — includes `storage_mode` |
 | `/api/v1/health/diagnostics` | GET | Capacity & system diagnostics |
 
 ---
@@ -230,9 +258,13 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 - [x] Cross-candidate duplicate/template fraud detection
 - [x] ATS CSV import auto-column detection
 - [x] Team workspace collaboration (comments, voting, share)
-- [x] 5,000 active user capacity enforcement
-- [x] Supabase connection pooling & fallback auth resilience
+- [x] Registration capacity enforcement (accurate distinct-user counting)
+- [x] Supabase connection pooling & fallback auth resilience, with explicit storage-mode visibility
+- [x] Redis caching for GitHub verification + talent analytics
 - [x] Interactive Candidate Interview Co-Pilot & Custom Probe Generator
 - [x] Predictive Talent Velocity & Career Growth Index
 - [x] Enterprise Talent Analytics & Workforce Intelligence
-- [x] Complete End-to-End Test Suite (`test_e2e_complete_flow.py`)
+- [x] Frontend unit/component test suite (Vitest + RTL)
+- [x] Shared UI component kit (`components/ui/primitives.tsx`) — `/login`, `/dashboard` migrated
+- [ ] Migrate remaining pages (`/bulk`, `/match`, `/teams`, `/report/[id]`, `/analyze`) onto the shared UI kit
+- [ ] Page-level integration tests (dashboard load, login flow) on top of the current unit-test foundation

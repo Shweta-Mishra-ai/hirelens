@@ -3,42 +3,32 @@
 @tailwind utilities;
 
 :root {
-  /* ── Slate Obsidian Design System ─────────────────────────────────────────
-     Deep slate-navy canvas (#0B0F17, #0F172A) with translucent glass panels (#1E293B)
-     and electric indigo/violet & vibrant emerald/amber/rose status accents. */
-  --bg-slate:       #0B0F17;
-  --bg-canvas:      #0F172A;
-  --bg-panel:       #1E293B;
-  --bg-panel-hover: #334155;
-  --border-slate:   rgba(255, 255, 255, 0.08);
-  --border-indigo:  rgba(99, 102, 241, 0.35);
+  /* ── The Verification Desk — see design-tokens.ts for the full rationale ─
+     Flat ink surfaces, hairline rules, a single petrol-teal accent. No
+     blur, no glow, no gradient-as-decoration. */
+  --bg-ink:         #12141A;
+  --bg-surface:     #191B22;
+  --bg-raised:      #1F222B;
+  --line:           #2A2D37;
+  --line-strong:    #383C48;
 
-  --accent-indigo:  #6366F1;
-  --accent-violet:  #8B5CF6;
-  --accent-blue:    #3B82F6;
-  --accent-emerald: #10B981;
-  --accent-amber:   #F59E0B;
-  --accent-rose:    #EF4444;
+  --accent:         #3B7D78;
+  --accent-light:   #5FA39D;
 
-  --text-primary:   #F8FAFC;
-  --text-secondary: #94A3B8;
-  --text-muted:     #64748B;
+  --state-success:  #5C9A6C;
+  --state-warning:  #B98A3E;
+  --state-danger:   #B3543A;
+  --state-info:     #5B84A6;
 
-  /* Legacy aliases for backward compatibility */
-  --ink:        var(--bg-slate);
-  --ink-raised: var(--bg-panel);
-  --ink-line:   var(--border-slate);
-  --parchment:  #1E293B;
-  --parchment-dim: #94A3B8;
+  --text-primary:   #EDEDEA;
+  --text-secondary: #B4B4AC;
+  --text-muted:     #8A8B82;
 
-  --stamp-red:    var(--accent-rose);
-  --stamp-green:  var(--accent-emerald);
-  --stamp-gold:   var(--accent-amber);
-  --stamp-blue:   var(--accent-indigo);
-
-  --text-pri: var(--text-primary);
-  --text-sec: var(--text-secondary);
-  --text-mut: var(--text-muted);
+  /* Self-hosted via @fontsource (see layout.tsx) — mapped to the same
+     custom-property names the app already references everywhere. */
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'IBM Plex Sans', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 * {
@@ -46,7 +36,7 @@
 }
 
 html, body {
-  background: var(--bg-slate);
+  background: var(--bg-ink);
   color: var(--text-primary);
   font-family: var(--font-body), system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -55,7 +45,9 @@ html, body {
 }
 
 h1, h2, h3, h4, h5, h6, .font-display {
-  font-family: var(--font-display), system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-display), Georgia, serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .font-mono, code, kbd {
@@ -64,76 +56,59 @@ h1, h2, h3, h4, h5, h6, .font-display {
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #334155; border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: #475569; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #4A4E5C; }
 
 :focus-visible {
-  outline: 2px solid #6366F1;
+  outline: 2px solid var(--accent-light);
   outline-offset: 2px;
 }
 
-/* Glassmorphism card utilities */
-.glass-panel {
-  background: rgba(30, 41, 59, 0.7);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 1rem;
+/* Flat surface card — hairline border, no blur, no shadow. Elevation on the
+   page itself comes from contrast against --bg-ink, not from glass/glow. */
+.surface-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
 }
 
-.glass-card {
-  background: rgba(15, 23, 42, 0.6);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 0.875rem;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.glass-card:hover {
-  border-color: rgba(99, 102, 241, 0.4);
-  transform: translateY(-1px);
-  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.4);
-}
-
-.glow-indigo {
-  box-shadow: 0 0 20px -3px rgba(99, 102, 241, 0.25);
+.surface-card:hover {
+  border-color: var(--line-strong);
 }
 
 @keyframes fadeUp {
-  from { opacity: 0; transform: translateY(12px); }
+  from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
 @keyframes pulse-dot {
-  0%, 100% { opacity: 0.3; transform: scale(0.8); }
-  50%       { opacity: 1;   transform: scale(1.1); }
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50%       { opacity: 1;    transform: scale(1); }
 }
 
-.animate-fade-up { animation: fadeUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-fade-up { animation: fadeUp 0.25s ease-out forwards; }
 .animate-spin    { animation: spin 1s linear infinite; }
 
-/* Status pill chip */
+/* Status chip — sentence case, not tracked-out uppercase */
 .status-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 12px;
-  border-radius: 9999px;
+  padding: 3px 10px;
+  border-radius: 4px;
   font-size: 0.75rem;
   font-weight: 600;
-  letter-spacing: 0.025em;
-  text-transform: uppercase;
 }
 
 .evidence-quote {
-  background: rgba(30, 41, 59, 0.9);
-  color: #F8FAFC;
+  background: var(--bg-raised);
+  color: var(--text-primary);
   font-family: var(--font-mono), monospace;
   font-size: 0.8125rem;
-  border-left: 3px solid #6366F1;
-  border-radius: 4px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 3px 3px 0;
   padding: 6px 12px;
   line-height: 1.6;
 }
