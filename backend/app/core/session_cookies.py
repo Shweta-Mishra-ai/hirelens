@@ -58,6 +58,32 @@ from app.core.security import ACCESS_TOKEN_EXPIRE_MINUTES
 SESSION_COOKIE_NAME = "hirelens_session"
 
 
+def _mark_partitioned(response: Response) -> None:
+    """Append `; Partitioned` (CHIPS) to the session Set-Cookie header.
+
+    Written onto the raw header rather than passed as starlette's
+    `set_cookie(partitioned=True)` on purpose. That parameter defers to
+    Python's `http.cookies`, which only learned the attribute in 3.14 — on
+    anything older starlette raises:
+
+        ValueError: Partitioned cookies are only supported in Python 3.14 and above.
+
+    The Dockerfile pins python:3.11-slim, and `partitioned` is only true in
+    production, so using the parameter would have thrown a 500 out of login,
+    signup, oauth-verify and logout on the deployed API while every test
+    (which runs APP_ENV=development) stayed green. Setting the attribute
+    directly is version-independent and produces the identical header.
+
+    Unknown cookie attributes are ignored by browsers that don't implement
+    them, so this is safe on every client.
+    """
+    marker = SESSION_COOKIE_NAME.encode("latin-1") + b"="
+    for i, (name, value) in enumerate(response.raw_headers):
+        if name.lower() == b"set-cookie" and value.startswith(marker):
+            if b"partitioned" not in value.lower():
+                response.raw_headers[i] = (name, value + b"; Partitioned")
+
+
 def set_session_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
@@ -70,34 +96,35 @@ def set_session_cookie(response: Response, token: str) -> None:
         # In local dev (same-site http://localhost) Lax is the safer
         # default and doesn't require HTTPS.
         samesite="none" if settings.is_production else "lax",
-        # CHIPS ("Cookies Having Independent Partitioned State"). See the
-        # THIRD-PARTY COOKIE CAVEAT below: on *.vercel.app + *.onrender.com
-        # this cookie is third-party, and browsers that block third-party
-        # cookies drop it entirely. Marking it Partitioned opts it into the
-        # partitioned cookie jar, which Chrome (and Safari 18.4+) still
-        # honour under third-party cookie blocking. It is keyed by the
-        # top-level site, which is exactly the scope we want anyway.
-        partitioned=settings.is_production,
         max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60,
         path="/",
     )
+    # CHIPS ("Cookies Having Independent Partitioned State"). See the
+    # THIRD-PARTY COOKIE CAVEAT above: on *.vercel.app + *.onrender.com this
+    # cookie is third-party, and browsers that block third-party cookies drop
+    # it entirely. Partitioned opts it into the partitioned cookie jar, which
+    # Chrome (and Safari 18.4+) still honour under that blocking. It is keyed
+    # by top-level site, which is exactly the scope wanted here anyway.
+    if settings.is_production:
+        _mark_partitioned(response)
 
 
 def clear_session_cookie(response: Response) -> None:
-    # Not response.delete_cookie(): starlette's helper has no `partitioned`
-    # parameter, and a partitioned cookie is only overwritten by a Set-Cookie
-    # whose attributes match — a non-partitioned deletion silently leaves the
-    # real cookie in place, so logout wouldn't actually log anyone out.
+    # Not response.delete_cookie(): a partitioned cookie is only overwritten
+    # by a Set-Cookie whose attributes match, so a deletion missing
+    # `Partitioned` silently leaves the real cookie in place and logout
+    # wouldn't actually log anyone out.
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value="",
         httponly=True,
         secure=settings.is_production,
         samesite="none" if settings.is_production else "lax",
-        partitioned=settings.is_production,
         max_age=0,
         path="/",
     )
+    if settings.is_production:
+        _mark_partitioned(response)
 
 
 def read_session_cookie(request: Request) -> str | None:

@@ -3,6 +3,7 @@
 import logging
 from fastapi import APIRouter, Depends
 from app.core.config import settings
+from app.core.readiness import config_warnings
 from app.core.dependencies import get_db, get_redis, get_current_user
 
 logger = logging.getLogger("hirelens")
@@ -50,11 +51,20 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
     if storage_mode == "local_fallback" and settings.is_production:
         overall = "degraded"
 
+    # Production misconfigurations that leave this process perfectly healthy
+    # while the product is broken for real users — CORS still pointing at
+    # localhost being the big one. See app/core/readiness.py. Empty list in
+    # development and in a correctly configured deploy.
+    warnings = config_warnings()
+    if warnings:
+        overall = "degraded"
+
     return {
         "status": overall,
         "version": "1.0.0",
         "env": settings.APP_ENV,
         "storage_mode": storage_mode,
+        "config_warnings": warnings,
         "storage_warning": (
             None if storage_mode == "supabase" else
             "Accounts/reports are on local SQLite or in-memory storage — this is "

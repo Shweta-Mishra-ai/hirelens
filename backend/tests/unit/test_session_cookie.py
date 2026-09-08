@@ -114,3 +114,132 @@ def test_the_session_cookie_never_authorizes_a_mutating_endpoint():
     # cross-site attacker page's ambient cookie-only request would carry.
     res = fresh_client.get("/api/v1/reports")
     assert res.status_code == 401
+
+
+# ── Production cookie attributes ────────────────────────────────────────────
+# Every test above runs with APP_ENV=development, where the cookie is written
+# with samesite=lax, no Secure and no Partitioned. That means the entire
+# production branch of set_session_cookie/clear_session_cookie had NO
+# coverage — and it is the branch that actually ships.
+#
+# That gap was not theoretical. Setting Partitioned via starlette's
+# `set_cookie(partitioned=True)` raises
+#   ValueError: Partitioned cookies are only supported in Python 3.14 and above
+# on the pinned python:3.11-slim image, which would have thrown a 500 out of
+# login, signup, oauth-verify and logout on the deployed API while the whole
+# suite stayed green. These tests exercise the production branch directly.
+
+def _prod_cookie_header(monkeypatch, fn, *args):
+    from starlette.responses import Response
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    response = Response()
+    fn(response, *args)
+    headers = [
+        v.decode("latin-1")
+        for k, v in response.raw_headers
+        if k.lower() == b"set-cookie"
+    ]
+    assert len(headers) == 1, headers
+    return headers[0]
+
+
+def test_production_session_cookie_has_cross_site_attributes(monkeypatch):
+    from app.core.session_cookies import set_session_cookie
+
+    header = _prod_cookie_header(monkeypatch, set_session_cookie, "a.token.value")
+
+    assert header.startswith(f"{SESSION_COOKIE_NAME}=a.token.value")
+    assert "HttpOnly" in header
+    # SameSite=None is required for the cookie to be sent at all from the
+    # Vercel frontend to the Render API, and the spec requires Secure with it.
+    assert "SameSite=none" in header
+    assert "Secure" in header
+    # CHIPS — without it, Chrome's third-party cookie blocking drops the
+    # cookie and session restore silently stops working.
+    assert "Partitioned" in header
+
+
+def test_production_logout_cookie_matches_the_set_cookie_attributes(monkeypatch):
+    """A partitioned cookie is only overwritten by a matching Set-Cookie.
+
+    If the deletion header omits Partitioned the browser keeps the original
+    cookie and logout doesn't actually log the user out.
+    """
+    from app.core.session_cookies import clear_session_cookie
+
+    header = _prod_cookie_header(monkeypatch, clear_session_cookie)
+
+    assert "Max-Age=0" in header
+    assert "SameSite=none" in header
+    assert "Secure" in header
+    assert "Partitioned" in header
+
+
+def test_development_cookie_is_not_marked_secure_or_partitioned(monkeypatch):
+    """Local dev is same-site over plain http — Secure would make the cookie
+    unusable, and Partitioned is pointless there."""
+    from starlette.responses import Response
+    from app.core.config import settings
+    from app.core.session_cookies import set_session_cookie
+
+    monkeypatch.setattr(settings, "APP_ENV", "development")
+    response = Response()
+    set_session_cookie(response, "a.token.value")
+    header = next(
+        v.decode("latin-1") for k, v in response.raw_headers if k.lower() == b"set-cookie"
+    )
+
+    assert "SameSite=lax" in header
+    assert "Secure" not in header
+    assert "Partitioned" not in header
+
+
+def test_partitioned_is_not_applied_twice(monkeypatch):
+    """The raw-header rewrite must be idempotent per response."""
+    from starlette.responses import Response
+    from app.core.config import settings
+    from app.core.session_cookies import set_session_cookie, _mark_partitioned
+
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    response = Response()
+    set_session_cookie(response, "a.token.value")
+    _mark_partitioned(response)
+    header = next(
+        v.decode("latin-1") for k, v in response.raw_headers if k.lower() == b"set-cookie"
+    )
+
+    assert header.count("Partitioned") == 1
+
+
+def test_production_auth_endpoints_do_not_500_setting_the_cookie(monkeypatch):
+    """End-to-end guard for the Python-version trap.
+
+    The failure mode being pinned down here is specifically "works in tests,
+    500s in production", so drive the real endpoints with APP_ENV=production
+    rather than only unit-testing the helper.
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+
+    email = "prod-cookie-path@example.com"
+    signup = client.post(
+        "/api/v1/auth/signup",
+        json={
+            "email": email,
+            "password": "ProdCookie123!",
+            "full_name": "Prod Cookie",
+            "company": "Co",
+        },
+    )
+    assert signup.status_code == 200, signup.text
+
+    login = client.post(
+        "/api/v1/auth/login", json={"email": email, "password": "ProdCookie123!"}
+    )
+    assert login.status_code == 200, login.text
+
+    logout = client.post("/api/v1/auth/logout")
+    assert logout.status_code == 200, logout.text
