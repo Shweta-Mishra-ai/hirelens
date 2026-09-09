@@ -52,7 +52,7 @@ export default function LoginPage() {
       process.env.NEXT_PUBLIC_SUPABASE_URL &&
       !process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
     if (!isConfigured) {
-      setError("Google OAuth requires Supabase to be configured in .env.local. Please use Email & Password or One-Click Demo Login.");
+      setError("Google sign-in isn't configured for this deployment yet. Please sign in with email and password instead.");
       return;
     }
     const { error } = await supabase.auth.signInWithOAuth({

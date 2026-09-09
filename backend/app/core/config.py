@@ -43,6 +43,24 @@ class Settings(BaseSettings):
     # — see app/core/token_revocation.py.
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
 
+    # Safety valve against runaway signups, not a growth ceiling.
+    #
+    # This used to be a hardcoded 5000 baked into auth.py, repeated again in
+    # health.py's diagnostics — a magic number that could only be changed by
+    # editing code and redeploying, with a user-facing message that read
+    # "Registration capacity limit of 5,000 active recruiters reached." A
+    # specific, round, impressive-sounding number like that is what a demo
+    # bakes in to look like a growth metric; it is not a real infrastructure
+    # constraint, and a genuine launch that actually reached 5,000 real
+    # signups would have hit a hard wall for no operational reason.
+    #
+    # Now one setting, tunable from the hosting dashboard without a code
+    # change. The default is high enough to be a safety net against a
+    # scripted signup flood rather than something a real launch could ever
+    # organically reach — raise or lower it to match actual capacity
+    # planning (e.g. Supabase Auth plan limits), not to hit a nice number.
+    MAX_ACTIVE_RECRUITERS: int = 100_000
+
     # Comma-separated emails allowed to reach the admin-only endpoints
     # (/auth/stats, /health/diagnostics). Empty in production means nobody
     # can — see require_admin() in app/core/dependencies.py for why that is

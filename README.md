@@ -200,7 +200,7 @@ Two things make this impossible to miss instead of a silent trap:
 - **Redis Rate Limiting**: Per-IP limits on auth endpoints (login: 10/15min, signup: 8/hr) + per-user limits on analysis endpoints. The client IP is taken from the **rightmost** routable `X-Forwarded-For` entry, not the leftmost — a proxy appends to that header, so the leftmost value is whatever the caller sent and using it lets an attacker land every login attempt in a fresh bucket. Set `TRUST_PROXY_HEADERS=false` if the app is ever exposed without a proxy in front.
 - **Concurrency Control**: Bulk & JD match uploads use `asyncio.Semaphore(BULK_CONCURRENCY)` to prevent event-loop starvation and stay within LLM rate limits.
 - **File Size Ceiling**: Max file size capped at 10MB (`MAX_FILE_SIZE_MB`).
-- **Registration capacity gate**: signups are capped and checked against a count of distinct Supabase Auth users (via the admin API) — not a proxy metric — so one recruiter uploading many reports can never block everyone else from signing up.
+- **Registration capacity gate**: signups are checked against a count of distinct Supabase Auth users (via the admin API) — not a proxy metric — so one recruiter uploading many reports can never block everyone else from signing up. The ceiling is `MAX_ACTIVE_RECRUITERS` (default 100,000) — a safety valve against a scripted signup flood, not a growth cap. It used to be a hardcoded, unconfigurable `5000` baked into the code with a user-facing message quoting that exact number, which is precisely the kind of specific, round, impressive-sounding limit a demo bakes in rather than a real operational constraint — and would have hard-blocked a genuinely successful launch for no infrastructure reason.
 
 ### Caching (`app/core/cache.py`)
 A small Redis-backed JSON cache, used in two places so far:
@@ -222,6 +222,7 @@ Signup is open, so "needs a valid token" is not a barrier — anyone willing to 
 | `POST /auth/signup` | 8/hr per IP | Bulk fake accounts. |
 | `POST /auth/forgot-password`, `/reset-password` | 5 and 10 / 15 min per IP | Upstream auth-provider quota. |
 | Resume analysis, bulk, JD match | `RATE_LIMIT_PER_MINUTE` per user | LLM cost and event-loop time. |
+| `POST /auth/signup` (total) | `MAX_ACTIVE_RECRUITERS` (default 100,000) | Safety valve against a scripted signup flood — tune to real capacity planning, not a marketing number. |
 
 Client IP comes from the **rightmost** routable `X-Forwarded-For` entry. A proxy *appends* to that header, so the leftmost value is whatever the caller sent — reading it let an attacker land every login attempt in a fresh bucket. Set `TRUST_PROXY_HEADERS=false` if the app is ever exposed without a proxy.
 

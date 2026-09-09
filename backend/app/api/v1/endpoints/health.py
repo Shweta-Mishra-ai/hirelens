@@ -152,8 +152,6 @@ async def diagnostics(
     import os, time
     from app.api.v1.endpoints.analysis import _jobs
     from app.core.rate_limit import _mem_rate_limit
-    from app.api.v1.endpoints.auth import MAX_RECRUITERS_CAPACITY
-
     h = await health(db, redis)
     
     # Process memory estimate
@@ -168,7 +166,7 @@ async def diagnostics(
     return {
         "health": h,
         "capacity": {
-            "max_supported_users": MAX_RECRUITERS_CAPACITY,
+            "max_supported_users": settings.MAX_ACTIVE_RECRUITERS,
             "bulk_concurrency": settings.BULK_CONCURRENCY,
             "rate_limit_per_minute": settings.RATE_LIMIT_PER_MINUTE,
             "max_file_size_mb": settings.MAX_FILE_SIZE_MB,

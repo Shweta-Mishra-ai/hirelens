@@ -1,10 +1,10 @@
 """
-HireLens — Auth API
-Fixed:
-- Supabase auth calls are SYNC — no await
-- Email confirmation handling
-- Seamless fallback in-memory auth for dev/unconfigured Supabase environments
-- Enforced 5,000 active recruiter capacity limit
+HireLens — Auth API.
+
+Handles signup/login against Supabase Auth with a graceful in-memory
+fallback for local development, plus registration capacity protection
+(see settings.MAX_ACTIVE_RECRUITERS in app/core/config.py) against a
+scripted signup flood.
 """
 
 import logging
@@ -26,7 +26,10 @@ router = APIRouter()
 
 LOGIN_LIMIT_PER_15_MIN = 10   # per IP — brute-force protection
 SIGNUP_LIMIT_PER_HOUR = 8     # per IP — bulk fake-account protection
-MAX_RECRUITERS_CAPACITY = 5000
+# MAX_RECRUITERS_CAPACITY used to live here as a hardcoded 5000 — see
+# settings.MAX_ACTIVE_RECRUITERS (app/core/config.py) and the docstring on
+# CapacityLimitExceeded for why a magic number baked into code was the
+# actual bug being fixed, not just where the constant happened to sit.
 
 # In-memory user store for dev/testing when Supabase DB is unconfigured or unreachable
 _mem_users: dict[str, dict] = {}
@@ -72,7 +75,7 @@ def _count_active_users(db) -> int:
             if n < per_page:
                 break
             page += 1
-            if page > 50:  # hard stop — 10k users is far past MAX_RECRUITERS_CAPACITY anyway
+            if page > 50:  # hard stop — 10k users is comfortably past any sane capacity setting
                 break
         return total
     except Exception as e:
@@ -145,15 +148,15 @@ async def signup(body: SignupRequest, request: Request, response: Response, db=D
     if db:
         try:
             total_count = _count_active_users(db)
-            if total_count >= MAX_RECRUITERS_CAPACITY:
-                raise CapacityLimitExceeded()
+            if total_count >= settings.MAX_ACTIVE_RECRUITERS:
+                raise CapacityLimitExceeded(settings.MAX_ACTIVE_RECRUITERS)
         except CapacityLimitExceeded:
             raise
         except Exception as e:
             logger.warning(f"Capacity check query error during signup: {e}")
     else:
-        if len(_mem_users) >= MAX_RECRUITERS_CAPACITY:
-            raise CapacityLimitExceeded()
+        if len(_mem_users) >= settings.MAX_ACTIVE_RECRUITERS:
+            raise CapacityLimitExceeded(settings.MAX_ACTIVE_RECRUITERS)
 
     if db:
         try:
@@ -646,5 +649,5 @@ async def auth_stats(current_user: dict = Depends(require_admin), db=Depends(get
     return {
         "status": "ok",
         "total_active_recruiters": max(total_users, 1),
-        "capacity": MAX_RECRUITERS_CAPACITY,
+        "capacity": settings.MAX_ACTIVE_RECRUITERS,
     }

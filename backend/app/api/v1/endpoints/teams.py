@@ -1,6 +1,9 @@
 """
-HireLens — Team Collaboration API
-Enhanced with explicit UUID generation & in-memory fallback for demo mode.
+HireLens — Team Collaboration API.
+
+Team workspaces, member invites and role management. Falls back to an
+in-process store when Supabase is unconfigured, matching the rest of the
+app's degrade-gracefully behaviour for local development.
 """
 
 import uuid
