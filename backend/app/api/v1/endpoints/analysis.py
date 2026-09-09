@@ -10,6 +10,7 @@ Fixed:
 
 import uuid
 import time
+import asyncio
 import logging
 from typing import Annotated
 from fastapi import APIRouter, Depends, File, UploadFile, BackgroundTasks
@@ -17,7 +18,9 @@ from fastapi import APIRouter, Depends, File, UploadFile, BackgroundTasks
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.cache import cache_delete
-from app.core.exceptions import FileTooLarge, UnsupportedFileType, NotFoundError
+from app.core.exceptions import (
+    FileTooLarge, UnsupportedFileType, NotFoundError, ParseError, HireLensException,
+)
 from app.services.parser.document_parser import extract_text, check_magic_bytes
 from app.services.parser.resume_heuristic import looks_like_resume
 from app.services.ai.engine import engine
@@ -265,11 +268,45 @@ async def _run_analysis(
         upd(status="running", stage="parsing", progress=5)
 
         # ── Step 1: Parse document ────────────────────────────────────────────
+        # Off the event loop, with its own timeout.
+        #
+        # extract_text() is synchronous and CPU-bound (pdfminer layout
+        # analysis, python-docx XML walking). Calling it directly from this
+        # async task blocked the ENTIRE event loop for its duration, so one
+        # pathological document froze the whole API — every other recruiter's
+        # requests included — on a container that runs a single worker.
+        # ANALYSIS_TIMEOUT_SECONDS never covered this; it only wraps the LLM
+        # call inside engine.run().
+        #
+        # A timed-out thread cannot be killed in Python, so the worker thread
+        # may run on; what this guarantees is that the event loop is released
+        # and the job fails cleanly instead of hanging forever. The upload
+        # size cap and the DOCX zip-bomb guard bound how much work that
+        # orphaned thread can actually do.
         try:
-            raw_text = extract_text(file_bytes, mime_type, filename)
+            raw_text = await asyncio.wait_for(
+                asyncio.to_thread(extract_text, file_bytes, mime_type, filename),
+                timeout=settings.PARSE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"[{job_id}] Parse timed out after {settings.PARSE_TIMEOUT_SECONDS}s: {filename}")
+            upd(
+                status="failed",
+                stage="failed",
+                error="This file took too long to read. Try a smaller or simpler document.",
+            )
+            return
+        except (ParseError, UnsupportedFileType) as e:
+            # These carry messages written for users.
+            logger.info(f"[{job_id}] Parse rejected: {e.message}")
+            upd(status="failed", stage="failed", error=e.message)
+            return
         except Exception as e:
-            logger.error(f"[{job_id}] Parse failed: {e}")
-            upd(status="failed", stage="failed", error=f"Could not read file: {str(e)}")
+            # Anything else is a bug, not a user error. The exception text can
+            # carry library internals and paths, and this string is returned
+            # to the client through the job status.
+            logger.error(f"[{job_id}] Parse failed: {e}", exc_info=True)
+            upd(status="failed", stage="failed", error="Could not read this file.")
             return
 
         logger.info(f"[{job_id}] Parsed {len(raw_text)} chars from {filename}")
@@ -285,9 +322,16 @@ async def _run_analysis(
         # ── Step 2: AI analysis ───────────────────────────────────────────────
         try:
             result = await engine.run(raw_text=raw_text, on_progress=on_progress)
+        except HireLensException as e:
+            # LLMError, AnalysisTimeout and friends carry user-facing text.
+            logger.warning(f"[{job_id}] AI analysis failed: {e.message}")
+            upd(status="failed", stage="failed", error=e.message)
+            return
         except Exception as e:
+            # Raw provider errors can echo request details — including an
+            # Authorization header — and this message reaches the client.
             logger.error(f"[{job_id}] AI analysis failed: {e}", exc_info=True)
-            upd(status="failed", stage="failed", error=f"AI analysis failed: {str(e)}")
+            upd(status="failed", stage="failed", error="Analysis failed. Please try again.")
             return
 
         # ── Step 2b: Optional enrichment (e.g. JD match) ───────────────────────

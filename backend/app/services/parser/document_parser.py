@@ -9,10 +9,45 @@ Fixed:
 
 import io
 import re
+import zipfile
 import logging
 from app.core.exceptions import ParseError, UnsupportedFileType
 
 logger = logging.getLogger("hirelens")
+
+# A DOCX is a ZIP archive, and the upload cap only limits the COMPRESSED
+# size. Highly repetitive XML compresses at ratios in the thousands, so a
+# 10MB upload that passes every existing check can expand to gigabytes the
+# moment python-docx reads word/document.xml — enough to OOM-kill a
+# single-worker container and take the API down for everyone.
+#
+# Both limits are needed. The absolute cap catches a large expansion; the
+# ratio catches a small file with an extreme one. Sizes come from the ZIP
+# central directory, so nothing is decompressed to perform the check.
+MAX_DOCX_UNCOMPRESSED_BYTES = 80 * 1024 * 1024
+MAX_DOCX_COMPRESSION_RATIO = 200
+
+
+def _reject_zip_bomb(data: bytes) -> None:
+    """Refuse a DOCX whose declared expansion is implausible for a resume."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = archive.infolist()
+    except zipfile.BadZipFile:
+        raise UnsupportedFileType("corrupted DOCX (not a readable ZIP archive)")
+
+    total_uncompressed = sum(e.file_size for e in entries)
+    if total_uncompressed > MAX_DOCX_UNCOMPRESSED_BYTES:
+        logger.warning(
+            f"Rejected DOCX: declares {total_uncompressed / 1024 / 1024:.0f}MB uncompressed "
+            f"from {len(data) / 1024:.0f}KB compressed"
+        )
+        raise UnsupportedFileType("DOCX contents are too large to process")
+
+    ratio = total_uncompressed / max(1, len(data))
+    if ratio > MAX_DOCX_COMPRESSION_RATIO:
+        logger.warning(f"Rejected DOCX: compression ratio {ratio:.0f}x")
+        raise UnsupportedFileType("DOCX compression ratio is implausible for a document")
 
 SUPPORTED_MIME = {
     "application/pdf": "pdf",
@@ -57,6 +92,11 @@ def extract_text(file_bytes: bytes, mime_type: str, filename: str = "") -> str:
 
     # Verify magic bytes
     check_magic_bytes(file_bytes, fmt)
+
+    # ...and, for DOCX, that the archive does not claim to expand to
+    # something that would exhaust memory once python-docx reads it.
+    if fmt == "docx":
+        _reject_zip_bomb(file_bytes)
 
     logger.info(f"Parsing {fmt.upper()} | size={len(file_bytes)/1024:.0f}KB | file={filename}")
 
@@ -186,8 +226,17 @@ def _parse_docx(data: bytes) -> str:
 
         return "\n".join(parts)
 
+    except ParseError:
+        raise
     except Exception as e:
-        raise ParseError(f"DOCX extraction failed: {str(e)}")
+        # The underlying exception can carry library internals and temporary
+        # paths, and this message is surfaced to the user through the job
+        # status. Log the detail; tell the user something actionable.
+        logger.warning(f"DOCX extraction failed: {e}")
+        raise ParseError(
+            "Could not read this DOCX file. It may be corrupted, password-protected, "
+            "or saved in an older .doc format — try re-saving it as .docx or PDF."
+        )
 
 
 def _clean_text(text: str) -> str:
