@@ -21,6 +21,7 @@ from functools import partial
 from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
+from app.core.csv_safety import csv_safe_row
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import (
@@ -333,10 +334,12 @@ async def match_export_csv(
         "Overall Credibility Score", "Missing Skills", "Report ID",
     ])
     for r in result["ranking"]:
-        writer.writerow([
+        # See app/core/csv_safety.py. missing_skills is included: it is also
+        # LLM-derived from the resume and the job description.
+        writer.writerow(csv_safe_row([
             r["rank"], r["candidate_name"], r["file_name"], r["match_percent"],
             r["verdict"], r["overall_score"], "; ".join(r["missing_skills"]), r["report_id"],
-        ])
+        ]))
     buf.seek(0)
 
     filename = f"hirelens_jd_match_{batch_id[:8]}.csv"

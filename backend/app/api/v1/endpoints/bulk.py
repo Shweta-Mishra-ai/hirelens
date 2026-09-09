@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 from fastapi.responses import StreamingResponse
 
+from app.core.csv_safety import csv_safe_row
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.rate_limit import check_rate_limit
@@ -296,10 +297,12 @@ async def bulk_export_csv(
     writer = csv.writer(buf)
     writer.writerow(["Rank", "Candidate Name", "File Name", "Score", "Recommendation", "Report ID"])
     for r in result["ranking"]:
-        writer.writerow([
+        # See app/core/csv_safety.py — candidate-supplied names and filenames
+        # must not reach a spreadsheet as evaluatable formulas.
+        writer.writerow(csv_safe_row([
             r["rank"], r["candidate_name"], r["file_name"],
             r["overall_score"], r["recommendation"], r["report_id"],
-        ])
+        ]))
     buf.seek(0)
 
     filename = f"hirelens_ranking_{batch_id[:8]}.csv"

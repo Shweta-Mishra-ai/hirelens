@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
+from app.core.csv_safety import csv_safe_row
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.cache import cache_get, cache_set
 from app.core.exceptions import NotFoundError, ForbiddenError, HireLensException, ValidationError
@@ -388,10 +389,14 @@ async def export_all_reports_csv(
     writer = csv.writer(buf)
     writer.writerow(["Candidate Name", "File Name", "Score", "Recommendation", "Recruiter Decision", "Created At", "Report ID"])
     for r in items:
-        writer.writerow([
+        # csv_safe_row: candidate_name comes from a stranger's resume and
+        # file_name is chosen by the uploader, so both can start with "=" and
+        # be evaluated as a formula when the recruiter opens this in Excel.
+        # See app/core/csv_safety.py.
+        writer.writerow(csv_safe_row([
             r.get("candidate_name") or "Unknown", r.get("file_name") or "", r.get("overall_score") or 0,
             r.get("recommendation") or "", r.get("recruiter_decision") or "", r.get("created_at") or "", r.get("id") or "",
-        ])
+        ]))
     buf.seek(0)
 
     return StreamingResponse(
