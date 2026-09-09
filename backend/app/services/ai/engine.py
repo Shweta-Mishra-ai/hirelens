@@ -11,6 +11,7 @@ Fixed:
 """
 
 import asyncio
+import functools
 import json
 import re
 import time
@@ -137,7 +138,12 @@ async def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 
 
 
 # ── Groq fallback ─────────────────────────────────────────────────────────────
-async def _call_groq(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> str:
+# Groq hosts several open-weight models behind one OpenAI-compatible endpoint,
+# switched purely by the "model" field below — same GROQ_API_KEY for all of
+# them. `model` is parameterized so llm_call() can register Groq twice: once
+# for the fast Llama model, and again (as the very last resort, after
+# Anthropic) for OpenAI's open-weight gpt-oss-120b.
+async def _call_groq(prompt: str, temperature: float = 0.1, max_tokens: int = 4000, model: str = "llama-3.3-70b-versatile") -> str:
     import httpx
 
     async with httpx.AsyncClient(timeout=45.0) as client:
@@ -145,7 +151,7 @@ async def _call_groq(prompt: str, temperature: float = 0.1, max_tokens: int = 40
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
             json={
-                "model": "llama-3.3-70b-versatile",
+                "model": model,
                 "messages": [
                     {
                         "role": "system",
@@ -221,16 +227,37 @@ def _redact_secrets(text: str) -> str:
 async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> dict:
     """
     Call LLM with automatic provider fallback.
-    Priority: Gemini 2.5 Flash → Groq → Anthropic
-    Each provider: 2 attempts with 2s backoff.
+    Priority: Gemini 2.5 Flash → Groq (Llama 3.3 70B) → Anthropic Claude 3.5 Sonnet
+             → Groq (gpt-oss-120b), each on 2 attempts with 2s backoff.
+
+    The last step exists so that a deployment with no ANTHROPIC_API_KEY still
+    has a real third-ish option instead of failing outright the moment Gemini
+    and the primary Groq model are both down or rate-limited: it reuses the
+    same GROQ_API_KEY already required for the second provider, no new key
+    needed. It is placed after Anthropic (not instead of it) so anyone who
+    *does* have an Anthropic key keeps it in the chain.
     """
     providers = []
     if settings.GEMINI_API_KEY:
         providers.append(("gemini-2.5-flash", _call_gemini))
     if settings.GROQ_API_KEY:
-        providers.append(("groq-gpt-oss-120b", _call_groq))
+        providers.append(("groq-llama-3.3-70b", functools.partial(_call_groq, model="llama-3.3-70b-versatile")))
     if settings.ANTHROPIC_API_KEY:
         providers.append(("claude-sonnet", _call_anthropic))
+    if settings.GROQ_API_KEY:
+        # NOTE: "openai/gpt-oss-120b" is our best-confidence identifier for
+        # Groq's hosted OpenAI gpt-oss-120b (open-weight model, released
+        # ~Aug 2025, with Groq as a launch inference partner) — it could NOT
+        # be live-verified against Groq's model catalog in this environment
+        # (outbound access to groq.com/console.groq.com is blocked by the
+        # sandbox's network proxy, and no real GROQ_API_KEY was available to
+        # test a live call). If this string is wrong, Groq responds with an
+        # HTTP error, which _call_groq turns into an LLMError like any other
+        # provider failure — it will not crash the request, just fail this
+        # last fallback step and surface in the "All LLM providers failed"
+        # message. Confirm/correct the exact id against Groq's own docs
+        # (console.groq.com/docs/models) if this ever fires in production.
+        providers.append(("groq-gpt-oss-120b", functools.partial(_call_groq, model="openai/gpt-oss-120b")))
 
     if not providers:
         raise LLMError(

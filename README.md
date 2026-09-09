@@ -299,7 +299,7 @@ Uncaught render errors on the frontend are caught by `app/error.tsx` (and `app/g
 
 | Layer | Technology |
 |---|---|
-| AI Engine | **Gemini 2.5 Flash** (primary) → **Groq `openai/gpt-oss-120b`** (fallback) → Claude Sonnet (optional 3rd fallback) |
+| AI Engine | **Gemini 2.5 Flash** (primary) → **Groq `llama-3.3-70b-versatile`** → **Claude Sonnet** (optional) → **Groq `openai/gpt-oss-120b`** (last resort, same `GROQ_API_KEY` — kicks in even with no Anthropic key) |
 | Backend | **FastAPI** 0.110 · Python 3.12 / 3.14 · pdfminer.six · python-docx |
 | Frontend | **Next.js 14.2** (App Router) · TypeScript · Tailwind CSS |
 | Auth & DB | **Supabase** (PostgreSQL + Auth) — durable primary store, with a local fallback for zero-config dev only |
