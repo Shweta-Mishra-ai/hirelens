@@ -48,6 +48,9 @@ export const color = {
   // Brand — deep petrol teal (verification/seal), deliberately not
   // indigo/violet/blue
   brand: "#3B7D78",
+  // Foreground for text/icons sitting ON the brand fill. Off-white rather
+  // than pure white, matching the paper-toned text elsewhere.
+  onBrand: "#F5F5F2",
   brandLight: "#5FA39D",
   brandDark: "#2A5D59",
   brandGlow: "rgba(59, 125, 120, 0.35)", // kept only for focus rings, never decorative glow

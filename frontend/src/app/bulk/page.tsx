@@ -202,7 +202,7 @@ export default function BulkUploadPage() {
               </div>
 
               {/* Progress bar */}
-              <div style={{ height: 6, background: "rgba(255,255,255,0.08)", borderRadius: radius.pill, overflow: "hidden" }}>
+              <div style={{ height: 6, background: "rgba(237, 237, 234, 0.08)", borderRadius: radius.pill, overflow: "hidden" }}>
                 <div style={{ height: "100%", background: `linear-gradient(90deg, ${color.brand}, ${color.success})`, width: `${batch.total ? Math.round((batch.complete / batch.total) * 100) : 0}%`, transition: "width 0.4s ease" }} />
               </div>
             </Card>
