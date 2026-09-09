@@ -134,12 +134,12 @@ function AIContentCard({ analysis }: { analysis: { likelihood: string; indicator
         <span style={{ fontSize: 12, fontWeight: 600, color: style.color, letterSpacing: 0.2 }}>{style.label}</span>
       </div>
 
-      {analysis.note && <p style={{ fontSize: 13, color: "#CBD5E1", lineHeight: 1.65, margin: "0 0 12px" }}>{analysis.note}</p>}
+      {analysis.note && <p style={{ fontSize: 13, color: "#B4B4AC", lineHeight: 1.65, margin: "0 0 12px" }}>{analysis.note}</p>}
 
       <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
         {analysis.indicators.length > 0 && (
           <div style={{ flex: "1 1 240px" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "#B3543A", marginBottom: 6, letterSpacing: 0.5 }}>AI-PATTERN INDICATORS</div>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#B3543A", marginBottom: 6, letterSpacing: 0.5 }}>AI-pattern indicators</div>
             {analysis.indicators.map((s, i) => (
               <div key={i} style={{ fontSize: 12, color: "#B4B4AC", marginBottom: 5, paddingLeft: 14, position: "relative" }}>
                 <span style={{ position: "absolute", left: 0 }}>•</span>{s}
@@ -149,7 +149,7 @@ function AIContentCard({ analysis }: { analysis: { likelihood: string; indicator
         )}
         {analysis.human_indicators.length > 0 && (
           <div style={{ flex: "1 1 240px" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "#5C9A6C", marginBottom: 6, letterSpacing: 0.5 }}>AUTHENTIC-WRITING SIGNS</div>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#5C9A6C", marginBottom: 6, letterSpacing: 0.5 }}>Authentic-writing signs</div>
             {analysis.human_indicators.map((s, i) => (
               <div key={i} style={{ fontSize: 12, color: "#B4B4AC", marginBottom: 5, paddingLeft: 14, position: "relative" }}>
                 <span style={{ position: "absolute", left: 0 }}>•</span>{s}
@@ -265,7 +265,7 @@ function GithubVerifyBlock({ g }: { g: VerificationResult["github"] }) {
                 <span>VERIFIED</span>
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                {g.verified_skills.map((s) => <span key={s} style={{ fontSize: 10, color: "#A7F3D0", background: "rgba(92,154,108,0.12)", padding: "2px 8px", borderRadius: 999 }}>{s}</span>)}
+                {g.verified_skills.map((s) => <span key={s} style={{ fontSize: 10, color: "#5C9A6C", background: "rgba(92,154,108,0.12)", padding: "2px 8px", borderRadius: 999 }}>{s}</span>)}
               </div>
             </div>
           )}
@@ -327,14 +327,14 @@ function ScoreBar({ label, value, rationale }: { label: string; value: number; r
   return (
     <div style={{ marginBottom: 16, position: "relative" }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-        <span style={{ fontSize: 13, color: "#CBD5E1", fontWeight: 500, cursor: rationale ? "help" : "default" }}
+        <span style={{ fontSize: 13, color: "#B4B4AC", fontWeight: 500, cursor: rationale ? "help" : "default" }}
           onMouseOver={() => rationale && setTip(true)} onMouseOut={() => setTip(false)}>
           {label}{rationale && <span style={{ color: "#B4B4AC", marginLeft: 6, fontSize: 11 }}>ⓘ</span>}
         </span>
         <span style={{ fontFamily: "var(--font-mono), monospace", fontSize: 13, fontWeight: 600, color: col }}>{value}</span>
       </div>
       <div style={{ height: 6, background: "rgba(237, 237, 234, 0.08)", borderRadius: 99, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${w}%`, background: `linear-gradient(90deg, ${col}88, ${col})`, borderRadius: 99, transition: "width 1.3s cubic-bezier(.4,0,.2,1)" }} />
+        <div style={{ height: "100%", width: `${w}%`, background: col, borderRadius: 99, transition: "width 1.3s cubic-bezier(.4,0,.2,1)" }} />
       </div>
       {tip && rationale && (
         <div style={{ position: "absolute", bottom: "110%", left: 0, right: 0, background: "#191B22", border: "1px solid rgba(59, 125, 120, 0.4)", borderRadius: 10, padding: "10px 14px", fontSize: 12, color: "#EDEDEA", zIndex: 10, lineHeight: 1.5, boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
@@ -358,7 +358,7 @@ function FlagCard({ flag }: { flag: Flag }) {
       </div>
       {open && (
         <div style={{ padding: "0 16px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-          <p style={{ margin: 0, fontSize: 13, color: "#CBD5E1", lineHeight: 1.65 }}>{flag.description}</p>
+          <p style={{ margin: 0, fontSize: 13, color: "#B4B4AC", lineHeight: 1.65 }}>{flag.description}</p>
           {flag.evidence && (
             <div style={{ fontSize: 10, color: "#8A8B82", letterSpacing: 0.2 }}>
               Evidence from resume<br />
@@ -766,7 +766,10 @@ export default function ReportPage() {
           {/* Docket strip */}
           <div style={{ padding: "10px 28px", borderBottom: "1px solid rgba(237, 237, 234, 0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(18, 20, 26, 0.7)" }}>
             <span className="font-mono" style={{ fontSize: 11, color: "#B4B4AC", letterSpacing: 0.3, fontWeight: 600 }}>
-              Candidate Intelligence File · {report.id ? report.id.slice(0, 8) : "—"}
+              {/* Ellipsis, so a shortened id reads as shortened rather than as
+                  a value that got cut off. Matches how ids are shown
+                  elsewhere on this page. */}
+              Candidate Intelligence File · {report.id ? `${report.id.slice(0, 8)}…` : "—"}
             </span>
             <span className="font-mono" style={{ fontSize: 11, color: "#B4B4AC", letterSpacing: 0.3 }}>
               Examined {report.created_at ? new Date(report.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—"}
@@ -808,7 +811,7 @@ export default function ReportPage() {
                   const v = (report.skills?.verified_by_evidence || []).includes(s);
                   return (
                     <span key={s} style={{ padding: "4px 12px", borderRadius: 8, fontSize: 11, fontWeight: 600, color: v ? "#5C9A6C" : "#B98A3E", background: v ? "rgba(92,154,108,0.15)" : "rgba(185,138,62,0.15)", border: `1px solid ${v ? "rgba(92,154,108,0.3)" : "rgba(185,138,62,0.3)"}`, display: "inline-flex", alignItems: "center", gap: 5 }}>
-                      {v ? <Check size={11} strokeWidth={3} /> : <span style={{ fontWeight: 600 }}>?</span>}
+                      {v ? <Check size={11} strokeWidth={3} /> : <HelpCircle size={11} strokeWidth={2.5} />}
                       <span>{s}</span>
                     </span>
                   );
@@ -831,7 +834,7 @@ export default function ReportPage() {
           {/* One-liner */}
           {report.one_liner && (
             <div style={{ padding: "12px 28px", background: "rgba(59, 125, 120, 0.08)", borderBottom: "1px solid rgba(237, 237, 234, 0.08)" }}>
-              <span style={{ fontSize: 14, color: "#CBD5E1", fontStyle: "italic", fontWeight: 500 }}>&ldquo;{report.one_liner}&rdquo;</span>
+              <span style={{ fontSize: 14, color: "#B4B4AC", fontStyle: "italic", fontWeight: 500 }}>&ldquo;{report.one_liner}&rdquo;</span>
             </div>
           )}
 
@@ -899,7 +902,7 @@ export default function ReportPage() {
                         <div style={{ fontSize: 24, fontWeight: 600, color: "#5B84A6", fontFamily: "var(--font-mono), monospace" }}>{report.talent_velocity.retention_stability_score}%</div>
                       </div>
                     </div>
-                    <div style={{ fontSize: 12, color: "#CBD5E1", lineHeight: 1.5 }}>
+                    <div style={{ fontSize: 12, color: "#B4B4AC", lineHeight: 1.5 }}>
                       {report.talent_velocity.note}
                     </div>
                   </div>
@@ -909,7 +912,7 @@ export default function ReportPage() {
 
                 <div style={{ background: "rgba(18, 20, 26, 0.6)", border: "1px solid rgba(237, 237, 234, 0.08)", borderRadius: 10, padding: "20px 24px", marginBottom: 18 }}>
                   <div style={{ fontSize: 11, color: "#5FA39D", fontWeight: 600, letterSpacing: 0.3, marginBottom: 10 }}>AI Recruiter Summary</div>
-                  <p style={{ fontSize: 14, color: "#CBD5E1", lineHeight: 1.75, margin: 0 }}>{report.summary}</p>
+                  <p style={{ fontSize: 14, color: "#B4B4AC", lineHeight: 1.75, margin: 0 }}>{report.summary}</p>
                 </div>
 
                 {/* Positives */}
@@ -919,7 +922,7 @@ export default function ReportPage() {
                     {report.positive_signals!.map((p, i) => (
                       <div key={i} style={{ display: "flex", gap: 10, marginBottom: 8, alignItems: "flex-start" }}>
                         <Check size={14} color="#5C9A6C" strokeWidth={3} style={{ flexShrink: 0, marginTop: 2 }} />
-                        <div style={{ fontSize: 13, color: "#CBD5E1" }}><strong style={{ color: "#EDEDEA" }}>{p.title}:</strong> {p.description}</div>
+                        <div style={{ fontSize: 13, color: "#B4B4AC" }}><strong style={{ color: "#EDEDEA" }}>{p.title}:</strong> {p.description}</div>
                       </div>
                     ))}
                   </div>
@@ -942,7 +945,7 @@ export default function ReportPage() {
                     disabled={copilotSaving}
                     style={{
                       padding: "9px 20px", borderRadius: 10,
-                      background: copilotSuccess ? "#5C9A6C" : "linear-gradient(135deg, #3B7D78, #2A5D59)",
+                      background: copilotSuccess ? "#5C9A6C" : "#3B7D78",
                       color: "#FFF", fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer",
                       boxShadow: "0 4px 14px rgba(59,125,120,0.3)", display: "flex", alignItems: "center", gap: 6
                     }}
@@ -1139,7 +1142,7 @@ export default function ReportPage() {
                           onClick={saveCopilotData}
                           disabled={copilotSaving}
                           style={{
-                            padding: "9px 24px", borderRadius: 8, background: "#5B84A6", color: "#FFF",
+                            padding: "9px 24px", borderRadius: 8, background: "#3B7D78", color: "#F5F5F2",
                             fontWeight: 600, fontSize: 13, border: "none", cursor: "pointer"
                           }}
                         >
@@ -1210,7 +1213,7 @@ export default function ReportPage() {
                 {(report.skills?.domain_spread_concern) && (
                   <div style={{ padding: "14px 16px", background: "rgba(185,138,62,.08)", border: "1px solid rgba(185,138,62,.2)", borderRadius: 10 }}>
                     <div style={{ fontSize: 11, color: "#B98A3E", fontWeight: 600, marginBottom: 6 }}>DOMAIN SPREAD CONCERN</div>
-                    <div style={{ fontSize: 12, color: "#CBD5E1" }}>{report.skills.domain_spread_note}</div>
+                    <div style={{ fontSize: 12, color: "#B4B4AC" }}>{report.skills.domain_spread_note}</div>
                   </div>
                 )}
               </div>
@@ -1223,7 +1226,7 @@ export default function ReportPage() {
                   <div style={{ marginBottom: 20, padding: "14px 16px", background: "rgba(185,138,62,.08)", border: "1px solid rgba(185,138,62,.2)", borderRadius: 10 }}>
                     <div style={{ fontSize: 11, color: "#B98A3E", fontWeight: 600, marginBottom: 8 }}>GAPS DETECTED</div>
                     {report.timeline_gaps!.map((g, i) => (
-                      <div key={i} style={{ fontSize: 12, color: "#CBD5E1", marginBottom: 5 }}>
+                      <div key={i} style={{ fontSize: 12, color: "#B4B4AC", marginBottom: 5 }}>
                         {g.from} → {g.to}: <strong>{g.duration}</strong> ·{" "}
                         <span style={{ color: g.severity === "high" ? "#B3543A" : g.severity === "medium" ? "#B98A3E" : "#5B84A6" }}>{g.severity} severity</span>
                         {g.note && <span style={{ color: "#B4B4AC" }}> — {g.note}</span>}
@@ -1294,8 +1297,8 @@ export default function ReportPage() {
                     onClick={runVerification}
                     disabled={verifyLoading}
                     style={{
-                      padding: "10px 20px", borderRadius: 10, border: "none", cursor: verifyLoading ? "default" : "pointer",
-                      background: "linear-gradient(135deg,#5B84A6,#2C4258)", color: "#EDEDEA", fontWeight: 600,
+                      padding: "10px 20px", borderRadius: 6, border: "none", cursor: verifyLoading ? "default" : "pointer",
+                      background: "#3B7D78", color: "#F5F5F2", fontWeight: 600,
                       fontSize: 13, fontFamily: "inherit", opacity: verifyLoading ? 0.7 : 1, whiteSpace: "nowrap",
                     }}
                   >
@@ -1422,7 +1425,7 @@ export default function ReportPage() {
                           key={t.id}
                           onClick={() => shareWithTeam(t.id)}
                           disabled={sharing}
-                          style={{ padding: "7px 14px", borderRadius: 6, border: "1px solid rgba(237, 237, 234, 0.08)", background: "#191B22", color: "#CBD5E1", fontSize: 12, cursor: "pointer" }}
+                          style={{ padding: "7px 14px", borderRadius: 6, border: "1px solid rgba(237, 237, 234, 0.08)", background: "#191B22", color: "#B4B4AC", fontSize: 12, cursor: "pointer" }}
                         >
                           Share with &quot;{t.name}&quot;
                         </button>
@@ -1472,7 +1475,7 @@ export default function ReportPage() {
                                 <span style={{ fontSize: 11, color: "#5B84A6", fontFamily: "var(--font-mono), monospace" }}>{c.user_id.slice(0, 8)}…</span>
                                 <span style={{ fontSize: 10, color: "#8A8B82" }}>{new Date(c.created_at).toLocaleString()}</span>
                               </div>
-                              <p style={{ fontSize: 13, color: "#CBD5E1", margin: 0, lineHeight: 1.6 }}>{c.comment}</p>
+                              <p style={{ fontSize: 13, color: "#B4B4AC", margin: 0, lineHeight: 1.6 }}>{c.comment}</p>
                               <button onClick={() => removeComment(c.id)} style={{ background: "none", border: "none", color: "#8A8B82", fontSize: 11, cursor: "pointer", marginTop: 6, padding: 0 }}>Delete</button>
                             </div>
                           ))
@@ -1537,7 +1540,14 @@ export default function ReportPage() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
             <div style={{ fontSize: 10, color: "#8A8B82", letterSpacing: 0.3 }}>Recruiter Decision</div>
             <div style={{ fontSize: 11, color: "#8A8B82", fontStyle: "italic" }}>
-              {saving ? "Saving…" : "Your decision trains the AI model"}
+              {/* This used to read "Your decision trains the AI model". Nothing
+                  in this product trains anything — submit_decision() stores
+                  the decision on the report and that is all. In a tool whose
+                  entire pitch is that its output is evidence you can check, a
+                  claim the code does not back is worse than saying nothing;
+                  it also implies candidate data feeds model training, which a
+                  recruiter could repeat to a candidate in good faith. */}
+              {saving ? "Saving…" : "Recorded on this report only"}
             </div>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>

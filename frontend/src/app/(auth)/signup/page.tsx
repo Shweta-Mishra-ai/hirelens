@@ -84,7 +84,7 @@ export default function SignupPage() {
                 </p>
                 <Link href="/login" style={{
                   display: "inline-block", padding: "11px 24px", borderRadius: radius.md,
-                  background: gradient.brandButton, color: "#FFF", fontWeight: 700, fontSize: 13, textDecoration: "none",
+                  background: gradient.brandButton, color: "#FFF", fontWeight: 600, fontSize: 13, textDecoration: "none",
                 }}>
                   Back to Login
                 </Link>

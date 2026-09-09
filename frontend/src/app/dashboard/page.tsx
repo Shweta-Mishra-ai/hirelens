@@ -262,7 +262,7 @@ export default function DashboardPage() {
               borderRadius: radius.md, color: color.textSecondary, fontSize: 13, cursor: "pointer", outline: "none"
             }}
           >
-            {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value} style={{ background: "#0F172A", color: color.textPrimary }}>{o.label}</option>)}
+            {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value} style={{ background: "#12141A", color: color.textPrimary }}>{o.label}</option>)}
           </select>
           <Button
             variant="secondary"
@@ -277,7 +277,7 @@ export default function DashboardPage() {
 
         {/* Candidate Reports Table Container */}
         <Card style={{ overflow: "hidden" }}>
-          <div style={{ padding: "16px 24px", borderBottom: "1px solid rgba(255, 255, 255, 0.08)", fontSize: 13, fontWeight: 700, color: "#CBD5E1", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ padding: "16px 24px", borderBottom: "1px solid rgba(237, 237, 234, 0.08)", fontSize: 13, fontWeight: 600, color: "#B4B4AC", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span>{search ? `Results for "${search}"` : "Recent Candidate Intelligence Reports"}</span>
             {!loading && <span style={{ color: color.textFaint, fontWeight: 500 }}>{total} total candidate{total !== 1 ? "s" : ""}</span>}
           </div>
@@ -332,7 +332,7 @@ export default function DashboardPage() {
                 </div>
                 
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: color.textPrimary, marginBottom: 2 }}>{r.candidate_name || "Unknown Candidate"}</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: color.textPrimary, marginBottom: 2 }}>{r.candidate_name || "Unknown Candidate"}</div>
                   <div style={{ fontSize: 12, color: color.textMuted, fontFamily: "var(--font-mono), monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.file_name}</div>
                 </div>
 
@@ -344,7 +344,7 @@ export default function DashboardPage() {
                 <VerdictChip verdict={verdictFromRecommendation(r.recommendation)} />
 
                 {r.recruiter_decision && (
-                  <span style={{ fontSize: 11, color: "#CBD5E1", padding: "3px 10px", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, background: "rgba(15,23,42,0.4)" }}>
+                  <span style={{ fontSize: 11, color: "#B4B4AC", padding: "3px 10px", border: "1px solid rgba(237, 237, 234, 0.10)", borderRadius: 6, background: "rgba(14, 15, 19, 0.4)" }}>
                     {r.recruiter_decision}
                   </span>
                 )}

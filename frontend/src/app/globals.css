@@ -3,6 +3,13 @@
 @tailwind utilities;
 
 :root {
+  /* Tell the browser this is a dark UI so it renders NATIVE controls to
+     match. Without it, checkboxes render as white squares and <select>
+     dropdowns open as white panels on an otherwise dark page — the two
+     places the app visibly stopped being itself. One declaration fixes
+     every native control, including ones added later. */
+  color-scheme: dark;
+
   /* ── The Verification Desk — see design-tokens.ts for the full rationale ─
      Flat ink surfaces, hairline rules, a single petrol-teal accent. No
      blur, no glow, no gradient-as-decoration. */
@@ -57,7 +64,7 @@ h1, h2, h3, h4, h5, h6, .font-display {
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: #4A4E5C; }
+::-webkit-scrollbar-thumb:hover { background: #383C48; }
 
 :focus-visible {
   outline: 2px solid var(--accent-light);
