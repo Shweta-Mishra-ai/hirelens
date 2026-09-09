@@ -97,6 +97,28 @@ class ValidationError(HireLensException):
     message = "Invalid request data."
 
 class CapacityLimitExceeded(HireLensException):
+    """Registration is temporarily closed at the configured active-recruiter
+    ceiling (settings.MAX_ACTIVE_RECRUITERS — see app/core/config.py).
+
+    The limit used to be a hardcoded 5,000 baked directly into this
+    exception's message, in app/api/v1/endpoints/auth.py, and repeated again
+    in health.py's diagnostics — three copies of the same magic number, none
+    of them changeable without a code deploy. Worse, a message reading
+    "Registration capacity limit of 5,000 active recruiters reached" is
+    exactly the kind of specific, round, impressive-sounding number that
+    reads as a growth metric for a demo rather than a real operational
+    limit — and a genuine launch that actually reached 5,000 signups would
+    have hit a hard, unconfigurable wall for no infrastructure reason.
+
+    Now a single operator-tunable setting, with a default high enough that
+    it is a safety valve against runaway signups rather than a growth cap.
+    """
     http_status = 429; code = "capacity_limit_exceeded"
-    message = "Registration capacity limit of 5,000 active recruiters reached."
+    def __init__(self, limit: int | None = None):
+        self.limit = limit
+        if limit is not None:
+            message = f"Registration capacity limit of {limit:,} active recruiters reached."
+        else:
+            message = "Registration capacity limit reached."
+        super().__init__(message)
 

@@ -102,6 +102,12 @@ services:
         value: "20"
       - key: ANALYSIS_TIMEOUT_SECONDS
         value: "120"
+      # Safety valve against a scripted signup flood, not a growth ceiling —
+      # 100,000 by default, well past anything a real launch reaches
+      # organically. Tune down only for genuine capacity planning (e.g. a
+      # Supabase Auth plan limit), never to a "nice" round number.
+      - key: MAX_ACTIVE_RECRUITERS
+        value: "100000"
       # How long a session token stays valid, in minutes (default 10080 = 7
       # days). Shorter means a leaked token is useful for less time, at the
       # cost of more frequent logins. Tokens can be revoked before this

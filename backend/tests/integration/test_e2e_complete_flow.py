@@ -107,7 +107,8 @@ def test_e2e_health_check_and_diagnostics():
 
     diag = client.get("/api/v1/health/diagnostics", headers=headers)
     assert diag.status_code == 200
-    assert diag.json()["capacity"]["max_supported_users"] == 5000
+    from app.core.config import settings
+    assert diag.json()["capacity"]["max_supported_users"] == settings.MAX_ACTIVE_RECRUITERS
 
 
 def test_e2e_auth_signup_login_flow():
