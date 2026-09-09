@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     RATE_LIMIT_PER_MINUTE: int = 20
     NOTIFY_RATE_LIMIT_PER_MINUTE: int = 10  # candidate emails are an external cost — tighter limit than general API use
     ANALYSIS_TIMEOUT_SECONDS: int = 120
+    # Ceiling on document parsing specifically. ANALYSIS_TIMEOUT_SECONDS only
+    # ever covered the LLM call, so a document that made pdfminer or
+    # python-docx spin had no limit at all. See _run_analysis.
+    PARSE_TIMEOUT_SECONDS: int = 45
 
     # Email Service Settings (Resend & SMTP)
     RESEND_API_KEY: str = ""
