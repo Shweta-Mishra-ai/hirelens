@@ -19,6 +19,12 @@ backend/data/
 # Node
 node_modules/
 .next/
+# Written by `next dev` on every run (see
+# node_modules/next/dist/server/lib/generate-agent-files.js). Generated
+# tooling output, not project source — ignored so a dev server run doesn't
+# leave a dirty tree.
+frontend/AGENTS.md
+frontend/CLAUDE.md
 out/
 *.tsbuildinfo
 npm-debug.log*

@@ -56,17 +56,49 @@ Python, FastAPI, React, Next.js, TypeScript, Node.js, PostgreSQL, Redis, Docker,
 """
 
 
-def test_e2e_health_check_and_diagnostics():
-    signup_res = client.post(
+E2E_EMAIL = "e2e_recruiter@example.com"
+E2E_PASSWORD = "Password123!"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def shared_recruiter_account():
+    """Guarantee the shared account exists before ANY test in this file runs.
+
+    Every test here logs in as e2e_recruiter@example.com, but only the first
+    one created it — so the whole file only worked when executed top to
+    bottom. `pytest -k team`, `pytest --lf` after a failure, or any
+    randomised/parallel ordering would fail with a bare
+    `KeyError: 'access_token'` that says nothing about the real cause.
+
+    A test you cannot run on its own is a test you cannot debug on its own,
+    and "run the whole file and hope" is not a workflow. Creating the account
+    once at module scope makes each test independently runnable without
+    changing what any of them assert.
+    """
+    client.post(
         "/api/v1/auth/signup",
         json={
-            "email": "e2e_recruiter@example.com",
-            "password": "Password123!",
+            "email": E2E_EMAIL,
+            "password": E2E_PASSWORD,
             "full_name": "E2E Recruiter",
             "company": "E2E Enterprise HR",
         },
     )
-    token = signup_res.json().get("access_token")
+    # A 409 here just means a previous test in this module already made it.
+    yield
+
+
+def test_e2e_health_check_and_diagnostics():
+    # Log in rather than sign up: the shared account is created once by the
+    # module fixture, so a signup here would hit "already registered" and
+    # return no token — which is exactly the ordering fragility the fixture
+    # exists to remove. Every test in this file authenticates the same way.
+    login_res = client.post(
+        "/api/v1/auth/login",
+        json={"email": E2E_EMAIL, "password": E2E_PASSWORD},
+    )
+    assert login_res.status_code == 200, login_res.text
+    token = login_res.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
     res = client.get("/api/v1/health")
@@ -75,7 +107,8 @@ def test_e2e_health_check_and_diagnostics():
 
     diag = client.get("/api/v1/health/diagnostics", headers=headers)
     assert diag.status_code == 200
-    assert diag.json()["capacity"]["max_supported_users"] == 5000
+    from app.core.config import settings
+    assert diag.json()["capacity"]["max_supported_users"] == settings.MAX_ACTIVE_RECRUITERS
 
 
 def test_e2e_auth_signup_login_flow():
@@ -186,7 +219,18 @@ def test_e2e_copilot_and_talent_analytics_flow():
         json={"email": "e2e_recruiter@example.com", "password": "Password123!"},
     )
     token = login_res.json()["access_token"]
+    user_id = login_res.json()["user"]["id"]
     headers = {"Authorization": f"Bearer {token}"}
+
+    # Seed an owned in-memory report to save co-pilot data against. Co-pilot
+    # save now requires the report to actually resolve and be owned by the
+    # caller (previously it accepted writes against ANY report_id string
+    # with no ownership check at all — a real access-control gap).
+    _jobs["report_rep_test123"] = {
+        "id": "rep_test123",
+        "_owner_user_id": user_id,
+        "candidate_name": "Copilot Test Candidate",
+    }
 
     # 1. Feature A: Save Interview Co-Pilot Scorecard & Notes
     copilot_save = client.post(
@@ -215,6 +259,43 @@ def test_e2e_copilot_and_talent_analytics_flow():
     analytics_res = client.get("/api/v1/reports/analytics", headers=headers)
     assert analytics_res.status_code == 200
     assert "distribution" in analytics_res.json()
+
+
+def test_e2e_copilot_save_rejects_unowned_or_unknown_report():
+    """
+    Regression test for the access-control gap above: saving co-pilot data
+    against a report_id that doesn't exist, or that belongs to a different
+    recruiter, must be refused — not silently accepted into the in-memory
+    store with a false "status: ok".
+    """
+    login_res = client.post(
+        "/api/v1/auth/login",
+        json={"email": "e2e_recruiter@example.com", "password": "Password123!"},
+    )
+    token = login_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Unknown report_id — never seeded anywhere.
+    res = client.post(
+        "/api/v1/reports/rep_never_existed_xyz/copilot",
+        headers=headers,
+        json={"scorecard": [], "custom_questions": []},
+    )
+    assert res.status_code == 404
+
+    # Report owned by someone else.
+    _jobs["report_rep_owned_by_other"] = {
+        "id": "rep_owned_by_other",
+        "_owner_user_id": "some-other-user-id",
+        "candidate_name": "Not Yours",
+    }
+    res2 = client.post(
+        "/api/v1/reports/rep_owned_by_other/copilot",
+        headers=headers,
+        json={"scorecard": [], "custom_questions": []},
+    )
+    assert res2.status_code == 404
+
 
 
 @patch("app.services.parser.document_parser.extract_text", return_value=REALISTIC_RESUME)

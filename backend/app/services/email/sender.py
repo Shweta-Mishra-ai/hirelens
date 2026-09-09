@@ -1,13 +1,35 @@
 """
-HireLens — Real Email Sender Service
-Supports sending real HTML emails via Resend API, SMTP (Gmail/SES/SendGrid), or Supabase Auth.
+HireLens — outbound email.
+
+Sends via the Resend API, falling back to SMTP.
+
+EVERY value interpolated into an email body is HTML-escaped. That is not
+boilerplate caution — these templates carry attacker-reachable strings:
+
+  - `team_name` is chosen by whoever created the team, with no constraint
+    beyond a length cap. It went into the invite email unescaped, so a team
+    named `"><a href="https://phish.example">Verify your account</a><b x="`
+    put the attacker's own markup and links inside a message delivered from
+    HireLens's sending domain, with HireLens's branding, to any address they
+    typed in. That is a phishing kit, assembled out of the product's own
+    features.
+  - `body` in the candidate notification was assigned to a variable named
+    `safe_body_html` that performed no escaping whatsoever — only a newline
+    to <br> substitution. The name asserted a property the code did not have.
+
+Templates use the app's current design tokens (see
+frontend/src/lib/design-tokens.ts) so an email looks like the product a
+recipient just used, rather than the indigo/emoji styling the UI moved away
+from.
 """
 
+import html
 import smtplib
 import logging
 import httpx
 from email.message import EmailMessage
 from app.core.config import settings
+from app.core.redaction import mask_email
 
 logger = logging.getLogger("hirelens")
 
@@ -36,7 +58,7 @@ async def send_raw_email(to_email: str, subject: str, html_content: str, text_fa
                     },
                 )
                 if res.status_code in (200, 201):
-                    logger.info(f"Email sent via Resend to {to_email}")
+                    logger.info(f"Email sent via Resend to {mask_email(to_email)}")
                     return True
                 logger.warning(f"Resend email API returned status {res.status_code}: {res.text}")
         except Exception as e:
@@ -55,45 +77,84 @@ async def send_raw_email(to_email: str, subject: str, html_content: str, text_fa
                 server.starttls()
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
                 server.send_message(msg)
-            logger.info(f"Email sent via SMTP to {to_email}")
+            logger.info(f"Email sent via SMTP to {mask_email(to_email)}")
             return True
         except Exception as e:
             logger.error(f"SMTP email dispatch error: {e}")
 
-    logger.info(f"No active email provider (Resend/SMTP) configured. Would have sent to {to_email}: {subject}")
+    logger.info(
+        f"No active email provider (Resend/SMTP) configured. "
+        f"Would have sent to {mask_email(to_email)}: {subject}"
+    )
     return False
 
 
+# Design tokens mirrored from frontend/src/lib/design-tokens.ts. Inlined
+# because email clients strip <style> blocks and do not resolve CSS
+# variables, so every value has to be literal.
+_INK = "#12141A"
+_SURFACE = "#191B22"
+_BORDER = "#2A2D37"
+_TEXT = "#EDEDEA"
+_TEXT_MUTED = "#B4B4AC"
+_TEXT_FAINT = "#8A8B82"
+_BRAND = "#3B7D78"
+
+_SERIF = "Georgia, 'Times New Roman', serif"
+_SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+
+
+def _shell(inner_html: str) -> str:
+    """Wrap message content in the shared HireLens email frame."""
+    return f"""<!DOCTYPE html>
+<html>
+  <body style="margin:0;padding:32px 16px;background-color:{_INK};font-family:{_SANS};">
+    <div style="max-width:540px;margin:0 auto;background:{_SURFACE};border:1px solid {_BORDER};border-radius:8px;padding:32px;">
+      <div style="font-family:{_SERIF};font-size:20px;font-weight:600;color:{_TEXT};margin-bottom:24px;">HireLens</div>
+      {inner_html}
+    </div>
+    <div style="max-width:540px;margin:16px auto 0;font-size:11px;color:{_TEXT_FAINT};text-align:center;">
+      Sent by HireLens because someone using it contacted you.
+    </div>
+  </body>
+</html>"""
+
+
 async def send_team_invite_email(to_email: str, team_name: str, inviter_name: str, invite_url: str) -> bool:
+    """Invite someone to a team workspace. Returns True only if a provider
+    accepted the message.
+
+    `team_name` and `inviter_name` are both user-authored and are escaped
+    before they touch the markup — see the module docstring for what happens
+    otherwise. `invite_url` is built by this application from FRONTEND_URL,
+    not supplied by a caller, but is escaped for consistency: an attribute
+    that is escaped only "when it matters" eventually stops being escaped.
     """
-    Sends a real team invitation email to to_email.
-    Returns True if an email was successfully sent.
-    """
-    subject = f"You're invited to join team '{team_name}' on HireLens"
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <body style="background-color: #0B0F17; color: #F8FAFC; font-family: sans-serif; padding: 30px;">
-      <div style="max-width: 540px; margin: 0 auto; background: #1E293B; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 32px;">
-        <div style="font-size: 24px; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">🔎 HireLens</div>
-        <h2 style="font-size: 20px; color: #F8FAFC; margin-top: 0;">Team Invitation</h2>
-        <p style="font-size: 14px; color: #CBD5E1; line-height: 1.6;">
-          <strong style="color: #818CF8;">{inviter_name}</strong> invited you to collaborate in the workspace <strong style="color: #F8FAFC;">"{team_name}"</strong> on HireLens.
-        </p>
-        <div style="margin: 28px 0; text-align: center;">
-          <a href="{invite_url}" style="display: inline-block; padding: 12px 28px; background: linear-gradient(135deg, #6366F1, #4F46E5); color: #FFFFFF; font-weight: 700; font-size: 14px; text-decoration: none; border-radius: 10px;">
-            Accept & Join Team
-          </a>
-        </div>
-        <p style="font-size: 12px; color: #94A3B8; line-height: 1.5;">
-          Or copy and paste this link in your browser:<br>
-          <a href="{invite_url}" style="color: #818CF8; word-break: break-all;">{invite_url}</a>
-        </p>
+    e_team = html.escape(team_name or "a workspace")
+    e_inviter = html.escape(inviter_name or "A teammate")
+    e_url = html.escape(invite_url, quote=True)
+
+    subject = f"You're invited to join '{team_name}' on HireLens"
+    html_content = _shell(f"""
+      <h2 style="font-family:{_SERIF};font-size:18px;font-weight:600;color:{_TEXT};margin:0 0 12px;">Team invitation</h2>
+      <p style="font-size:14px;color:{_TEXT_MUTED};line-height:1.6;margin:0 0 24px;">
+        <strong style="color:{_TEXT};">{e_inviter}</strong> invited you to collaborate in
+        <strong style="color:{_TEXT};">{e_team}</strong> on HireLens.
+      </p>
+      <div style="margin:0 0 24px;">
+        <a href="{e_url}" style="display:inline-block;padding:11px 22px;background:{_BRAND};color:#F5F5F2;font-weight:600;font-size:13px;text-decoration:none;border-radius:6px;">
+          Accept invitation
+        </a>
       </div>
-    </body>
-    </html>
-    """
-    text_fallback = f"You are invited to join team '{team_name}' on HireLens. Click: {invite_url}"
+      <p style="font-size:12px;color:{_TEXT_FAINT};line-height:1.5;margin:0;">
+        Or paste this link into your browser:<br>
+        <a href="{e_url}" style="color:{_BRAND};word-break:break-all;">{e_url}</a>
+      </p>
+    """)
+    text_fallback = (
+        f"{inviter_name or 'A teammate'} invited you to join '{team_name}' on HireLens.\n\n"
+        f"Accept: {invite_url}"
+    )
     return await send_raw_email(to_email, subject, html_content, text_fallback)
 
 
@@ -153,21 +214,15 @@ def build_decision_email(decision: str, candidate_name: str, sender_name: str, t
 
 
 async def send_candidate_decision_email(to_email: str, subject: str, body: str) -> bool:
+    """Send a recruiter-authored (or default-template) decision notification.
+
+    `body` is plain text. It is HTML-escaped before newlines become <br>, so
+    a recruiter writing "salary range < 100k" gets exactly that in the
+    delivered email instead of losing everything after the "<" to a
+    half-parsed tag — and no input can introduce markup of its own.
     """
-    Sends a recruiter-authored (or default-template) decision notification
-    to a candidate. `body` is plain text; a light HTML wrapper is applied
-    for clients that render HTML, with the exact same text as content.
-    """
-    safe_body_html = body.replace("\n", "<br>")
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <body style="background-color: #0B0F17; color: #F8FAFC; font-family: sans-serif; padding: 30px;">
-      <div style="max-width: 540px; margin: 0 auto; background: #1E293B; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 32px;">
-        <div style="font-size: 22px; font-weight: 800; color: #F8FAFC; margin-bottom: 20px;">🔎 HireLens</div>
-        <div style="font-size: 14px; color: #E2E8F0; line-height: 1.7; white-space: pre-line;">{safe_body_html}</div>
-      </div>
-    </body>
-    </html>
-    """
+    escaped_body = html.escape(body or "").replace("\n", "<br>")
+    html_content = _shell(
+        f'<div style="font-size:14px;color:{_TEXT_MUTED};line-height:1.7;">{escaped_body}</div>'
+    )
     return await send_raw_email(to_email, subject, html_content, text_fallback=body)

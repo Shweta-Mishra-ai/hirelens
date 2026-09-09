@@ -21,7 +21,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.core.dependencies import get_current_user, get_db
+import hashlib
+from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.cache import cache_get, cache_set
+from app.core.rate_limit import check_rate_limit
 from app.core.exceptions import NotFoundError, ForbiddenError
 from app.api.v1.endpoints.analysis import _jobs
 from app.services.verify.github_verify import verify_github, extract_username
@@ -32,6 +35,29 @@ from app.services.verify.trust_assessment import compute_trust_assessment
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
+
+# Per-user cap on verification runs.
+#
+# This is by far the most expensive endpoint in the app: every call fans out
+# to FOUR concurrent outbound HTTP checks (GitHub API, a university-domain
+# registry, a live fetch of each certification link found in the resume, and
+# an employer-domain probe), each with a VERIFY_TIMEOUT_SECONDS budget. It had
+# no limit at all, which meant one authenticated account looping it could:
+#
+#   - saturate the event loop of a single-worker free-tier container and make
+#     the API unresponsive for every other recruiter;
+#   - burn the shared GitHub API quota (60/hr unauthenticated, 5000/hr with a
+#     token) that every user's verification depends on;
+#   - use the server as an outbound request amplifier against third parties,
+#     since certification links come from candidate-supplied resume text.
+#
+# Signup is open, so "authenticated" is not a meaningful barrier here.
+#
+# The number is chosen to be invisible in real use — a recruiter verifies a
+# report once, occasionally re-runs it after pasting a corrected GitHub
+# username — while cutting an automated loop dead.
+VERIFY_RUNS_PER_MINUTE = 10
+VERIFY_RUNS_PER_HOUR = 60
 
 
 class VerifyRequest(BaseModel):
@@ -101,6 +127,38 @@ def _safe(result, fallback):
     return fallback if isinstance(result, BaseException) else result
 
 
+GITHUB_VERIFY_CACHE_TTL_SECONDS = 3600  # 1 hour — see app/core/cache.py
+
+
+async def _cached_verify_github(redis, username: str | None, claimed_skills: list[str]) -> dict:
+    """
+    Wraps verify_github() with a short Redis cache keyed on the username +
+    the exact claimed-skills set, so re-verifying the same candidate (a
+    recruiter double-checking, or a second teammate opening the same
+    report) doesn't re-spend GitHub API rate-limit budget for an answer
+    that's still fresh. A no-username call is never cached — there's
+    nothing to key it on, and it's already free (no network call).
+    """
+    if not username:
+        return await verify_github(username, claimed_skills)
+
+    skills_fingerprint = hashlib.sha256(
+        ",".join(sorted(s.lower().strip() for s in claimed_skills)).encode()
+    ).hexdigest()[:16]
+    cache_key = f"github_verify:{username.lower()}:{skills_fingerprint}"
+
+    cached = cache_get(redis, cache_key)
+    if cached is not None:
+        return cached
+
+    result = await verify_github(username, claimed_skills)
+    # Don't cache transient failures — a rate-limit or network blip should
+    # be retried on the next run, not frozen into the cache for an hour.
+    if result.get("status") not in ("error", "rate_limited"):
+        cache_set(redis, cache_key, result, GITHUB_VERIFY_CACHE_TTL_SECONDS)
+    return result
+
+
 RECOMMENDATION_RANK = {"recommended": 2, "manual_review": 1, "high_risk": 0}
 RANK_TO_RECOMMENDATION = {v: k for k, v in RECOMMENDATION_RANK.items()}
 
@@ -159,12 +217,20 @@ async def run_verification(
     body: VerifyRequest = VerifyRequest(),
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
+    redis=Depends(get_redis),
 ):
     """
     Runs all four public-data verification checks in parallel and stores
     the result on the report. Safe to re-run — it overwrites the previous
-    verification with a fresh one.
+    verification with a fresh one (GitHub is served from a short cache
+    when re-run for the same username + skills; see _cached_verify_github).
     """
+    # Both windows: the per-minute cap stops a tight loop, the per-hour cap
+    # stops a slow drip that would stay under it all day.
+    user_id = current_user["id"]
+    check_rate_limit(redis, f"verify-run:{user_id}", VERIFY_RUNS_PER_MINUTE, window_seconds=60)
+    check_rate_limit(redis, f"verify-run-hr:{user_id}", VERIFY_RUNS_PER_HOUR, window_seconds=3600)
+
     report, source = _load_report(report_id, current_user["id"], db)
 
     candidate = report.get("candidate") or {}
@@ -174,7 +240,7 @@ async def run_verification(
     username = body.github_username or extract_username(candidate.get("github") or candidate.get("github_url"))
 
     github_res, edu_res, cert_res, exp_res = await asyncio.gather(
-        verify_github(username, claimed_skills),
+        _cached_verify_github(redis, username, claimed_skills),
         verify_education(list(report.get("education") or [])),
         verify_certifications(list(report.get("certifications") or []), candidate.get("name")),
         verify_experience_companies(list(report.get("experience") or [])),

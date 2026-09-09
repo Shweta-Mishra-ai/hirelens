@@ -13,9 +13,12 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
+from app.core.csv_safety import csv_safe_row
 from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.cache import cache_get, cache_set
 from app.core.exceptions import NotFoundError, ForbiddenError, HireLensException, ValidationError
 from app.core.rate_limit import check_rate_limit
+from app.core.redaction import mask_email
 from app.core.config import settings
 from app.api.v1.endpoints.analysis import _jobs  # in-memory fallback store
 from app.services.teams.access import user_can_access_report
@@ -99,6 +102,89 @@ def _mem_reports_for_user(user_id: str) -> list[dict]:
     return out
 
 
+
+# ── Shared report querying ───────────────────────────────────────────────────
+#
+# list_reports and export_all_reports_csv answer the same question with the
+# same filters, and each had its own copy of the logic. They had already
+# drifted apart, with a user-visible consequence: when the JSON-path skill
+# search failed, list_reports retried with a name/file-only filter and
+# returned rows, while the export's try/except sat around `.or_()` — which
+# only builds a filter string and cannot raise — so the real failure at
+# `.execute()` fell through to `items = []`.
+#
+# The recruiter saw candidates on the dashboard, pressed Export CSV, and got a
+# file containing nothing but the header. No error anywhere; the only
+# reasonable conclusion is that their pipeline is empty.
+#
+# One implementation, used by both, so a fix cannot land in only one of them.
+
+REPORT_LIST_COLUMNS = (
+    "id,file_name,candidate_name,overall_score,recommendation,created_at,recruiter_decision"
+)
+VALID_RECOMMENDATIONS = ("recommended", "manual_review", "high_risk")
+
+
+def _apply_report_filters(query, user_id: str, recommendation: str | None, search: str | None, *, skills: bool):
+    """Attach the owner, recommendation and search filters to a query.
+
+    `skills` selects whether the search also covers the skills JSON path.
+    That path is the part PostgREST can reject, so the retry re-runs with it
+    off rather than giving up on the search entirely.
+    """
+    query = query.eq("user_id", user_id)
+    if recommendation and recommendation in VALID_RECOMMENDATIONS:
+        query = query.eq("recommendation", recommendation)
+    if search:
+        s = _sanitize_search(search)
+        clauses = [f"candidate_name.ilike.%{s}%", f"file_name.ilike.%{s}%"]
+        if skills:
+            clauses.append(f"report_data->skills->>all_claimed.ilike.%{s}%")
+        query = query.or_(",".join(clauses))
+    return query
+
+
+def _fetch_reports(db, user_id: str, recommendation, search, sort_col, sort_desc, *, offset: int, limit: int) -> list[dict]:
+    """Run the report query, retrying without the skills path if it fails."""
+    def build(skills: bool):
+        q = _apply_report_filters(
+            db.table("reports").select(REPORT_LIST_COLUMNS),
+            user_id, recommendation, search, skills=skills,
+        )
+        return q.order(sort_col, desc=sort_desc).range(offset, offset + limit - 1)
+
+    try:
+        # SYNC call — no await.
+        return build(skills=True).execute().data or []
+    except Exception as e:
+        if not search:
+            raise
+        # Only the JSON-path clause can be unsupported; drop it and retry so
+        # a skills-path problem degrades to a name/file search instead of
+        # looking like "no matches".
+        logger.warning(f"Skill-path search failed, retrying name/file only: {e}")
+        return build(skills=False).execute().data or []
+
+
+def _filter_mem_reports(user_id: str, recommendation, search, sort_col, sort_desc) -> list[dict]:
+    """The same filters against the in-memory fallback store."""
+    items = _mem_reports_for_user(user_id)
+    if recommendation and recommendation in VALID_RECOMMENDATIONS:
+        items = [r for r in items if r["recommendation"] == recommendation]
+    if search:
+        s = search.strip().lower()
+        items = [
+            r for r in items
+            if s in (r.get("candidate_name") or "").lower()
+            or s in (r.get("file_name") or "").lower()
+            or s in r.get("_skills_text", "")
+        ]
+    for r in items:
+        r.pop("_skills_text", None)
+    items.sort(key=lambda r: (r.get(sort_col) or ""), reverse=sort_desc)
+    return items
+
+
 @router.get("")
 async def list_reports(
     page: int = Query(1, ge=1),
@@ -111,120 +197,62 @@ async def list_reports(
 ):
     """List all reports for current recruiter — searchable + sortable."""
     sort_col, sort_desc = SORT_MAP.get(sort, SORT_MAP["newest"])
+    offset = (page - 1) * limit
 
     if not db:
-        items = _mem_reports_for_user(current_user["id"])
-        if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
-            items = [r for r in items if r["recommendation"] == recommendation]
-        if search:
-            s = search.strip().lower()
-            items = [
-                r for r in items
-                if s in (r.get("candidate_name") or "").lower()
-                or s in (r.get("file_name") or "").lower()
-                or s in r.get("_skills_text", "")
-            ]
-        for r in items:
-            r.pop("_skills_text", None)
-        items.sort(key=lambda r: (r.get(sort_col) or ""), reverse=sort_desc)
-
+        items = _filter_mem_reports(current_user["id"], recommendation, search, sort_col, sort_desc)
         total = len(items)
-        offset = (page - 1) * limit
         page_items = items[offset: offset + limit]
-        return {"reports": page_items, "total": total, "page": page, "pages": max(1, (total + limit - 1) // limit)}
+        return {
+            "reports": page_items,
+            "total": total,
+            "page": page,
+            "pages": max(1, (total + limit - 1) // limit),
+        }
 
     try:
-        offset = (page - 1) * limit
-
-        query = (
-            db.table("reports")
-            .select("id,file_name,candidate_name,overall_score,recommendation,created_at,recruiter_decision")
-            .eq("user_id", current_user["id"])
+        items = _fetch_reports(
+            db, current_user["id"], recommendation, search, sort_col, sort_desc,
+            offset=offset, limit=limit,
         )
 
-        if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
-            query = query.eq("recommendation", recommendation)
-
-        if search:
-            s = _sanitize_search(search)
-            # NOTE: .or_() only builds the filter — it makes no network call,
-            # so it can't itself raise a PostgREST error. The previous
-            # try/except here was dead code; any actual failure (e.g. an
-            # unsupported JSON-path filter) only surfaces from .execute()
-            # below, which is now wrapped separately so search failures are
-            # distinguishable from "no results" instead of silently
-            # returning an empty list either way.
-            query = query.or_(
-                f"candidate_name.ilike.%{s}%,"
-                f"file_name.ilike.%{s}%,"
-                f"report_data->skills->>all_claimed.ilike.%{s}%"
-            )
-
-        query = query.order(sort_col, desc=sort_desc).range(offset, offset + limit - 1)
-
-        try:
-            # SYNC call — no await
-            result = query.execute()
-        except Exception as e:
-            if search:
-                logger.warning(f"Skill-path search query failed, retrying name/file only: {e}")
-                fallback_query = (
-                    db.table("reports")
-                    .select("id,file_name,candidate_name,overall_score,recommendation,created_at,recruiter_decision")
-                    .eq("user_id", current_user["id"])
-                )
-                if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
-                    fallback_query = fallback_query.eq("recommendation", recommendation)
-                s = _sanitize_search(search)
-                fallback_query = fallback_query.or_(f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%")
-                fallback_query = fallback_query.order(sort_col, desc=sort_desc).range(offset, offset + limit - 1)
-                result = fallback_query.execute()  # let this one raise for real if it also fails
-            else:
-                raise
-        items = result.data or []
-
-        # Count total (respecting the same filters, without range)
-        count_query = db.table("reports").select("id", count="exact").eq("user_id", current_user["id"])
-        if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
-            count_query = count_query.eq("recommendation", recommendation)
-        if search:
-            s = _sanitize_search(search)
-            count_query = count_query.or_(
-                f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%,report_data->skills->>all_claimed.ilike.%{s}%"
-            )
+        # Total for pagination, under the same filters and without the range.
+        count_query = _apply_report_filters(
+            db.table("reports").select("id", count="exact"),
+            current_user["id"], recommendation, search, skills=True,
+        )
         try:
             count_result = count_query.execute()
             total = count_result.count if count_result.count is not None else len(items)
         except Exception as e:
-            # The main query above already succeeded (or fell back
-            # successfully) — don't fail the whole request just because the
-            # separate count query had trouble. Fall back to len(items) as
-            # a page-count estimate rather than erroring or lying with 0.
-            logger.warning(f"list_reports count query failed, using page length as estimate: {e}")
+            # A failed count must not fail the whole listing — the rows are
+            # already in hand and are what the recruiter came for.
+            logger.warning(f"Report count query failed, falling back to page size: {e}")
             total = len(items)
 
         return {
             "reports": items,
             "total": total,
             "page": page,
-            "pages": max(1, (total + limit - 1) // limit),
+            "pages": max(1, (total + limit - 1) // limit) if total else 1,
         }
     except Exception as e:
-        # This used to return {"reports": [], "total": 0} — indistinguishable
-        # from "you have no reports yet" in the UI. A DB outage should never
-        # look identical to a brand-new, empty account; the frontend needs a
-        # real error here so it can show "couldn't load, retry" instead of
-        # a false empty state.
         logger.error(f"list_reports failed for user {current_user['id']}: {e}")
-        raise HireLensException(
-            "Could not load your reports right now due to a database error. Please try again."
-        )
+        raise HireLensException("Could not load your reports. Please try again.")
+
+
+ANALYTICS_CACHE_TTL_SECONDS = 60
+
+
+def _analytics_cache_key(user_id: str) -> str:
+    return f"analytics:{user_id}"
 
 
 @router.get("/analytics")
 async def get_talent_analytics(
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
+    redis=Depends(get_redis),
 ):
     """
     Enterprise Talent Analytics & Workforce Intelligence (Feature C)
@@ -233,7 +261,20 @@ async def get_talent_analytics(
     - Top skill clusters
     - Risk flag breakdown
     - Average candidate credibility score
+
+    Previously recomputed from every report row on every single dashboard
+    load. Cached per-user for a short TTL (60s) — cheap enough to feel
+    real-time to a recruiter refreshing the dashboard, but avoids
+    re-scanning the full report set on every request. Invalidated
+    immediately on anything that changes the underlying numbers (a new
+    report finishing analysis, or a decision being recorded) rather than
+    waiting out the TTL — see analysis.py and submit_decision() below.
     """
+    cache_key = _analytics_cache_key(current_user["id"])
+    cached = cache_get(redis, cache_key)
+    if cached is not None:
+        return cached
+
     items = []
     if db:
         try:
@@ -254,13 +295,15 @@ async def get_talent_analytics(
 
     total = len(items)
     if total == 0:
-        return {
+        empty = {
             "total_candidates": 0,
             "avg_credibility_score": 0,
             "distribution": {"recommended": 0, "manual_review": 0, "high_risk": 0},
             "top_skills": [],
             "risk_categories": {},
         }
+        cache_set(redis, cache_key, empty, ANALYTICS_CACHE_TTL_SECONDS)
+        return empty
 
     scores = [int(i.get("overall_score") or 0) for i in items]
     avg_score = round(sum(scores) / len(scores)) if scores else 0
@@ -292,13 +335,15 @@ async def get_talent_analytics(
         reverse=True
     )[:10]
 
-    return {
+    payload = {
         "total_candidates": total,
         "avg_credibility_score": avg_score,
         "distribution": dist,
         "top_skills": top_skills,
         "risk_categories": risk_cats,
     }
+    cache_set(redis, cache_key, payload, ANALYTICS_CACHE_TTL_SECONDS)
+    return payload
 
 
 
@@ -319,52 +364,33 @@ async def export_all_reports_csv(
     CAP = 1000
 
     if not db:
-        items = _mem_reports_for_user(current_user["id"])
-        if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
-            items = [r for r in items if r["recommendation"] == recommendation]
-        if search:
-            s = search.strip().lower()
-            items = [
-                r for r in items
-                if s in (r.get("candidate_name") or "").lower()
-                or s in (r.get("file_name") or "").lower()
-                or s in r.get("_skills_text", "")
-            ]
-        for r in items:
-            r.pop("_skills_text", None)
-        items.sort(key=lambda r: (r.get(sort_col) or ""), reverse=sort_desc)
-        items = items[:CAP]
+        items = _filter_mem_reports(current_user["id"], recommendation, search, sort_col, sort_desc)[:CAP]
     else:
         try:
-            query = (
-                db.table("reports")
-                .select("id,file_name,candidate_name,overall_score,recommendation,created_at,recruiter_decision")
-                .eq("user_id", current_user["id"])
+            # Identical filtering and identical retry behaviour to
+            # list_reports, because it is literally the same code — see the
+            # note above _apply_report_filters for the bug that came from
+            # these being two copies.
+            items = _fetch_reports(
+                db, current_user["id"], recommendation, search, sort_col, sort_desc,
+                offset=0, limit=CAP,
             )
-            if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
-                query = query.eq("recommendation", recommendation)
-            if search:
-                s = _sanitize_search(search)
-                try:
-                    query = query.or_(
-                        f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%,report_data->skills->>all_claimed.ilike.%{s}%"
-                    )
-                except Exception:
-                    query = query.or_(f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%")
-            result = query.order(sort_col, desc=sort_desc).limit(CAP).execute()
-            items = result.data or []
         except Exception as e:
             logger.error(f"export_all_reports_csv failed for user {current_user['id']}: {e}")
-            items = []
+            raise HireLensException("Could not build the export. Please try again.")
 
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Candidate Name", "File Name", "Score", "Recommendation", "Recruiter Decision", "Created At", "Report ID"])
     for r in items:
-        writer.writerow([
+        # csv_safe_row: candidate_name comes from a stranger's resume and
+        # file_name is chosen by the uploader, so both can start with "=" and
+        # be evaluated as a formula when the recruiter opens this in Excel.
+        # See app/core/csv_safety.py.
+        writer.writerow(csv_safe_row([
             r.get("candidate_name") or "Unknown", r.get("file_name") or "", r.get("overall_score") or 0,
             r.get("recommendation") or "", r.get("recruiter_decision") or "", r.get("created_at") or "", r.get("id") or "",
-        ])
+        ]))
     buf.seek(0)
 
     return StreamingResponse(
@@ -581,7 +607,14 @@ async def notify_candidate(
         except Exception as e:
             logger.warning(f"Could not record notification timestamp for {report_id}: {e}")
 
-    logger.info(f"Notify | report={report_id} decision={body.decision} email_sent={sent} to={candidate_email}")
+    # The candidate's address is masked: they are not a user of this system,
+    # never consented to anything here, and a log line naming them is a
+    # durable record of "this person applied for a job" sitting outside the
+    # report they belong to. See app/core/redaction.py.
+    logger.info(
+        f"Notify | report={report_id} decision={body.decision} "
+        f"email_sent={sent} to={mask_email(candidate_email)}"
+    )
 
     return {
         "status": "sent" if sent else "queued_no_provider",

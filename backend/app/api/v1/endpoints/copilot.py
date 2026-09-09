@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import NotFoundError, HireLensException
+from app.core.exceptions import NotFoundError, PersistenceError
 from app.api.v1.endpoints.analysis import _jobs
 from app.services.teams.access import user_can_access_report
 
@@ -89,7 +89,23 @@ async def save_copilot_data(
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Save live interview scorecard ratings, custom questions, and notes."""
+    """
+    Save live interview scorecard ratings, custom questions, and notes.
+
+    This used to unconditionally write to the in-memory `_copilot_store`
+    keyed by the raw `report_id` string *before* any DB or ownership check
+    ran, and always returned `{"status": "ok"}` regardless of whether that
+    write actually reached anywhere real. Two consequences: (1) if Supabase
+    was configured but the update failed or matched no row (wrong id, or a
+    report owned by someone else), the recruiter was told "saved" when
+    nothing durable happened; (2) with no DB, ANY authenticated recruiter
+    could write co-pilot notes onto ANY report_id by guessing or
+    enumerating it — there was no ownership check on this path at all,
+    unlike the read side (get_copilot_data) which does check. Both are
+    fixed below: a write is only accepted once ownership is confirmed
+    (via DB or the in-memory job record), and `saved` accurately reflects
+    whether it reached a real store.
+    """
     payload = {
         "scorecard": [s.model_dump() for s in body.scorecard],
         "custom_questions": [q.model_dump() for q in body.custom_questions],
@@ -99,31 +115,69 @@ async def save_copilot_data(
         "updated_at": __import__("time").time(),
     }
 
-    _copilot_store[report_id] = payload
+    saved = False
+    found = False
 
     if db:
         try:
             res = (
                 db.table("reports")
-                .select("id,user_id,report_data")
+                .select("id,user_id,team_id,report_data")
                 .eq("id", report_id)
                 .maybe_single()
                 .execute()
             )
             if res and res.data:
+                found = True
                 if not user_can_access_report(db, res.data, current_user["id"]):
                     raise NotFoundError(f"Report '{report_id}' not found.")
 
                 report_data = dict(res.data.get("report_data") or {})
                 report_data["copilot_data"] = payload
 
-                db.table("reports").update({"report_data": report_data}).eq("id", report_id).execute()
+                upd = db.table("reports").update({"report_data": report_data}).eq("id", report_id).execute()
+                saved = bool(upd.data)
+        except NotFoundError:
+            raise
         except Exception as e:
             logger.warning(f"Co-pilot DB save failed for report {report_id}: {e}")
 
-    mem_report = _jobs.get(f"report_{report_id}")
-    if mem_report:
-        mem_report["copilot_data"] = payload
+    if not saved:
+        mem_report = _jobs.get(f"report_{report_id}")
+        if mem_report:
+            found = True
+            if mem_report.get("_owner_user_id") != current_user["id"]:
+                raise NotFoundError(f"Report '{report_id}' not found.")
+            mem_report["copilot_data"] = payload
+            _copilot_store[report_id] = payload
+            saved = True
+
+    if not saved and not found:
+        # The report doesn't resolve anywhere this recruiter can access —
+        # refuse rather than silently accepting notes into the void (and
+        # rather than letting anyone stash data under an arbitrary id).
+        raise NotFoundError(f"Report '{report_id}' not found.")
+
+    if not saved:
+        # `found` but not `saved`: the report row exists and this recruiter
+        # may access it, but the UPDATE came back empty (the row changed
+        # under us, a write policy rejected it, PostgREST returned no
+        # representation) and there was no in-memory job to fall back on.
+        #
+        # The previous version of this function fell straight through to the
+        # `{"status": "ok"}` below in exactly this case — which is the same
+        # "told the user it saved when nothing persisted" bug the docstring
+        # above describes fixing, still live on one branch. An interviewer
+        # who types up a full scorecard mid-interview and sees "Saved" must
+        # never lose it silently; failing loudly lets them retry or copy it
+        # out while it's still on screen.
+        logger.error(
+            f"Co-pilot save reached no durable store | report={report_id} "
+            f"user={current_user['id']} (row found but update persisted nothing)"
+        )
+        raise PersistenceError(
+            "Could not save the evaluation. Please retry — your notes are still on screen."
+        )
 
     logger.info(f"Co-pilot data saved | report={report_id} user={current_user['id']}")
     return {"status": "ok", "report_id": report_id, "copilot": payload}

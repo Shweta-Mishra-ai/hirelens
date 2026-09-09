@@ -15,7 +15,7 @@ import re
 import logging
 import httpx
 from app.core.config import settings
-from app.services.verify.ssrf_guard import is_public_http_url
+from app.services.verify.ssrf_guard import is_public_http_url, safe_fetch
 
 logger = logging.getLogger("hirelens")
 
@@ -55,10 +55,10 @@ async def _safe_head(client: httpx.AsyncClient, url: str) -> httpx.Response | No
     """
     current_url = url
     for _ in range(_MAX_REDIRECT_HOPS + 1):
-        if not is_public_http_url(current_url):
-            return None
         try:
-            r = await client.head(current_url, follow_redirects=False)
+            r = await safe_fetch(client, current_url, method="HEAD")
+        except ValueError:
+            return None
         except httpx.HTTPError:
             return None
         if r.is_redirect:

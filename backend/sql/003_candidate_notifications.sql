@@ -4,6 +4,21 @@
 -- This does NOT change how recruiter_decision is saved — recording a decision
 -- and notifying the candidate remain two independent actions.
 
+-- ── Precondition ──────────────────────────────────────────────────────────
+-- Stop with a readable message if 001_initial_schema.sql has not been run.
+-- Without this, running the migrations out of order fails somewhere in the
+-- middle with a bare `relation "public.reports" does not exist`, which does
+-- not say which file to run or that order matters at all — and by then some
+-- of the statements above may already have been applied.
+DO $$
+BEGIN
+  IF to_regclass('public.reports') IS NULL THEN
+    RAISE EXCEPTION
+      'public.reports does not exist. Run backend/sql/001_initial_schema.sql first, then 002, then 003.';
+  END IF;
+END
+$$;
+
 ALTER TABLE public.reports
   ADD COLUMN IF NOT EXISTS candidate_notified_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS candidate_notified_decision TEXT

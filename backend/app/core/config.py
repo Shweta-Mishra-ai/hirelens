@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import List
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
@@ -36,11 +35,69 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
 
+    # How long an access token stays valid. Default 7 days, unchanged from the
+    # value that was hardcoded before — a shorter window is safer (a leaked
+    # token works for less time) but forces more frequent logins, so it is a
+    # tradeoff to make deliberately rather than a constant to bury in code.
+    # Tokens can now be revoked before this elapses (logout, password reset)
+    # — see app/core/token_revocation.py.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7
+
+    # Safety valve against runaway signups, not a growth ceiling.
+    #
+    # This used to be a hardcoded 5000 baked into auth.py, repeated again in
+    # health.py's diagnostics — a magic number that could only be changed by
+    # editing code and redeploying, with a user-facing message that read
+    # "Registration capacity limit of 5,000 active recruiters reached." A
+    # specific, round, impressive-sounding number like that is what a demo
+    # bakes in to look like a growth metric; it is not a real infrastructure
+    # constraint, and a genuine launch that actually reached 5,000 real
+    # signups would have hit a hard wall for no operational reason.
+    #
+    # Now one setting, tunable from the hosting dashboard without a code
+    # change. The default is high enough to be a safety net against a
+    # scripted signup flood rather than something a real launch could ever
+    # organically reach — raise or lower it to match actual capacity
+    # planning (e.g. Supabase Auth plan limits), not to hit a nice number.
+    MAX_ACTIVE_RECRUITERS: int = 100_000
+
+    # Comma-separated emails allowed to reach the admin-only endpoints
+    # (/auth/stats, /health/diagnostics). Empty in production means nobody
+    # can — see require_admin() in app/core/dependencies.py for why that is
+    # the right default rather than "everyone".
+    ADMIN_EMAILS: str = ""
+
+    # Whether the session cookie must survive a cross-site request, i.e.
+    # whether the frontend and this API are on different registrable domains.
+    #
+    # None (default) = detect it from FRONTEND_URL vs BACKEND_URL, assuming
+    # cross-site when it can't be proven — see app/core/site.py. Set this
+    # explicitly only to override that detection:
+    #   true  -> always SameSite=None; Secure; Partitioned (cross-site)
+    #   false -> SameSite=Lax (same registrable domain; no third-party
+    #            cookie caveat, works in every browser)
+    #
+    # When the frontend and API move behind one domain (app.example.com +
+    # api.example.com), setting BACKEND_URL is enough — detection flips this
+    # on its own and no code changes.
+    SESSION_COOKIE_CROSS_SITE: bool | None = None
+
+    # Whether a reverse proxy sits in front of this app and can be trusted to
+    # append the real client IP to X-Forwarded-For. True for the default
+    # Render/Vercel deployment. Set false when the app is exposed directly —
+    # X-Forwarded-For is then pure client input and must be ignored. See
+    # get_client_ip() in app/core/rate_limit.py.
+    TRUST_PROXY_HEADERS: bool = True
+
     # Limits
     MAX_FILE_SIZE_MB: int = 10
     RATE_LIMIT_PER_MINUTE: int = 20
     NOTIFY_RATE_LIMIT_PER_MINUTE: int = 10  # candidate emails are an external cost — tighter limit than general API use
     ANALYSIS_TIMEOUT_SECONDS: int = 120
+    # Ceiling on document parsing specifically. ANALYSIS_TIMEOUT_SECONDS only
+    # ever covered the LLM call, so a document that made pdfminer or
+    # python-docx spin had no limit at all. See _run_analysis.
+    PARSE_TIMEOUT_SECONDS: int = 45
 
     # Email Service Settings (Resend & SMTP)
     RESEND_API_KEY: str = ""
@@ -91,6 +148,10 @@ class Settings(BaseSettings):
         
         # Single URL
         return [val] if val else ["http://localhost:3000"]
+
+    @property
+    def admin_emails_list(self) -> List[str]:
+        return [e.strip().lower() for e in self.ADMIN_EMAILS.split(",") if e.strip()]
 
     @property
     def is_production(self) -> bool:

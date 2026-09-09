@@ -3,6 +3,21 @@
 -- and a nullable team_id on reports so a report can be shared with a team
 -- without changing who owns it (recruiter who ran the analysis keeps ownership).
 
+-- ── Precondition ──────────────────────────────────────────────────────────
+-- Stop with a readable message if 001_initial_schema.sql has not been run.
+-- Without this, running the migrations out of order fails somewhere in the
+-- middle with a bare `relation "public.reports" does not exist`, which does
+-- not say which file to run or that order matters at all — and by then some
+-- of the statements above may already have been applied.
+DO $$
+BEGIN
+  IF to_regclass('public.reports') IS NULL THEN
+    RAISE EXCEPTION
+      'public.reports does not exist. Run backend/sql/001_initial_schema.sql first, then 002, then 003.';
+  END IF;
+END
+$$;
+
 CREATE TABLE IF NOT EXISTS public.teams (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,

@@ -3,12 +3,14 @@
 from contextlib import asynccontextmanager
 import asyncio, os, time, uuid, logging
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.readiness import config_warnings, DEFAULT_SECRET_KEY
 from app.core.exceptions import (
     HireLensException, RateLimitExceeded,
     FileTooLarge, UnsupportedFileType, AuthError,
@@ -17,9 +19,6 @@ from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match, v
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hirelens")
-
-
-DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production-min-32"
 
 
 # ── Self-ping keep-alive (prevents Render free tier sleep) ──────────────────
@@ -90,6 +89,26 @@ async def lifespan(app: FastAPI):
                 "environment. Set it to your real frontend domain(s) and redeploy."
             )
 
+    # ── Storage durability check ──────────────────────────────────────────
+    # Users/reports silently fall back to local SQLite / an in-memory dict
+    # when Supabase isn't configured (see get_db()). That fallback exists
+    # for zero-config local dev — it is NOT durable in production: on
+    # platforms like Render's free tier, the container filesystem and
+    # process memory are both wiped on every restart/redeploy/idle
+    # spin-down. Previously this only ever logged a quiet `warning` deep
+    # inside get_db(), which is easy to miss in a deploy log — accounts
+    # and reports would just quietly vanish with no loud signal anywhere.
+    # A `critical` line at boot makes this impossible to miss.
+    if settings.is_production and not (settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY):
+        logger.critical(
+            "STORAGE: SUPABASE_URL/SUPABASE_SERVICE_KEY are not set in production. "
+            "User accounts and reports will be stored in local SQLite / in-process "
+            "memory ONLY — both are wiped on every restart, redeploy, or (on "
+            "Render's free plan) idle spin-down. Users WILL lose logins and "
+            "dashboard data. Set both env vars in your hosting provider's dashboard "
+            "(not just render.yaml, which only declares them as sync:false)."
+        )
+
     # ── Worker/job-store consistency check ──────────────────────────────────
     # See the comment in Dockerfile above the uvicorn CMD for the full
     # explanation. This is a best-effort runtime check (uvicorn doesn't
@@ -110,6 +129,16 @@ async def lifespan(app: FastAPI):
             f"Set REDIS_URL, or set WEB_CONCURRENCY=1."
         )
 
+    # ── Production configuration readiness ──────────────────────────────────
+    # Everything above this point either refuses to boot or covers one
+    # specific setting. This is the consolidated sweep for the whole class of
+    # "process is healthy, product is broken" misconfigurations — CORS still
+    # on localhost, no LLM key, invite links pointing nowhere. See
+    # app/core/readiness.py. The same list is returned by GET /api/v1/health
+    # so it can be checked from outside the container.
+    for w in config_warnings():
+        logger.critical(f"CONFIG [{w['code']}]: {w['message']}")
+
     # Start keep-alive pinger in production
     _keep_alive_task = None
     if settings.is_production:
@@ -128,6 +157,14 @@ app = FastAPI(
     description="AI-powered recruiter decision intelligence. Gemini 2.5 Flash backend.",
     version="1.0.0",
     lifespan=lifespan,
+    # Swagger/ReDoc/the raw OpenAPI schema hand an attacker a complete map
+    # of every endpoint, parameter, and request/response shape for free —
+    # useful recon with no offsetting benefit to real users in production.
+    # Keep them on in dev (where they're genuinely useful) and off once
+    # deployed for real.
+    docs_url="/docs" if not settings.is_production else None,
+    redoc_url="/redoc" if not settings.is_production else None,
+    openapi_url="/openapi.json" if not settings.is_production else None,
 )
 
 # ── Middleware ────────────────────────────────────────────────────────────────
@@ -201,6 +238,41 @@ async def unsupported_type_handler(request: Request, exc: UnsupportedFileType):
     return JSONResponse(status_code=415, content={
         "error": "unsupported_file_type",
         "message": f"'{exc.file_type}' not supported. Upload PDF or DOCX.",
+    })
+
+@app.exception_handler(RequestValidationError)
+async def validation_handler(request: Request, exc: RequestValidationError):
+    """Return validation failures in the same shape as every other error.
+
+    FastAPI's default 422 body is `{"detail": [{"loc": [...], "msg": ...}]}`.
+    The frontend's API client reads `message` (and falls back to
+    "Server error 422"), so a user who typed a one-character name or a
+    too-short password saw a bare "Server error 422" with no hint at what to
+    fix — a dead end on the signup form, which is the very first screen
+    anyone touches.
+
+    The field name is included because "Password must be at least 8
+    characters" is only actionable if you know which box it refers to.
+    """
+    rid = getattr(request.state, "request_id", "?")
+    details = []
+    for err in exc.errors():
+        # loc is like ("body", "full_name") — drop the "body"/"query" prefix.
+        field = ".".join(str(p) for p in err.get("loc", []) if p not in ("body", "query", "path"))
+        msg = str(err.get("msg", "is invalid")).removeprefix("Value error, ")
+        details.append({"field": field, "message": msg})
+
+    if details:
+        first = details[0]
+        message = f"{first['field']}: {first['message']}" if first["field"] else first["message"]
+    else:
+        message = "Some of the submitted values are invalid."
+
+    return JSONResponse(status_code=422, content={
+        "error": "validation_error",
+        "message": message,
+        "details": details,
+        "request_id": rid,
     })
 
 @app.exception_handler(AuthError)

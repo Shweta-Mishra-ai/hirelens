@@ -6,7 +6,8 @@ Redis graceful degradation, auth header validation.
 import logging
 from fastapi import Depends, Header
 from app.core.security import decode_token
-from app.core.exceptions import AuthError
+from app.core.token_revocation import is_revoked
+from app.core.exceptions import AuthError, NotFoundError
 from app.core.config import settings
 
 logger = logging.getLogger("hirelens")
@@ -65,24 +66,45 @@ def get_redis():
 
 
 # ── Auth dependency ───────────────────────────────────────────────────────────
+def assert_not_revoked(payload: dict) -> None:
+    """Reject a token that has been signed out or invalidated.
+
+    A JWT is self-contained: a valid signature and an unexpired `exp` used to
+    be the whole check, so logging out did not actually end the session — the
+    token kept working until it expired. This is the step that makes logout
+    and password reset mean something. See app/core/token_revocation.py.
+    """
+    user_id = payload.get("sub") or payload.get("user_id")
+    revoked = is_revoked(
+        get_redis(),
+        payload.get("jti"),
+        str(user_id) if user_id else None,
+        payload.get("iat"),
+    )
+    if revoked:
+        raise AuthError("This session has been signed out. Please log in again.")
+
+
 async def get_current_user(authorization: str = Header(default="")) -> dict:
     """
     Validates Bearer JWT token from Authorization header.
-    Raises AuthError (401) if missing, invalid, or expired.
+    Raises AuthError (401) if missing, invalid, expired, or revoked.
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise AuthError("Authorization header missing or invalid. Format: 'Bearer <token>'")
-    
+
     token = authorization[7:].strip()  # Remove "Bearer " prefix
     if not token:
         raise AuthError("Token is empty.")
-    
+
     payload = decode_token(token)
-    
+
     user_id = payload.get("sub") or payload.get("user_id")
     if not user_id:
         raise AuthError("Token missing user ID.")
-    
+
+    assert_not_revoked(payload)
+
     email = payload.get("email", "")
     return {"id": str(user_id), "email": email}
 
@@ -93,3 +115,39 @@ async def get_optional_user(authorization: str = Header(default="")) -> dict | N
         return await get_current_user(authorization)
     except AuthError:
         return None
+
+
+# ── Admin gate ────────────────────────────────────────────────────────────────
+def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    """Restricts an endpoint to operators, not just "anyone who signed up".
+
+    Two endpoints are documented as being for administrators — /auth/stats
+    (total recruiter count and capacity) and /health/diagnostics (process
+    memory, live job counts, rate-limiter internals). Neither actually
+    checked anything beyond a valid token, and signup is open, so the real
+    audience was "any stranger who registers an account": a competitor could
+    read exact user numbers, and an attacker could watch internal counters
+    while probing.
+
+    There is no roles table in this app, so membership is an explicit
+    ADMIN_EMAILS allowlist rather than an invented permission model.
+
+    In production an empty allowlist means NOBODY passes. That is deliberate:
+    the failure mode of an unconfigured gate must be "locked", never "open to
+    everyone", which is exactly the bug being fixed. Local development stays
+    open so the diagnostics endpoint remains useful while working on it.
+
+    Answers 404, not 403 — a 403 would confirm the endpoint exists and is
+    merely gated, which is the same existence-oracle pattern closed
+    elsewhere in this codebase.
+    """
+    admins = settings.admin_emails_list
+    if not admins:
+        if settings.is_production:
+            raise NotFoundError("Not found.")
+        return current_user
+
+    email = str(current_user.get("email") or "").strip().lower()
+    if email not in admins:
+        raise NotFoundError("Not found.")
+    return current_user

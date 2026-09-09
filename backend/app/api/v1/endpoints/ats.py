@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import EmptyBatch, TooManyBatches, HireLensException, AllResumesUnreachable
-from app.api.v1.endpoints.analysis import _jobs, validate_upload, _check_rate_limit
+from app.api.v1.endpoints.analysis import _jobs, validate_upload, _check_rate_limit, read_upload_capped
 from app.api.v1.endpoints.bulk import _run_batch
 from app.services.parser.csv_import import parse_ats_csv
 from app.services.verify.ssrf_guard import is_public_http_url
@@ -126,7 +126,7 @@ async def ats_import(
     # as expensive as bulk upload and needs the same guard.
     _check_rate_limit(redis, user_id)
 
-    contents = await file.read()
+    contents = await read_upload_capped(file, settings.MAX_FILE_SIZE_MB * 1024 * 1024)
     if not contents:
         raise EmptyBatch()
 

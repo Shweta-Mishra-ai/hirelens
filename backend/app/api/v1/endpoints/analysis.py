@@ -10,13 +10,17 @@ Fixed:
 
 import uuid
 import time
+import asyncio
 import logging
 from typing import Annotated
 from fastapi import APIRouter, Depends, File, UploadFile, BackgroundTasks
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
-from app.core.exceptions import FileTooLarge, UnsupportedFileType, NotFoundError, ForbiddenError
+from app.core.cache import cache_delete
+from app.core.exceptions import (
+    FileTooLarge, UnsupportedFileType, NotFoundError, ParseError, HireLensException,
+)
 from app.services.parser.document_parser import extract_text, check_magic_bytes
 from app.services.parser.resume_heuristic import looks_like_resume
 from app.services.ai.engine import engine
@@ -67,6 +71,39 @@ def _check_rate_limit(redis, user_id: str) -> None:
     """
     from app.core.rate_limit import check_rate_limit
     check_rate_limit(redis, user_id, settings.RATE_LIMIT_PER_MINUTE, window_seconds=60)
+
+
+# Read uploads in chunks so an oversized body is refused DURING the read
+# rather than after it.
+_UPLOAD_CHUNK = 64 * 1024
+
+
+async def read_upload_capped(file, max_bytes: int) -> bytes:
+    """Read an UploadFile, aborting as soon as `max_bytes` is exceeded.
+
+    `await file.read()` pulls the WHOLE body into memory first and only then
+    hands it to validate_upload's size check — so the 10MB limit was enforced
+    after a 2GB upload had already been buffered. On a single-worker
+    free-tier container that is an out-of-memory kill, triggered by one
+    request, taking the API down for everyone.
+
+    The remote-download path in ats.py already streams with an abort (see
+    MAX_DOWNLOAD_MB there); this brings the local upload path in line with it
+    instead of trusting the client's file to be the size it claims.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            # Stop reading immediately — do not keep buffering something
+            # already known to be too big.
+            raise FileTooLarge(max(1, max_bytes // (1024 * 1024)))
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def validate_upload(contents: bytes, filename: str, mime: str) -> str:
@@ -131,8 +168,8 @@ async def upload_resume(
     # Rate limit check
     _check_rate_limit(redis, current_user["id"])
 
-    # Read file
-    contents = await file.read()
+    # Read file (capped mid-read — see read_upload_capped)
+    contents = await read_upload_capped(file, settings.MAX_FILE_SIZE_MB * 1024 * 1024)
     filename = (file.filename or "").strip()
     mime = (file.content_type or "").lower().strip()
 
@@ -180,10 +217,13 @@ async def get_status(
 ):
     """Poll analysis job status. Returns progress, stage, and report_id when complete."""
     job = _jobs.get(job_id)
-    if not job:
+    # One answer for "no such job" and "not your job". A 403 on the second
+    # case tells a caller that a job id they hold is real and belongs to
+    # somebody else — an existence oracle for a store that also holds report
+    # blobs under predictable `report_<id>` keys. Everywhere else in the app
+    # answers 404 for both; this was the exception.
+    if not job or job["user_id"] != current_user["id"]:
         raise NotFoundError(f"Job '{job_id}' not found. It may have expired (jobs kept 1 hour).")
-    if job["user_id"] != current_user["id"]:
-        raise ForbiddenError()
 
     # Return without internal fields
     return {
@@ -228,11 +268,45 @@ async def _run_analysis(
         upd(status="running", stage="parsing", progress=5)
 
         # ── Step 1: Parse document ────────────────────────────────────────────
+        # Off the event loop, with its own timeout.
+        #
+        # extract_text() is synchronous and CPU-bound (pdfminer layout
+        # analysis, python-docx XML walking). Calling it directly from this
+        # async task blocked the ENTIRE event loop for its duration, so one
+        # pathological document froze the whole API — every other recruiter's
+        # requests included — on a container that runs a single worker.
+        # ANALYSIS_TIMEOUT_SECONDS never covered this; it only wraps the LLM
+        # call inside engine.run().
+        #
+        # A timed-out thread cannot be killed in Python, so the worker thread
+        # may run on; what this guarantees is that the event loop is released
+        # and the job fails cleanly instead of hanging forever. The upload
+        # size cap and the DOCX zip-bomb guard bound how much work that
+        # orphaned thread can actually do.
         try:
-            raw_text = extract_text(file_bytes, mime_type, filename)
+            raw_text = await asyncio.wait_for(
+                asyncio.to_thread(extract_text, file_bytes, mime_type, filename),
+                timeout=settings.PARSE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"[{job_id}] Parse timed out after {settings.PARSE_TIMEOUT_SECONDS}s: {filename}")
+            upd(
+                status="failed",
+                stage="failed",
+                error="This file took too long to read. Try a smaller or simpler document.",
+            )
+            return
+        except (ParseError, UnsupportedFileType) as e:
+            # These carry messages written for users.
+            logger.info(f"[{job_id}] Parse rejected: {e.message}")
+            upd(status="failed", stage="failed", error=e.message)
+            return
         except Exception as e:
-            logger.error(f"[{job_id}] Parse failed: {e}")
-            upd(status="failed", stage="failed", error=f"Could not read file: {str(e)}")
+            # Anything else is a bug, not a user error. The exception text can
+            # carry library internals and paths, and this string is returned
+            # to the client through the job status.
+            logger.error(f"[{job_id}] Parse failed: {e}", exc_info=True)
+            upd(status="failed", stage="failed", error="Could not read this file.")
             return
 
         logger.info(f"[{job_id}] Parsed {len(raw_text)} chars from {filename}")
@@ -248,9 +322,16 @@ async def _run_analysis(
         # ── Step 2: AI analysis ───────────────────────────────────────────────
         try:
             result = await engine.run(raw_text=raw_text, on_progress=on_progress)
+        except HireLensException as e:
+            # LLMError, AnalysisTimeout and friends carry user-facing text.
+            logger.warning(f"[{job_id}] AI analysis failed: {e.message}")
+            upd(status="failed", stage="failed", error=e.message)
+            return
         except Exception as e:
+            # Raw provider errors can echo request details — including an
+            # Authorization header — and this message reaches the client.
             logger.error(f"[{job_id}] AI analysis failed: {e}", exc_info=True)
-            upd(status="failed", stage="failed", error=f"AI analysis failed: {str(e)}")
+            upd(status="failed", stage="failed", error="Analysis failed. Please try again.")
             return
 
         # ── Step 2b: Optional enrichment (e.g. JD match) ───────────────────────
@@ -296,6 +377,13 @@ async def _run_analysis(
             result["_owner_user_id"] = user_id
             result["_owner_file_name"] = filename
             _jobs[f"report_{report_id}"] = result
+
+        # A new report changes total/avg/distribution/skills — don't make
+        # the recruiter wait out the analytics cache's TTL to see it.
+        try:
+            cache_delete(get_redis(), f"analytics:{user_id}")
+        except Exception as e:
+            logger.warning(f"[{job_id}] analytics cache invalidation failed (non-fatal): {e}")
 
         upd(status="complete", stage="complete", progress=100, report_id=report_id)
         logger.info(

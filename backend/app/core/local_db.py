@@ -8,25 +8,66 @@ Ensures users, passwords, and reports persist across server restarts.
 import os
 import sqlite3
 import hashlib
-import json
 import uuid
 import logging
+import bcrypt
 from pathlib import Path
 from datetime import datetime, timezone
 
 logger = logging.getLogger("hirelens")
 
-# SQLite database file inside backend/data/
+# SQLite database file inside backend/data/.
+#
+# Overridable via HIRELENS_LOCAL_DB_PATH so the test suite can point at a
+# throwaway file. Without that override the suite wrote to the developer's
+# real backend/data/local.db and leaked state between runs: the accounts
+# created by the auth/e2e tests survived, so a *second* `pytest` on the same
+# machine failed on "email already registered" while a fresh CI runner passed.
+# Tests that only pass on a clean checkout hide real regressions behind noise.
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-DB_PATH = DATA_DIR / "local.db"
+DB_PATH = Path(os.environ.get("HIRELENS_LOCAL_DB_PATH") or (DATA_DIR / "local.db"))
 
 
 def _hash_pw(pw: str) -> str:
+    """
+    Hash a password with bcrypt (per-user random salt, deliberately slow —
+    ~250ms/attempt on typical hardware at cost factor 12).
+
+    This used to be `sha256(f"hirelens_salt_{pw}")` — a single hardcoded
+    salt shared across every user, using a hash designed to be FAST.
+    Both properties are the opposite of what password storage needs: a
+    fast general-purpose hash lets an attacker who obtains the database
+    try billions of guesses per second on commodity GPU hardware, and a
+    shared static salt means one precomputed rainbow table (built once
+    against "hirelens_salt_" + a common-password wordlist) cracks every
+    account that used one of those passwords, in every row, at once.
+    bcrypt fixes both: a fresh random salt per password, and a cost
+    factor that makes each guess deliberately expensive.
+
+    Note: passlib (also listed in requirements.txt) was never actually
+    wired up here, and its bcrypt backend is broken against modern
+    bcrypt>=4.0 (a known passlib/bcrypt compatibility issue — it raises
+    on hash() at import-detection time). Calling bcrypt directly avoids
+    that broken compatibility shim entirely.
+    """
+    return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+def _looks_like_legacy_sha256(hash_value: str) -> bool:
+    """The old scheme stored a 64-char hex sha256 digest; bcrypt hashes are
+    ~60 chars and start with $2a$/$2b$/$2y$ — trivially distinguishable."""
+    return len(hash_value) == 64 and not hash_value.startswith("$")
+
+
+def _legacy_sha256_hash(pw: str) -> str:
+    """Reproduces the old (insecure) hash, ONLY to verify — and then
+    immediately upgrade — any password hashed before this fix shipped.
+    Never used to create new hashes."""
     return hashlib.sha256(f"hirelens_salt_{pw}".encode()).hexdigest()
 
 
 def _get_connection():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
     conn.row_factory = sqlite3.Row
     return conn
@@ -114,8 +155,35 @@ def get_user_by_id(user_id: str) -> dict | None:
 
 def verify_user_password(email: str, password: str) -> dict | None:
     user = get_user_by_email(email)
-    if user and user["password_hash"] == _hash_pw(password):
+    if not user:
+        return None
+
+    stored_hash = user["password_hash"]
+
+    if _looks_like_legacy_sha256(stored_hash):
+        # Account predates this fix. Verify against the old scheme once,
+        # and if it matches, transparently re-hash with bcrypt and persist
+        # it — the user never notices, but their password is no longer
+        # sitting in the database under a crackable scheme after this
+        # single successful login.
+        if stored_hash != _legacy_sha256_hash(password):
+            return None
+        new_hash = _hash_pw(password)
+        try:
+            with _get_connection() as conn:
+                conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user["id"]))
+                conn.commit()
+            logger.info(f"Upgraded legacy password hash to bcrypt for user {user['id']}")
+        except Exception as e:
+            logger.warning(f"Could not upgrade legacy password hash for user {user['id']}: {e}")
         return user
+
+    try:
+        if bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8")):
+            return user
+    except ValueError as e:
+        # Malformed/corrupt stored hash — fail closed, not open.
+        logger.warning(f"Password hash verification error for user {user['id']}: {e}")
     return None
 
 

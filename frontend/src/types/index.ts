@@ -145,6 +145,23 @@ export interface Report {
 }
 
 
+// Lightweight row shape returned by GET /api/v1/reports (list_reports) and
+// the CSV/analytics endpoints — NOT the full Report detail shape above.
+// The dashboard's report list was previously (mis)typed as `Report[]`
+// without even importing `Report` — which meant it silently bound to the
+// unrelated global DOM `Report` type (part of the browser Reporting API)
+// instead, and only "worked" because every read was force-cast through
+// `any`. This type matches what list_reports actually returns.
+export interface ReportSummary {
+  id: string;
+  file_name: string;
+  candidate_name: string;
+  overall_score: number;
+  recommendation: Recommendation;
+  created_at: string;
+  recruiter_decision: Decision | null;
+}
+
 export interface AnalysisJob {
   id: string;
   status: JobStatus;
@@ -222,15 +239,6 @@ export interface User {
   company?: string;
 }
 
-export interface AuthState {
-  user: User | null;
-  token: string | null;
-  isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  signup: (email: string, password: string, fullName: string, company?: string) => Promise<void>;
-  logout: () => void;
-}
-
 // ── Public Data Verification (Feature 3) ────────────────────────────────────
 export type GithubVerifyStatus =
   | "verified" | "partial" | "no_public_activity" | "not_found"
@@ -284,6 +292,13 @@ export interface TeamMember {
   user_id: string;
   role: "owner" | "admin" | "member";
   joined_at: string;
+  // Resolved server-side from Supabase Auth (or the local user store) so the
+  // members list can show a person instead of a raw UUID. Nullable on
+  // purpose: an account the server can't resolve must still be listed, or you
+  // couldn't see — let alone remove — someone with access to your reports.
+  email?: string | null;
+  full_name?: string | null;
+  is_you?: boolean;
 }
 
 export interface ReportComment {
