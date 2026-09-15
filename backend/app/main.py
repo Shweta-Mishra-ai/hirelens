@@ -4,9 +4,11 @@ from contextlib import asynccontextmanager
 import asyncio, os, time, uuid, logging
 
 from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
 from app.core.exceptions import (
@@ -173,11 +175,129 @@ async def request_middleware(request: Request, call_next):
         })
 
 # ── Exception Handlers ────────────────────────────────────────────────────────
+def _request_id(request: Request) -> str:
+    """The per-request trace id, or a placeholder if the middleware never ran."""
+    return getattr(request.state, "request_id", "unknown")
+
+
+# Field names as a person would say them, for validation messages. Anything
+# not listed falls back to the raw field with underscores replaced.
+_FIELD_LABELS = {
+    "email": "Email",
+    "password": "Password",
+    "full_name": "Full name",
+    "company": "Company",
+    "name": "Name",
+    "file": "File",
+    "files": "Files",
+    "jd_text": "Job description",
+    "comment": "Comment",
+    "vote": "Vote",
+    "decision": "Decision",
+}
+
+
+def _humanize_validation_errors(errors: list) -> str:
+    """
+    Flatten Pydantic's error list into one sentence a user can act on.
+
+    FastAPI's default 422 body is `{"detail": [{"loc": [...], "msg": ...}]}`,
+    which is not the `{error, message, request_id}` envelope every other
+    response uses and every client here expects. Clients were left either
+    showing "Server error 422" or reaching into `detail` themselves.
+    """
+    parts: list[str] = []
+    for err in errors[:5]:
+        if not isinstance(err, dict):
+            continue
+        msg = str(err.get("msg") or "").strip()
+        if not msg:
+            continue
+        # Pydantic prefixes custom validator messages with "Value error, ".
+        if msg.lower().startswith("value error,"):
+            msg = msg.split(",", 1)[1].strip()
+        if msg == "Field required":
+            msg = "is required"
+
+        loc = [str(x) for x in (err.get("loc") or []) if x not in ("body", "query", "path")]
+        field = loc[-1] if loc else ""
+        if field and not field.isdigit():
+            label = _FIELD_LABELS.get(field, field.replace("_", " ").capitalize())
+            parts.append(f"{label} {msg}" if msg.startswith("is ") else f"{label}: {msg}")
+        else:
+            parts.append(msg)
+
+    if not parts:
+        return "Some of the submitted values were not valid."
+    joined = ". ".join(p.rstrip(".") for p in parts)
+    return f"{joined}."
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_handler(request: Request, exc: RequestValidationError):
+    """
+    Return request-validation failures in the standard envelope.
+
+    `details` is preserved for programmatic clients that want per-field
+    information, but `message` is always present and always readable.
+    """
+    errors = exc.errors()
+    logger.info(f"Validation failed on {request.method} {request.url.path}: {errors[:3]}")
+    return JSONResponse(status_code=422, content={
+        "error": "validation_error",
+        "message": _humanize_validation_errors(errors),
+        "request_id": _request_id(request),
+        "details": [
+            {
+                "field": ".".join(
+                    str(x) for x in (e.get("loc") or []) if x not in ("body", "query", "path")
+                ),
+                "message": str(e.get("msg") or ""),
+            }
+            for e in errors[:10]
+            if isinstance(e, dict)
+        ],
+    })
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """
+    Envelope for everything Starlette raises directly — chiefly 404 for an
+    unknown route and 405 for a wrong method, which previously returned
+    `{"detail": "Not Found"}`.
+    """
+    codes = {
+        400: "bad_request",
+        401: "unauthorized",
+        403: "forbidden",
+        404: "not_found",
+        405: "method_not_allowed",
+        413: "payload_too_large",
+        415: "unsupported_media_type",
+        429: "rate_limit_exceeded",
+    }
+    messages = {
+        404: "That endpoint does not exist. Check the URL and the API version prefix.",
+        405: f"{request.method} is not allowed on this endpoint.",
+        413: "That request body is too large.",
+    }
+    detail = exc.detail if isinstance(exc.detail, str) else None
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": codes.get(exc.status_code, "http_error"),
+            "message": messages.get(exc.status_code) or detail or "That request could not be completed.",
+            "request_id": _request_id(request),
+        },
+        headers=getattr(exc, "headers", None) or None,
+    )
+
+
 @app.exception_handler(HireLensException)
 async def hirelens_handler(request: Request, exc: HireLensException):
-    rid = getattr(request.state, "request_id", "?")
     return JSONResponse(status_code=exc.http_status, content={
-        "error": exc.code, "message": exc.message, "request_id": rid,
+        "error": exc.code, "message": exc.message, "request_id": _request_id(request),
     })
 
 @app.exception_handler(RateLimitExceeded)
@@ -186,6 +306,7 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
         "error": "rate_limit_exceeded",
         "message": f"Too many requests. Retry after {exc.retry_after}s.",
         "retry_after": exc.retry_after,
+        "request_id": _request_id(request),
     }, headers={"Retry-After": str(exc.retry_after)})
 
 @app.exception_handler(FileTooLarge)
@@ -194,6 +315,7 @@ async def file_too_large_handler(request: Request, exc: FileTooLarge):
         "error": "file_too_large",
         "message": f"File exceeds {exc.max_mb}MB limit.",
         "max_mb": exc.max_mb,
+        "request_id": _request_id(request),
     })
 
 @app.exception_handler(UnsupportedFileType)
@@ -201,12 +323,15 @@ async def unsupported_type_handler(request: Request, exc: UnsupportedFileType):
     return JSONResponse(status_code=415, content={
         "error": "unsupported_file_type",
         "message": f"'{exc.file_type}' not supported. Upload PDF or DOCX.",
+        "request_id": _request_id(request),
     })
 
 @app.exception_handler(AuthError)
 async def auth_handler(request: Request, exc: AuthError):
     return JSONResponse(status_code=401, content={
-        "error": "unauthorized", "message": exc.message,
+        "error": "unauthorized",
+        "message": exc.message,
+        "request_id": _request_id(request),
     }, headers={"WWW-Authenticate": "Bearer"})
 
 # ── Routes ────────────────────────────────────────────────────────────────────

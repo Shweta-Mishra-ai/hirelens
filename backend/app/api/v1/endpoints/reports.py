@@ -17,6 +17,7 @@ from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import NotFoundError, ForbiddenError, HireLensException, ValidationError
 from app.core.rate_limit import check_rate_limit
 from app.core.config import settings
+from app.core import local_db
 from app.api.v1.endpoints.analysis import _jobs  # in-memory fallback store
 from app.services.teams.access import user_can_access_report
 
@@ -68,6 +69,42 @@ SORT_MAP = {
 }
 
 
+def _local_reports_for_user(user_id: str) -> list[dict]:
+    """
+    Every report we can see for this user without Supabase: the durable
+    SQLite rows, plus anything this process analysed that has not been
+    persisted (a storage failure, or a report written by an older build).
+
+    SQLite is the primary source here — `_jobs` is a process-local dict that
+    empties on restart, so relying on it alone is what made reports vanish
+    after a Render sleep.
+    """
+    by_id: dict[str, dict] = {}
+
+    for row in local_db.list_reports(user_id):
+        by_id[row["id"]] = {
+            "id": row["id"],
+            "file_name": row.get("file_name") or "",
+            "candidate_name": row.get("candidate_name") or "Unknown",
+            "overall_score": row.get("overall_score") or 0,
+            "recommendation": row.get("recommendation") or "manual_review",
+            "created_at": row.get("created_at") or "",
+            "recruiter_decision": row.get("recruiter_decision"),
+            # Skill text is only used for search; the summary row doesn't
+            # carry it, so in-memory entries below can enrich it.
+            "_skills_text": "",
+        }
+
+    for mem in _mem_reports_for_user(user_id):
+        existing = by_id.get(mem["id"])
+        if existing is None:
+            by_id[mem["id"]] = mem
+        elif mem.get("_skills_text"):
+            existing["_skills_text"] = mem["_skills_text"]
+
+    return list(by_id.values())
+
+
 def _mem_reports_for_user(user_id: str) -> list[dict]:
     out = []
     for key, v in _jobs.items():
@@ -116,7 +153,7 @@ async def list_reports(
     sort_col, sort_desc = SORT_MAP.get(sort, SORT_MAP["newest"])
 
     if not db:
-        items = _mem_reports_for_user(current_user["id"])
+        items = _local_reports_for_user(current_user["id"])
         if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
             items = [r for r in items if r["recommendation"] == recommendation]
         if search:
@@ -253,7 +290,7 @@ async def get_talent_analytics(
 
     if not items:
         # Fallback to in-memory items for user
-        items = _mem_reports_for_user(current_user["id"])
+        items = _local_reports_for_user(current_user["id"])
 
     total = len(items)
     if total == 0:
@@ -322,7 +359,7 @@ async def export_all_reports_csv(
     CAP = 1000
 
     if not db:
-        items = _mem_reports_for_user(current_user["id"])
+        items = _local_reports_for_user(current_user["id"])
         if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
             items = [r for r in items if r["recommendation"] == recommendation]
         if search:
@@ -425,6 +462,16 @@ async def get_report(
             raise ForbiddenError()
         return data
 
+    # ── Fallback: durable local store ─────────────────────────────────────────
+    # Reached after a restart, when the in-memory copy is gone. Ownership is
+    # part of the query, so a wrong owner and a missing row are
+    # indistinguishable from here.
+    persisted = local_db.get_report(report_id, current_user["id"])
+    if persisted:
+        # Warm this process's cache so repeat reads skip the disk.
+        _jobs[f"report_{report_id}"] = persisted
+        return persisted
+
     raise NotFoundError(f"Report '{report_id}' not found.")
 
 
@@ -475,8 +522,12 @@ async def submit_decision(
 
     if not saved:
         # Either there's no DB configured, or the DB update matched zero
-        # rows. Fall back to (or additionally use) the in-memory store,
-        # but only if this user actually owns the report there.
+        # rows. Write to the durable local store first — the in-memory copy
+        # below is only a cache for this process, and a decision that exists
+        # solely there is lost on the next restart.
+        if local_db.set_report_decision(report_id, current_user["id"], body.decision):
+            saved = True
+
         mem_key = f"report_{report_id}"
         existing = _jobs.get(mem_key)
         if existing is not None and existing.get("_owner_user_id") == current_user["id"]:
@@ -493,7 +544,9 @@ async def submit_decision(
     return {
         "status": "ok",
         "decision": body.decision,
-        "message": "Decision recorded. This helps improve AI accuracy.",
+        # No claim about model improvement here: recruiter decisions are
+        # stored against the report and are not used for training.
+        "message": "Decision recorded on this candidate's file.",
     }
 
 
@@ -635,5 +688,9 @@ async def delete_report(
         if existing.get("_owner_user_id") != current_user["id"]:
             raise ForbiddenError()
         _jobs.pop(mem_key, None)
+
+    # And from the durable local store, or the report would reappear on the
+    # next restart when the in-memory cache is repopulated from disk.
+    local_db.delete_report(report_id, current_user["id"])
 
     logger.info(f"Report deleted | id={report_id} user={current_user['id']}")

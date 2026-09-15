@@ -207,3 +207,160 @@ def count_users() -> int:
 
 # Ensure database is initialized upon import
 init_local_db()
+
+
+# ── Reports ───────────────────────────────────────────────────────────────────
+#
+# The `reports` table has existed since the first version of this module but
+# had no read or write functions, so nothing ever used it. Without Supabase,
+# analysed reports lived only in `analysis._jobs` — a process-local dict. On
+# Render's free tier the container sleeps after ~15 minutes idle and restarts
+# on the next request, and every redeploy restarts it too, so a recruiter
+# could analyse fifty candidates in the morning and find an empty dashboard
+# after lunch, with no error and nothing to recover.
+#
+# These functions make the SQLite fallback an actual store. It is still a
+# single-node fallback — Supabase remains the right answer for multi-instance
+# deployments — but it means "no database configured" degrades to "slower and
+# single-node" instead of "silently loses your work".
+
+
+def save_report(
+    report_id: str,
+    user_id: str,
+    file_name: str,
+    candidate_name: str,
+    overall_score: int,
+    recommendation: str,
+    report_data: dict,
+    created_at: str | None = None,
+) -> bool:
+    """
+    Persist (or replace) a report. Returns True on success.
+
+    Never raises: a storage failure must not lose the in-memory copy the
+    caller is still holding, and the caller has no better recovery than to
+    carry on and log.
+    """
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO reports
+                    (id, user_id, file_name, candidate_name, overall_score,
+                     recommendation, recruiter_decision, report_data, created_at)
+                VALUES (?, ?, ?, ?, ?, ?,
+                        COALESCE((SELECT recruiter_decision FROM reports WHERE id = ?), NULL),
+                        ?, ?)
+                """,
+                (
+                    report_id,
+                    user_id,
+                    file_name or "",
+                    candidate_name or "Unknown",
+                    int(overall_score or 0),
+                    recommendation or "manual_review",
+                    report_id,  # preserve any decision already recorded
+                    json.dumps(report_data, default=str),
+                    created_at or datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Could not persist report {report_id}: {e}")
+        return False
+
+
+def get_report(report_id: str, user_id: str) -> dict | None:
+    """
+    Load one report, scoped to its owner.
+
+    `user_id` is part of the query rather than checked afterwards so that a
+    wrong owner and a missing row are indistinguishable to the caller — there
+    is no way to use this to probe which report ids exist.
+    """
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM reports WHERE id = ? AND user_id = ?", (report_id, user_id)
+            ).fetchone()
+        if not row:
+            return None
+
+        record = dict(row)
+        try:
+            data = json.loads(record.get("report_data") or "{}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Report {report_id} has unreadable report_data: {e}")
+            return None
+
+        data["id"] = record["id"]
+        data["file_name"] = record.get("file_name") or data.get("file_name") or ""
+        data["created_at"] = record.get("created_at") or ""
+        data["recruiter_decision"] = record.get("recruiter_decision")
+        data["_owner_user_id"] = record["user_id"]
+        return data
+    except Exception as e:
+        logger.error(f"Could not load report {report_id}: {e}")
+        return None
+
+
+def list_reports(user_id: str) -> list[dict]:
+    """Summary rows for one user's reports, newest first."""
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, file_name, candidate_name, overall_score,
+                       recommendation, recruiter_decision, created_at
+                FROM reports WHERE user_id = ?
+                ORDER BY created_at DESC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Could not list reports for {user_id}: {e}")
+        return []
+
+
+def set_report_decision(report_id: str, user_id: str, decision: str | None) -> bool:
+    try:
+        with _get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE reports SET recruiter_decision = ? WHERE id = ? AND user_id = ?",
+                (decision, report_id, user_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Could not record decision on {report_id}: {e}")
+        return False
+
+
+def delete_report(report_id: str, user_id: str) -> bool:
+    try:
+        with _get_connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM reports WHERE id = ? AND user_id = ?", (report_id, user_id)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Could not delete report {report_id}: {e}")
+        return False
+
+
+def count_reports(user_id: str | None = None) -> int:
+    try:
+        with _get_connection() as conn:
+            if user_id:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS c FROM reports WHERE user_id = ?", (user_id,)
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) AS c FROM reports").fetchone()
+        return row["c"] if row else 0
+    except Exception:
+        return 0

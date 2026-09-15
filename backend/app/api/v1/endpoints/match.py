@@ -97,6 +97,10 @@ async def match_upload(
     require_analysis_available()
     _check_rate_limit(redis, user_id)
 
+    # See bulk.py for why the cap is enforced during the read rather than
+    # after it: checking the total once every file is already buffered means
+    # the process can be OOM-killed before it gets to reject anything.
+    max_total_bytes = settings.BULK_MAX_TOTAL_MB * 1024 * 1024
     valid_items: list[dict] = []
     job_ids: list[str] = []
     total_bytes = 0
@@ -105,9 +109,23 @@ async def match_upload(
         contents = await f.read()
         filename = (f.filename or "resume").strip()
         mime = (f.content_type or "").lower().strip()
+        total_bytes += len(contents)
+
+        if total_bytes > max_total_bytes:
+            for item in valid_items:
+                item["bytes"] = b""
+            valid_items.clear()
+            del contents
+            for jid in job_ids:
+                _jobs.pop(jid, None)
+            logger.warning(
+                f"JD match batch rejected mid-read | user={user_id} "
+                f"at={total_bytes / (1024 * 1024):.0f}MB cap={settings.BULK_MAX_TOTAL_MB}MB"
+            )
+            raise FileTooLarge(settings.BULK_MAX_TOTAL_MB)
+
         job_id = str(uuid.uuid4())
         job_ids.append(job_id)
-        total_bytes += len(contents)
 
         try:
             effective_mime = validate_upload(contents, filename, mime)
@@ -134,10 +152,6 @@ async def match_upload(
         })
 
     total_mb = total_bytes / (1024 * 1024)
-    if total_mb > settings.BULK_MAX_TOTAL_MB:
-        for jid in job_ids:
-            _jobs.pop(jid, None)
-        raise FileTooLarge(settings.BULK_MAX_TOTAL_MB)
 
     if not valid_items:
         raise EmptyBatch()

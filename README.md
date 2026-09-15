@@ -94,10 +94,26 @@ HireLens is hardened for production launch supporting **5,000 active recruiters/
 
 ## Load Handling, Error Handling & Validation
 
+### Data Durability
+
+Supabase is the primary store. When it is unconfigured or unreachable, reports, decisions and accounts fall back to a local SQLite database (`backend/data/local.db`) rather than process memory — so they survive a process restart or crash instead of vanishing with the worker. (Previously the `reports` table existed but nothing read or wrote it; analysed reports lived only in a process-local dict.)
+
+Surviving a process restart is not the same as surviving the container being replaced, which depends on where that file lives:
+
+That fallback is **single-node**. It has no replication and is not shared between instances.
+
+> **Before launching on Render, read this.** The container filesystem is ephemeral, and persistent disks are not available on the free plan. On free, the SQLite file is discarded on every deploy *and* every wake from idle sleep. Choose one:
+>
+> - **Configure Supabase** (`SUPABASE_URL` + `SUPABASE_SERVICE_KEY`). This is the intended production path — it survives instance replacement and is the only option that works with more than one instance.
+> - **Move to a paid plan and attach a disk** at `/app/data` (see the commented block in `render.yaml`). Still single-instance.
+>
+> Running free + no Supabase is fine for a demo, but candidate data will not survive.
+
 ### Load Handling
 - **Redis Rate Limiting**: Per-IP limits on auth endpoints (login: 10/15min, signup: 8/hr) + per-user limits on analysis endpoints.
 - **Concurrency Control**: Bulk & JD match uploads use `asyncio.Semaphore(BULK_CONCURRENCY)` to prevent event-loop starvation and stay within LLM rate limits.
-- **File Size Ceiling**: Max file size capped at 10MB (`MAX_FILE_SIZE_MB`).
+- **File Size Ceiling**: 10MB per file (`MAX_FILE_SIZE_MB`), 150MB per batch (`BULK_MAX_TOTAL_MB`). The batch cap is enforced **as the bytes are read**, plus an early `Content-Length` rejection — not after every file is buffered, which would let a 50 x 10MB batch reach ~500MB resident on a 512MB instance before the limit was evaluated.
+- **Single worker without Redis**: the job store falls back to a process-local dict, so `--workers` must stay at 1 unless `REDIS_URL` is set. The Dockerfile documents this and startup warns when `WEB_CONCURRENCY` contradicts it.
 
 ### Authentication
 
@@ -115,7 +131,8 @@ HireLens is hardened for production launch supporting **5,000 active recruiters/
 Uploads are refused with `503 analysis_unavailable` when no AI provider is configured, rather than queued and failed later. `GET /api/v1/health` reports `llm_ready` and `google_auth_ready`, and the Analyze page reads them so a recruiter sees the problem before choosing a file.
 
 ### Error Handling
-- All endpoints return structured JSON payloads with tracking `x-request-id` headers on every response:
+Every response — including 404s for unknown routes, 405s, and 422 request-validation failures — uses the same envelope and carries a trace id. FastAPI's raw `{"detail": [...]}` shape never reaches a client; validation failures are flattened into a readable `message` with a structured `details` array alongside it for programmatic consumers.
+
 ```json
 {
   "error": "capacity_limit_exceeded",
@@ -221,7 +238,7 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/v1/auth/signup` | POST | Signup recruiter account (409 if the email exists; 429 at capacity) |
+| `/api/v1/auth/signup` | POST | Signup recruiter account (409 if the email exists; 429 at the 5,000-**user** capacity) |
 | `/api/v1/auth/login` | POST | Login recruiter account |
 | `/api/v1/analysis/upload` | POST | Single resume upload |
 | `/api/v1/analysis/{job_id}/status` | GET | Poll analysis status |

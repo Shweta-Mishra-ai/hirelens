@@ -6,6 +6,32 @@ services:
     dockerContext: .
     plan: free
     healthCheckPath: /api/v1/health
+    #
+    # DURABILITY — read before launching.
+    #
+    # The local SQLite fallback (accounts + reports when Supabase is
+    # unconfigured) writes to /app/data. Render's container filesystem is
+    # ephemeral, so on this plan that file is lost whenever the container is
+    # replaced — which on the free plan happens on every deploy AND every
+    # wake from idle sleep.
+    #
+    # Pick one before taking real users:
+    #
+    #   A. Configure Supabase (SUPABASE_URL + SUPABASE_SERVICE_KEY below).
+    #      This is the right answer: it is the primary store, it survives
+    #      instance replacement, and it is the only option that works with
+    #      more than one instance.
+    #
+    #   B. Move to a paid plan and attach a disk, by changing `plan: free`
+    #      to `plan: starter` and uncommenting the block below. Persistent
+    #      disks are NOT available on the free plan — adding this block
+    #      while `plan: free` is set makes the deploy fail. A disk is also
+    #      bound to a single instance, so this does not scale horizontally.
+    #
+    # disk:
+    #   name: hirelens-data
+    #   mountPath: /app/data
+    #   sizeGB: 1
     envVars:
       - key: APP_ENV
         value: production
@@ -33,3 +59,15 @@ services:
         value: "20"
       - key: ANALYSIS_TIMEOUT_SECONDS
         value: "120"
+      # Optional. Raises the GitHub verification rate limit from 60/hr per
+      # server IP to 5000/hr. A fine-grained token with read-only access to
+      # public repositories and no account permissions is sufficient; a
+      # classic token with no scopes selected works too.
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Must stay at 1 unless REDIS_URL is set — see the Dockerfile CMD
+      # comment and job_store.py for why.
+      - key: WEB_CONCURRENCY
+        value: "1"

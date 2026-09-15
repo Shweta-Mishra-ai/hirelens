@@ -84,19 +84,43 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
     check_rate_limit(redis, f"signup:{get_client_ip(request)}", SIGNUP_LIMIT_PER_HOUR, window_seconds=3600)
     email_str = str(body.email).lower().strip()
 
-    # ── Capacity check: max 5,000 active recruiters ─────────────────────
+    # ── Capacity check: max 5,000 registered recruiters ─────────────────
+    #
+    # This used to count ROWS IN THE REPORTS TABLE — one row per resume
+    # analysed, not per user. Five recruiters who had each analysed a
+    # thousand candidates would therefore lock the product to every new
+    # signup, while five thousand recruiters who had analysed nothing would
+    # pass. Count distinct users instead, which is what the limit is about.
+    #
+    # A failure to evaluate capacity must not block signup: the check is a
+    # commercial guardrail, not a security control, and an outage in the
+    # count should not take registration down with it.
     if db:
         try:
-            res = db.table("reports").select("user_id", count="exact").execute()
-            total_count = res.count if res.count is not None else 0
-            if total_count >= MAX_RECRUITERS_CAPACITY:
+            res = db.auth.admin.list_users()
+            user_count = len(res) if isinstance(res, list) else len(getattr(res, "users", []) or [])
+            if user_count >= MAX_RECRUITERS_CAPACITY:
                 raise CapacityLimitExceeded()
         except CapacityLimitExceeded:
             raise
         except Exception as e:
-            logger.warning(f"Capacity check query error during signup: {e}")
+            # Supabase deployments without admin API access land here. Fall
+            # back to the profile table if one exists, then give up quietly.
+            logger.warning(f"Capacity check via admin API failed, trying profiles: {e}")
+            try:
+                res = db.table("profiles").select("id", count="exact").execute()
+                if (res.count or 0) >= MAX_RECRUITERS_CAPACITY:
+                    raise CapacityLimitExceeded()
+            except CapacityLimitExceeded:
+                raise
+            except Exception as e2:
+                logger.warning(f"Capacity check unavailable, allowing signup: {e2}")
     else:
-        if len(_mem_users) >= MAX_RECRUITERS_CAPACITY:
+        # Local store: count persisted users, not just the ones this process
+        # happens to have in memory. `_mem_users` is cleared on every restart,
+        # so counting it alone made the limit reset itself.
+        local_count = local_db.count_users()
+        if max(local_count, len(_mem_users)) >= MAX_RECRUITERS_CAPACITY:
             raise CapacityLimitExceeded()
 
     if db:

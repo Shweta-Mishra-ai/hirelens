@@ -28,6 +28,7 @@ from app.services.parser.document_parser import extract_text, check_magic_bytes
 from app.services.parser.resume_heuristic import looks_like_resume
 from app.services.ai.engine import engine
 from app.services.queue.job_store import PersistentJobStore
+from app.core import local_db
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
@@ -248,6 +249,38 @@ def _stamp_report_metadata(result: dict, *, user_id: str, filename: str, report_
     result["created_at"] = now
     return result
 
+def _persist_report_locally(result: dict, *, report_id: str, user_id: str, filename: str) -> None:
+    """
+    Write the report to the local SQLite store.
+
+    This is what makes a report survive a restart. Before it existed, a
+    deployment without Supabase kept reports only in `_jobs`, a process-local
+    dict — so every Render free-tier sleep, redeploy or crash silently
+    discarded everything the recruiter had analysed.
+
+    Failure here is logged and swallowed: the in-memory copy is still good
+    for this process, and a storage problem should not turn a completed
+    analysis into a failed job.
+    """
+    credibility = result.get("credibility") or {}
+    candidate = result.get("candidate") or {}
+    saved = local_db.save_report(
+        report_id=report_id,
+        user_id=user_id,
+        file_name=filename,
+        candidate_name=candidate.get("name") or "Unknown",
+        overall_score=int(credibility.get("overall") or 0),
+        recommendation=credibility.get("recommendation") or "manual_review",
+        report_data=result,
+        created_at=result.get("created_at"),
+    )
+    if not saved:
+        logger.warning(
+            f"Report {report_id} could not be persisted locally — it will be lost "
+            f"when this process restarts."
+        )
+
+
 def _parse_failure_message(filename: str, error: Exception) -> str:
     """
     Turn a parser exception into something a recruiter can act on.
@@ -409,11 +442,14 @@ async def _run_analysis(
                 # read/list/delete any in-memory report). See reports.py's
                 # _mem_reports_for_user() and get_report() for the read side.
                 _stamp_report_metadata(result, user_id=user_id, filename=filename, report_id=report_id)
+                _persist_report_locally(result, report_id=report_id, user_id=user_id, filename=filename)
                 _jobs[f"report_{report_id}"] = result
         else:
-            # No DB configured — store in memory
-            logger.info(f"[{job_id}] No DB — storing report {report_id} in memory")
+            # No DB configured — persist to the local store, and keep a copy
+            # in memory as a read-through cache for this process.
+            logger.info(f"[{job_id}] No Supabase — storing report {report_id} locally")
             _stamp_report_metadata(result, user_id=user_id, filename=filename, report_id=report_id)
+            _persist_report_locally(result, report_id=report_id, user_id=user_id, filename=filename)
             _jobs[f"report_{report_id}"] = result
 
         upd(status="complete", stage="complete", progress=100, report_id=report_id)

@@ -20,7 +20,7 @@ import csv
 import uuid
 import asyncio
 import logging
-from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File
+from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File, Request
 from pydantic import BaseModel, Field
 from typing import Literal
 from fastapi.responses import StreamingResponse
@@ -44,6 +44,7 @@ _bulk_semaphore = asyncio.Semaphore(settings.BULK_CONCURRENCY)
 
 @router.post("/upload", status_code=202)
 async def bulk_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(..., description=f"Up to {settings.BULK_MAX_FILES} PDF/DOCX files"),
     current_user: dict = Depends(get_current_user),
@@ -73,7 +74,29 @@ async def bulk_upload(
     require_analysis_available()
     _check_rate_limit(redis, user_id)
 
+    # ── Reject an oversized batch before reading anything ─────────────────
+    # Content-Length is advisory (a client can lie, and it includes multipart
+    # framing overhead), so it is a cheap early-out, not the real guard. The
+    # running total inside the read loop below is what actually enforces the
+    # cap.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit():
+        declared_mb = int(declared) / (1024 * 1024)
+        if declared_mb > settings.BULK_MAX_TOTAL_MB * 1.1:  # allow for framing
+            logger.warning(
+                f"Batch rejected on Content-Length | user={user_id} declared={declared_mb:.0f}MB"
+            )
+            raise FileTooLarge(settings.BULK_MAX_TOTAL_MB)
+
     # ── Read + validate every file up front ───────────────────────────────
+    #
+    # The cumulative size is checked as each file is read, and the loop stops
+    # the moment the cap is passed. The previous version read every file
+    # fully into memory and only then compared the total against
+    # BULK_MAX_TOTAL_MB — so 50 files x 10MB reached ~500MB resident on a
+    # 512MB instance before the 150MB limit was ever evaluated, and the
+    # process was OOM-killed before it could reject anything.
+    max_total_bytes = settings.BULK_MAX_TOTAL_MB * 1024 * 1024
     valid_items: list[dict] = []
     job_ids: list[str] = []
     total_bytes = 0
@@ -82,9 +105,25 @@ async def bulk_upload(
         contents = await f.read()
         filename = (f.filename or "resume").strip()
         mime = (f.content_type or "").lower().strip()
+        total_bytes += len(contents)
+
+        if total_bytes > max_total_bytes:
+            # Drop everything already buffered before raising, so the bytes
+            # are reclaimable while the error response is being built.
+            for item in valid_items:
+                item["bytes"] = b""
+            valid_items.clear()
+            del contents
+            for jid in job_ids:
+                _jobs.pop(jid, None)
+            logger.warning(
+                f"Batch rejected mid-read | user={user_id} "
+                f"at={total_bytes / (1024 * 1024):.0f}MB cap={settings.BULK_MAX_TOTAL_MB}MB"
+            )
+            raise FileTooLarge(settings.BULK_MAX_TOTAL_MB)
+
         job_id = str(uuid.uuid4())
         job_ids.append(job_id)
-        total_bytes += len(contents)
 
         try:
             effective_mime = validate_upload(contents, filename, mime)
@@ -111,11 +150,6 @@ async def bulk_upload(
         })
 
     total_mb = total_bytes / (1024 * 1024)
-    if total_mb > settings.BULK_MAX_TOTAL_MB:
-        # Roll back the jobs we just created — reject the whole batch.
-        for jid in job_ids:
-            _jobs.pop(jid, None)
-        raise FileTooLarge(settings.BULK_MAX_TOTAL_MB)
 
     if not valid_items:
         raise EmptyBatch()
