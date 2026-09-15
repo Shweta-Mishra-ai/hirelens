@@ -6,11 +6,11 @@
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Next.js](https://img.shields.io/badge/Next.js-14.2-000?style=flat-square&logo=next.js)](https://nextjs.org)
-[![Tests](https://img.shields.io/badge/backend%20tests-336%20passing-10B981?style=flat-square)](backend/tests)
+[![Tests](https://img.shields.io/badge/tests-419%20backend%20%C2%B7%2055%20frontend-10B981?style=flat-square)](backend/tests)
 [![Capacity](https://img.shields.io/badge/Capacity-5%2C000%20Recruiters-6366F1?style=flat-square)](#capacity--scale-hardening-5000-active-users)
 
 
-**Upload a resume → get a 6-dimension credibility score, AI-content detection, risk flags anchored to exact text, predictive talent velocity, and real-time public-data verification — built for production scale.**
+**Upload a resume → get a 6-dimension credibility score, AI-content detection, risk flags anchored to the exact sentence that raised them, career-trajectory metrics derived from real employment dates, and live public-data verification.**
 
 </div>
 
@@ -41,10 +41,16 @@ Bulk upload auto-ranks candidates by score with CSV export.
 - Record structured interviewer ratings across **Technical Depth**, **Problem Solving**, **Culture Fit**, and **Authenticity**.
 - Store live evaluation notes and recommendation overrides via `POST /api/v1/reports/{report_id}/copilot`.
 
-### 3. Predictive Talent Velocity & Career Growth Index *(Feature B)*
-- Projects 5–10 year candidate career growth trajectory.
-- Calculates **Promotion Cadence** (months/promotion), **Growth Velocity Index** (0–100), and **Retention Stability Score**.
-- Embedded directly into the Candidate Intelligence Report (`report["talent_velocity"]`).
+### 3. Career Trajectory Metrics
+Descriptive statistics derived from the employment **dates and job titles** actually extracted from the resume — never from role or skill counts:
+- **Total experience** as a union of role spans, so concurrent roles are not double-counted.
+- **Median tenure** across completed roles (the current role is censored, since it is still accruing).
+- **Title advancements**, counted where a role's seniority ranks above the previous one, and the measured months per advancement.
+- **Employment gaps** not covered by any dated role.
+
+When a resume does not carry at least two roles with parseable dates, this returns `{"status": "insufficient_data"}` with the reason, and the UI says so rather than showing a number. Exposed as `report["career_trajectory"]`.
+
+> This replaced an earlier "Predictive Talent Velocity" score that was computed as `60 + roles*5 + skills*2` clamped to 98 — it read no dates, no tenures and no titles, so nearly every resume with a normal skills section scored 98/100 "Accelerating". These are observations about the dates on the page, not predictions.
 
 ### 4. Enterprise Talent Analytics & Workforce Intelligence (`/dashboard` / `GET /api/v1/reports/analytics`) *(Feature C)*
 - Aggregate metrics analyzing overall candidate pool health.
@@ -80,7 +86,7 @@ HireLens is hardened for production launch supporting **5,000 active recruiters/
 2. **Database Connection Pooling**:
    - `get_db()` in `dependencies.py` reuses a thread-safe singleton Supabase client (`_supabase_client`), eliminating socket churn under high traffic.
 3. **Dual-Layer Authentication Resilience**:
-   - Uses Supabase Auth when configured, and falls back to a secure local in-memory store (`_mem_users`) for standalone/dev environments without throwing database errors.
+   - Uses Supabase Auth when configured, and falls back to a local bcrypt-backed SQLite store for standalone/dev environments without throwing database errors. The SQLite path is a single-node development fallback, not a replacement for the primary database.
 4. **Auto-Redirection**:
    - Authenticated users on `/login` and `/signup` automatically redirect to `/dashboard`.
 
@@ -92,6 +98,12 @@ HireLens is hardened for production launch supporting **5,000 active recruiters/
 - **Redis Rate Limiting**: Per-IP limits on auth endpoints (login: 10/15min, signup: 8/hr) + per-user limits on analysis endpoints.
 - **Concurrency Control**: Bulk & JD match uploads use `asyncio.Semaphore(BULK_CONCURRENCY)` to prevent event-loop starvation and stay within LLM rate limits.
 - **File Size Ceiling**: Max file size capped at 10MB (`MAX_FILE_SIZE_MB`).
+
+### Authentication
+
+- **Password hashing**: bcrypt (cost 12) via `app/core/security.py`, with long passphrases pre-hashed so bcrypt's 72-byte truncation cannot accept a prefix. Legacy hashes still verify and are upgraded in place on next login.
+- **No seeded accounts**: the local store creates no default user. Every account comes from `/api/v1/auth/signup`.
+- **OAuth**: `/api/v1/auth/oauth-verify` issues a session only when Supabase positively verifies the supplied token. If Supabase is unconfigured or the lookup fails, the request is rejected — there is no fallback identity.
 
 ### Input & Security Validation
 - **MIME & Magic Byte Verification**: `validate_upload()` checks PDF/DOCX magic bytes to reject executable/malicious uploads.
@@ -114,13 +126,13 @@ HireLens is hardened for production launch supporting **5,000 active recruiters/
 
 | Layer | Technology |
 |---|---|
-| AI Engine | **Gemini 2.5 Flash** (primary) → **Groq `openai/gpt-oss-120b`** (fallback) → Claude Sonnet 5 (optional 3rd fallback) |
+| AI Engine | **Gemini 2.5 Flash** (primary) → **Groq `llama-3.3-70b-versatile`** (fallback) → **Claude 3.5 Sonnet** (optional 3rd fallback) |
 | Backend | **FastAPI** 0.110 · Python 3.12 / 3.14 · pdfminer.six · python-docx |
 | Frontend | **Next.js 14.2** (App Router) · TypeScript · Tailwind CSS |
 | Auth & DB | **Supabase** (PostgreSQL + Auth) + Local Fallback Auth Store |
 | Cache & Queue | **Upstash Redis** — rate limiting + bulk-batch state |
 | Deploy | **Vercel** (frontend) · **Render** (backend) |
-| Testing & CI | **pytest** (336 passing tests) + **TypeScript type-check** + GitHub Actions CI |
+| Testing & CI | **pytest** (419 tests) · **Vitest** + Testing Library (55 tests) · TypeScript type-check · GitHub Actions CI |
 
 ---
 
@@ -153,15 +165,18 @@ npm run dev
 
 ## Testing
 
-Run the automated test suite (336 passing unit, integration, capacity limit, load handling, and E2E tests):
+Run the automated test suites:
 
 ```bash
 # Backend Test Suite
 cd backend
 python -m pytest tests/ -v
 
-# Frontend Type Check
+# Frontend Unit Tests
 cd frontend
+npm test
+
+# Frontend Type Check
 npm run type-check
 
 # Frontend Production Build
@@ -202,7 +217,7 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/api/v1/auth/signup` | POST | Signup recruiter account (Capacity: 5,000) |
+| `/api/v1/auth/signup` | POST | Signup recruiter account (409 if the email exists; 429 at capacity) |
 | `/api/v1/auth/login` | POST | Login recruiter account |
 | `/api/v1/analysis/upload` | POST | Single resume upload |
 | `/api/v1/analysis/{job_id}/status` | GET | Poll analysis status |
@@ -233,6 +248,6 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 - [x] 5,000 active user capacity enforcement
 - [x] Supabase connection pooling & fallback auth resilience
 - [x] Interactive Candidate Interview Co-Pilot & Custom Probe Generator
-- [x] Predictive Talent Velocity & Career Growth Index
+- [x] Career trajectory metrics derived from real employment dates
 - [x] Enterprise Talent Analytics & Workforce Intelligence
 - [x] Complete End-to-End Test Suite (`test_e2e_complete_flow.py`)

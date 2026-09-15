@@ -98,12 +98,18 @@ def test_e2e_single_resume_analysis_and_report_flow(mock_parser, mock_analysis, 
         "recommendation": "recommended",
         "credibility_score": {"score": 88, "confidence": "high", "sub_scores": {}},
         "ai_content_analysis": {"likelihood": "low"},
-        "talent_velocity": {
-            "growth_velocity_index": 85,
-            "trajectory_stage": "Accelerating",
-            "promotion_cadence_months": 18,
-            "retention_stability_score": 90,
-            "note": "Accelerating trajectory",
+        "career_trajectory": {
+            "status": "computed",
+            "total_experience_months": 84,
+            "median_tenure_months": 31,
+            "roles_analyzed": 3,
+            "advancement_steps": 2,
+            "months_per_advancement": 42,
+            "gap_months": 0,
+            "retention_stability": 100,
+            "progression_score": 71,
+            "trajectory": "Steady advancement",
+            "basis": "Measured from 3 dated role(s) spanning 7.0 years.",
         },
         "flags": [],
         "positive_signals": [{"title": "FastAPI Master", "description": "Proven experience"}],
@@ -143,12 +149,18 @@ def test_e2e_single_resume_analysis_and_report_flow(mock_parser, mock_analysis, 
         "candidate_email": "jane@example.com",
         "overall_score": 88,
         "recommendation": "recommended",
-        "talent_velocity": {
-            "growth_velocity_index": 85,
-            "trajectory_stage": "Accelerating",
-            "promotion_cadence_months": 18,
-            "retention_stability_score": 90,
-            "note": "Accelerating trajectory",
+        "career_trajectory": {
+            "status": "computed",
+            "total_experience_months": 84,
+            "median_tenure_months": 31,
+            "roles_analyzed": 3,
+            "advancement_steps": 2,
+            "months_per_advancement": 42,
+            "gap_months": 0,
+            "retention_stability": 100,
+            "progression_score": 71,
+            "trajectory": "Steady advancement",
+            "basis": "Measured from 3 dated role(s) spanning 7.0 years.",
         },
         "flags": [],
         "positive_signals": [{"title": "FastAPI Master", "description": "Proven experience"}],
@@ -160,7 +172,7 @@ def test_e2e_single_resume_analysis_and_report_flow(mock_parser, mock_analysis, 
     assert report_res.status_code == 200
     report = report_res.json()
     assert report["candidate_name"] == "Jane Doe"
-    assert "talent_velocity" in report
+    assert "career_trajectory" in report
 
     # 4. Submit Recruiter Decision
     decision_res = client.post(

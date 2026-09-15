@@ -11,6 +11,7 @@ Fixed:
 import uuid
 import time
 import logging
+from datetime import datetime, timezone
 from typing import Annotated
 from fastapi import APIRouter, Depends, File, UploadFile, BackgroundTasks
 
@@ -197,6 +198,33 @@ async def get_status(
     }
 
 
+def _stamp_report_metadata(result: dict, *, user_id: str, filename: str, report_id: str) -> dict:
+    """
+    Attach the ownership and display metadata that the Supabase `reports` row
+    would otherwise carry, so the in-memory path is not a second-class
+    citizen.
+
+    Two fields here were previously missing or misnamed, and both were
+    visible to users:
+
+    * `file_name` — the writer stamped `_owner_file_name`, but every reader
+      (reports.py's list, CSV export and search) looked for `file_name`. The
+      dashboard therefore showed a blank filename for every report whenever
+      the DB path wasn't taken, and searching by filename never matched.
+    * `created_at` — nothing set it at all. The list endpoint emitted `""`,
+      and the dashboard rendered that as "NaNd ago".
+
+    `_owner_file_name` is still written for backwards compatibility with
+    report blobs persisted by an earlier version.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    result["id"] = report_id
+    result["_owner_user_id"] = user_id
+    result["_owner_file_name"] = filename
+    result["file_name"] = filename
+    result["created_at"] = now
+    return result
+
 # ── Background Analysis Task ──────────────────────────────────────────────────
 
 async def _run_analysis(
@@ -287,14 +315,12 @@ async def _run_analysis(
                 # was a real access-control gap (any authenticated user could
                 # read/list/delete any in-memory report). See reports.py's
                 # _mem_reports_for_user() and get_report() for the read side.
-                result["_owner_user_id"] = user_id
-                result["_owner_file_name"] = filename
+                _stamp_report_metadata(result, user_id=user_id, filename=filename, report_id=report_id)
                 _jobs[f"report_{report_id}"] = result
         else:
             # No DB configured — store in memory
             logger.info(f"[{job_id}] No DB — storing report {report_id} in memory")
-            result["_owner_user_id"] = user_id
-            result["_owner_file_name"] = filename
+            _stamp_report_metadata(result, user_id=user_id, filename=filename, report_id=report_id)
             _jobs[f"report_{report_id}"] = result
 
         upd(status="complete", stage="complete", progress=100, report_id=report_id)

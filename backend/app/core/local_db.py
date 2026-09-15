@@ -1,33 +1,57 @@
 """
 HireLens — Persistent Local SQLite Database
-Used as a resilient, zero-config local storage for user accounts and reports
-when Supabase is not configured or during local development.
-Ensures users, passwords, and reports persist across server restarts.
+
+Zero-config local storage for user accounts when Supabase is not configured.
+This is a development and single-node fallback, not a substitute for the
+primary database: it has no replication and no connection pooling.
+
+Two things changed here from the original implementation:
+
+1. Passwords are hashed with bcrypt via ``app.core.security`` instead of an
+   unsalted SHA-256 with a hardcoded constant. See that module for why the
+   old scheme was not a password hash. Existing rows still verify, and are
+   upgraded in place the next time their owner logs in.
+
+2. The database path is resolved at call time from ``HIRELENS_LOCAL_DB_PATH``
+   rather than being frozen into a module constant at import. Tests point it
+   at a temp directory; without that, every test run mutated (and was
+   affected by) a real file in the working tree, so the suite only passed on
+   a clean checkout.
 """
 
 import os
 import sqlite3
-import hashlib
 import json
 import uuid
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
 
+from app.core.security import hash_password, verify_password, needs_rehash
+
 logger = logging.getLogger("hirelens")
 
-# SQLite database file inside backend/data/
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
-DB_PATH = DATA_DIR / "local.db"
+_DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "local.db"
+
+# Kept as module attributes because existing callers and tests import them.
+DATA_DIR = _DEFAULT_DB_PATH.parent
+DB_PATH = _DEFAULT_DB_PATH
 
 
-def _hash_pw(pw: str) -> str:
-    return hashlib.sha256(f"hirelens_salt_{pw}".encode()).hexdigest()
+def _db_path() -> Path:
+    """
+    Resolve the SQLite file location. ``HIRELENS_LOCAL_DB_PATH`` wins so a
+    test session (or a container with a mounted volume) can redirect it
+    without touching the repository working tree.
+    """
+    override = os.environ.get("HIRELENS_LOCAL_DB_PATH")
+    return Path(override) if override else _DEFAULT_DB_PATH
 
 
 def _get_connection():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=10.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -62,26 +86,22 @@ def init_local_db():
                 )
             """)
 
-            # Seed default demo recruiter
-            demo_email = "demo@hirelens.ai"
-            cursor.execute("SELECT id FROM users WHERE email = ?", (demo_email,))
-            if not cursor.fetchone():
-                now = datetime.now(timezone.utc).isoformat()
-                cursor.execute("""
-                    INSERT INTO users (id, email, password_hash, full_name, company, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    str(uuid.uuid4()),
-                    demo_email,
-                    _hash_pw("Password123!"),
-                    "Demo Recruiter",
-                    "HireLens HQ",
-                    now,
-                ))
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reports_user_id ON reports(user_id)"
+            )
             conn.commit()
-            logger.info("Local SQLite database initialized and demo account ready.")
+            logger.info("Local SQLite database initialized at %s", _db_path())
     except Exception as e:
         logger.error(f"Failed to initialize local SQLite database: {e}")
+
+
+# NOTE: this used to seed a `demo@hirelens.ai` account with the fixed
+# password "Password123!" on every startup. That account was created in any
+# deployment where Supabase was unconfigured or unreachable — including
+# production, where the Supabase fallback is exactly the path a misconfigured
+# or degraded deploy takes. A publicly-known credential that grants access to
+# candidate reports is a backdoor regardless of intent, so the seeding is
+# gone. Create accounts through /api/v1/auth/signup.
 
 
 def get_user_by_email(email: str) -> dict | None:
@@ -112,11 +132,39 @@ def get_user_by_id(user_id: str) -> dict | None:
         return None
 
 
+def update_password_hash(user_id: str, new_hash: str) -> None:
+    """Replace a stored hash in place — used to upgrade legacy hashes."""
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?", (new_hash, user_id)
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Could not upgrade password hash for {user_id}: {e}")
+
+
 def verify_user_password(email: str, password: str) -> dict | None:
+    """
+    Verify a login. Returns the user row on success, None otherwise.
+
+    When the stored hash uses a superseded scheme and the password is
+    correct, it is re-hashed with the current one before returning — so
+    legacy rows drain away as users log in, without a migration window.
+    """
     user = get_user_by_email(email)
-    if user and user["password_hash"] == _hash_pw(password):
-        return user
-    return None
+    if not user:
+        return None
+
+    stored = user.get("password_hash") or ""
+    if not verify_password(password, stored):
+        return None
+
+    if needs_rehash(stored):
+        logger.info("Upgrading stored password hash for user %s", user["id"])
+        update_password_hash(user["id"], hash_password(password))
+
+    return user
 
 
 def create_user(email: str, password: str, full_name: str, company: str = "") -> dict:
@@ -131,7 +179,7 @@ def create_user(email: str, password: str, full_name: str, company: str = "") ->
         """, (
             uid,
             email_clean,
-            _hash_pw(password),
+            hash_password(password),
             full_name.strip(),
             company.strip() if company else "",
             now,

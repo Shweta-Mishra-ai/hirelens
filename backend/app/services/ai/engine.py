@@ -18,6 +18,7 @@ import logging
 from app.core.config import settings
 from app.core.exceptions import LLMError, AnalysisTimeout
 from app.services.fraud.injection_detection import scan_for_injection
+from app.services.ai.career_trajectory import compute_career_trajectory
 
 logger = logging.getLogger("hirelens")
 
@@ -688,19 +689,14 @@ class AnalysisEngine:
             "recruiter_decision":   None,
         }
 
-        # ── Feature B: Predictive Talent Velocity & Career Growth Index ─────────
-        exp_list = list(extracted.get("experience") or [])
-        num_roles = len(exp_list)
-        total_skills = len(list(skills_raw.get("all_claimed") or []))
-        velocity_score = max(50, min(98, 60 + (num_roles * 5) + (total_skills * 2)))
-
-        report["talent_velocity"] = {
-            "growth_velocity_index": velocity_score,
-            "trajectory_stage": "Accelerating" if velocity_score >= 78 else "Steady Growth",
-            "promotion_cadence_months": round(36 / max(num_roles, 1)),
-            "retention_stability_score": max(60, min(95, 100 - (num_roles * 4))),
-            "note": "Predictive career growth index computed from skill acquisition rate and role trajectory.",
-        }
+        # ── Career trajectory ──────────────────────────────────────────────────
+        # Derived from the dates and titles actually extracted above. See
+        # career_trajectory.py for why the previous implementation (a
+        # function of role count and skill count that saturated at 98 for
+        # nearly every resume) was removed rather than tuned.
+        report["career_trajectory"] = compute_career_trajectory(
+            list(extracted.get("experience") or [])
+        )
 
 
         # Output sanity-check against the injection heuristic scan.

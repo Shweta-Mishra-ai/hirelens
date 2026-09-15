@@ -88,6 +88,9 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      - name: Unit tests
+        run: npm test
+
       - name: Build (lint runs as part of next build)
         run: npm run build
         env:

@@ -6,7 +6,22 @@
  * - Timeout handling
  * - 204 No Content handled correctly
  */
-import type { Report, AnalysisJob, User, BulkUploadResponse, BatchStatus, MatchBatchStatus, VerificationResult, DuplicateCheckResult, Team, TeamMember, ReportComment, VotesResult } from "@/types";
+import type {
+  Report,
+  ReportListResponse,
+  PoolAnalytics,
+  AnalysisJob,
+  User,
+  BulkUploadResponse,
+  BatchStatus,
+  MatchBatchStatus,
+  VerificationResult,
+  DuplicateCheckResult,
+  Team,
+  TeamMember,
+  ReportComment,
+  VotesResult,
+} from "@/types";
 
 const BASE =
   (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -84,16 +99,87 @@ async function req<T>(
   }
 
   if (!res.ok) {
-    const b = typeof body === "object" && body !== null ? (body as Record<string, string>) : {};
-    throw new APIError(
-      res.status,
-      b["error"] ?? "http_error",
-      b["message"] ?? `Server error ${res.status}`,
-      b["request_id"],
-    );
+    throw toAPIError(res.status, body);
   }
 
   return body as T;
+}
+
+/**
+ * FastAPI request-validation failures (422) do not use the app's
+ * `{error, message}` envelope. They return `{detail: [{loc, msg, type}, …]}`,
+ * which the previous implementation had no branch for — so `b["message"]`
+ * was undefined and every validation failure surfaced to the user as the
+ * literal string "Server error 422". Signing up with an address the server
+ * rejected produced that instead of "Enter a valid email address", with no
+ * indication of which field was at fault.
+ */
+export function toAPIError(status: number, body: unknown): APIError {
+  const b = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+
+  // The app's own error envelope, raised by HireLensException handlers.
+  if (typeof b["message"] === "string") {
+    return new APIError(
+      status,
+      typeof b["error"] === "string" ? b["error"] : "http_error",
+      b["message"],
+      typeof b["request_id"] === "string" ? b["request_id"] : undefined,
+    );
+  }
+
+  const detail = b["detail"];
+
+  // FastAPI/Pydantic validation error list.
+  if (Array.isArray(detail) && detail.length > 0) {
+    const messages = detail
+      .map((d) => {
+        if (typeof d === "string") return d;
+        if (typeof d !== "object" || d === null) return null;
+        const item = d as { loc?: unknown[]; msg?: unknown };
+        const msg = typeof item.msg === "string" ? item.msg : null;
+        if (!msg) return null;
+        // `loc` is like ["body", "email"] — the last segment is the field.
+        const field = Array.isArray(item.loc)
+          ? item.loc.filter((x) => typeof x === "string" && x !== "body").pop()
+          : undefined;
+        const clean = msg.replace(/^Value error,\s*/i, "");
+        return field ? `${humanizeField(String(field))}: ${clean}` : clean;
+      })
+      .filter((m): m is string => Boolean(m));
+
+    if (messages.length > 0) {
+      return new APIError(status, "validation_error", messages.join(" "), undefined);
+    }
+  }
+
+  // A plain string detail (FastAPI's HTTPException default).
+  if (typeof detail === "string" && detail.trim()) {
+    return new APIError(status, "http_error", detail, undefined);
+  }
+
+  return new APIError(status, "http_error", genericMessage(status), undefined);
+}
+
+function humanizeField(field: string): string {
+  const words = field.replace(/_/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * Last-resort copy. "Server error 500" tells a recruiter nothing they can
+ * act on, so each status maps to a sentence that says what to do next.
+ */
+function genericMessage(status: number): string {
+  if (status === 401) return "Your session has expired. Please sign in again.";
+  if (status === 403) return "You do not have access to this.";
+  if (status === 404) return "That could not be found. It may have been deleted.";
+  if (status === 409) return "That already exists.";
+  if (status === 413) return "That file is too large.";
+  if (status === 415) return "That file type is not supported. Upload a PDF or DOCX.";
+  if (status === 429) return "Too many requests. Wait a moment and try again.";
+  if (status === 503) return "The service is temporarily unavailable. Try again shortly.";
+  if (status >= 500) return "Something went wrong on our end. Please try again.";
+  return "That request could not be completed.";
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -331,10 +417,10 @@ export const reportsAPI = {
     if (params?.recommendation) qs.set("recommendation", params.recommendation);
     if (params?.search) qs.set("search", params.search);
     if (params?.sort) qs.set("sort", params.sort);
-    return req<{ reports: Report[]; total: number; pages: number }>(
-      `/api/v1/reports?${qs.toString()}`,
-      { token },
-    );
+    // ReportSummary, not Report: the list endpoint returns a flat row, not
+    // the full nested report. Typing it as Report[] here is what let the
+    // dashboard bind to the DOM `Report` global and cast everything away.
+    return req<ReportListResponse>(`/api/v1/reports?${qs.toString()}`, { token });
   },
 
   downloadAllCsv: async (
@@ -398,13 +484,7 @@ export const reportsAPI = {
     ),
 
   analytics: (token: string) =>
-    req<{
-      total_candidates: number;
-      avg_credibility_score: number;
-      distribution: { recommended: number; manual_review: number; high_risk: number };
-      top_skills: { skill: string; count: number }[];
-      risk_categories: Record<string, number>;
-    }>("/api/v1/reports/analytics", { token }),
+    req<PoolAnalytics>("/api/v1/reports/analytics", { token }),
 };
 
 // ── Interview Co-Pilot (Feature A) ──────────────────────────────────────────

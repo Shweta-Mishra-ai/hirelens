@@ -113,13 +113,40 @@ export interface InterviewQuestion {
   category?: "technical" | "clarification" | "behavioral";
 }
 
-export interface TalentVelocity {
-  growth_velocity_index: number;
-  trajectory_stage: string;
-  promotion_cadence_months: number;
-  retention_stability_score: number;
-  note: string;
-}
+/**
+ * Career trajectory metrics, derived from the employment dates and titles
+ * extracted from the resume.
+ *
+ * This replaces the previous `TalentVelocity` shape, whose values were a
+ * function of role count and skill-list length rather than of the candidate's
+ * career (see backend `career_trajectory.py`). The discriminated union is
+ * deliberate: when a resume does not carry enough parseable dates, the
+ * backend says so rather than returning a number, and the UI is forced by the
+ * type system to handle that case instead of rendering a fabricated score.
+ */
+export type CareerTrajectory =
+  | {
+      status: "insufficient_data";
+      roles_analyzed: number;
+      reason: string;
+    }
+  | {
+      status: "computed";
+      /** Union of role spans — concurrent roles are not double-counted. */
+      total_experience_months: number;
+      /** Median tenure over completed roles; the current role is censored. */
+      median_tenure_months: number;
+      roles_analyzed: number;
+      advancement_steps: number;
+      /** Null when no upward title change was observable. */
+      months_per_advancement: number | null;
+      gap_months: number;
+      retention_stability: number;
+      progression_score: number;
+      trajectory: string;
+      /** Plain-language note on exactly what was measured. */
+      basis: string;
+    };
 
 export interface Report {
   id?: string;
@@ -134,7 +161,7 @@ export interface Report {
   certifications?: string[];
   credibility: Credibility;
   ai_content_analysis?: AIContentAnalysis;
-  talent_velocity?: TalentVelocity;
+  career_trajectory?: CareerTrajectory;
   timeline_gaps: TimelineGap[];
   flags: Flag[];
   positive_signals: PositiveSignal[];
@@ -144,6 +171,45 @@ export interface Report {
   recruiter_decision: Decision | null;
 }
 
+/**
+ * A row from `GET /api/v1/reports`. This is NOT the same shape as `Report` —
+ * the list endpoint returns a flat summary, not the full nested report.
+ *
+ * The dashboard previously typed its state as `Report[]` without importing
+ * `Report` at all. `Report` is also a DOM lib global (the Reporting API), so
+ * TypeScript resolved it to that interface and reported no error, while every
+ * field access had to be cast through `as any`. Having a real type for the
+ * row is what makes those casts unnecessary.
+ */
+export interface ReportSummary {
+  id: string;
+  file_name: string;
+  candidate_name: string;
+  overall_score: number;
+  recommendation: Recommendation;
+  /** ISO 8601. Empty string from older in-memory reports — treat as unknown. */
+  created_at: string;
+  recruiter_decision: Decision | null;
+}
+
+export interface ReportListResponse {
+  reports: ReportSummary[];
+  total: number;
+  page: number;
+  pages: number;
+}
+
+export interface PoolAnalytics {
+  total_candidates: number;
+  avg_credibility_score: number;
+  distribution: {
+    recommended: number;
+    manual_review: number;
+    high_risk: number;
+  };
+  top_skills: { skill: string; count: number }[];
+  risk_categories: Record<string, number>;
+}
 
 export interface AnalysisJob {
   id: string;

@@ -2,138 +2,118 @@
 @tailwind components;
 @tailwind utilities;
 
+/**
+ * Colour values here are mirrors of tailwind.config.js, exposed as CSS
+ * variables for the few places that need a raw value (inline SVG fills,
+ * gradient stops, canvas). Tailwind's theme is the source of truth — if a
+ * value changes there, change it here too. Do not add a colour that exists
+ * in only one of the two files.
+ */
 :root {
-  /* ── Slate Obsidian Design System ─────────────────────────────────────────
-     Deep slate-navy canvas (#0B0F17, #0F172A) with translucent glass panels (#1E293B)
-     and electric indigo/violet & vibrant emerald/amber/rose status accents. */
-  --bg-slate:       #0B0F17;
-  --bg-canvas:      #0F172A;
-  --bg-panel:       #1E293B;
-  --bg-panel-hover: #334155;
-  --border-slate:   rgba(255, 255, 255, 0.08);
-  --border-indigo:  rgba(99, 102, 241, 0.35);
+  --canvas: #0a0c10;
+  --canvas-raised: #10131a;
+  --canvas-overlay: #161a23;
+  --canvas-inset: #070910;
 
-  --accent-indigo:  #6366F1;
-  --accent-violet:  #8B5CF6;
-  --accent-blue:    #3B82F6;
-  --accent-emerald: #10B981;
-  --accent-amber:   #F59E0B;
-  --accent-rose:    #EF4444;
+  --line: #1e2430;
+  --line-strong: #2a3242;
+  --line-subtle: #161b24;
 
-  --text-primary:   #F8FAFC;
-  --text-secondary: #94A3B8;
-  --text-muted:     #64748B;
+  --content: #e8ebf0;
+  --content-muted: #98a1b2;
+  --content-faint: #646e80;
 
-  /* Legacy aliases for backward compatibility */
-  --ink:        var(--bg-slate);
-  --ink-raised: var(--bg-panel);
-  --ink-line:   var(--border-slate);
-  --parchment:  #1E293B;
-  --parchment-dim: #94A3B8;
+  --brand-400: #7d88fb;
+  --brand-500: #5b63ef;
+  --brand-600: #474dd4;
 
-  --stamp-red:    var(--accent-rose);
-  --stamp-green:  var(--accent-emerald);
-  --stamp-gold:   var(--accent-amber);
-  --stamp-blue:   var(--accent-indigo);
-
-  --text-pri: var(--text-primary);
-  --text-sec: var(--text-secondary);
-  --text-mut: var(--text-muted);
+  --positive: #3dd68c;
+  --caution: #e8b341;
+  --critical: #f2555a;
+  --info: #4c9df5;
 }
 
-* {
-  box-sizing: border-box;
+@layer base {
+  * {
+    box-sizing: border-box;
+    border-color: theme("colors.line.DEFAULT");
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: theme("colors.canvas.DEFAULT");
+    color: theme("colors.content.DEFAULT");
+    font-family: theme("fontFamily.sans");
+    font-size: theme("fontSize.base[0]");
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Headings inherit the body sans deliberately. The previous build paired a
+     serif display face (Fraunces) with a sans UI, which read as decorative
+     rather than considered on data-dense screens. */
+  h1, h2, h3, h4, h5, h6 {
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    text-wrap: balance;
+  }
+
+  p { margin: 0; }
+
+  /* Numerals should line up in tables and score columns */
+  table, .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    outline: 2px solid theme("colors.brand.500");
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  ::selection {
+    background: rgba(91, 99, 239, 0.32);
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: theme("colors.line.strong");
+    border-radius: 99px;
+    border: 3px solid theme("colors.canvas.DEFAULT");
+  }
+  ::-webkit-scrollbar-thumb:hover { background: #38425a; }
+
+  /* Native form controls inherit nothing by default — the old build shipped
+     an unstyled OS <select> on the dashboard because of this. */
+  input, textarea, select, button {
+    font: inherit;
+    color: inherit;
+  }
+
+  textarea { resize: none; }
 }
 
-html, body {
-  background: var(--bg-slate);
-  color: var(--text-primary);
-  font-family: var(--font-body), system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  margin: 0;
-  padding: 0;
+@layer components {
+  /* Applied to the scrolling region of long report panels so content fades
+     out at the boundary instead of being cut mid-line. */
+  .mask-fade-b {
+    -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent);
+    mask-image: linear-gradient(to bottom, black calc(100% - 24px), transparent);
+  }
 }
 
-h1, h2, h3, h4, h5, h6, .font-display {
-  font-family: var(--font-display), system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-}
-
-.font-mono, code, kbd {
-  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #334155; border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: #475569; }
-
-:focus-visible {
-  outline: 2px solid #6366F1;
-  outline-offset: 2px;
-}
-
-/* Glassmorphism card utilities */
-.glass-panel {
-  background: rgba(30, 41, 59, 0.7);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 1rem;
-}
-
-.glass-card {
-  background: rgba(15, 23, 42, 0.6);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 0.875rem;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.glass-card:hover {
-  border-color: rgba(99, 102, 241, 0.4);
-  transform: translateY(-1px);
-  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.4);
-}
-
-.glow-indigo {
-  box-shadow: 0 0 20px -3px rgba(99, 102, 241, 0.25);
-}
-
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(12px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-@keyframes pulse-dot {
-  0%, 100% { opacity: 0.3; transform: scale(0.8); }
-  50%       { opacity: 1;   transform: scale(1.1); }
-}
-
-.animate-fade-up { animation: fadeUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
-.animate-spin    { animation: spin 1s linear infinite; }
-
-/* Status pill chip */
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  border-radius: 9999px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.025em;
-  text-transform: uppercase;
-}
-
-.evidence-quote {
-  background: rgba(30, 41, 59, 0.9);
-  color: #F8FAFC;
-  font-family: var(--font-mono), monospace;
-  font-size: 0.8125rem;
-  border-left: 3px solid #6366F1;
-  border-radius: 4px;
-  padding: 6px 12px;
-  line-height: 1.6;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -86,7 +86,10 @@ def _mem_reports_for_user(user_id: str) -> list[dict]:
         cand = v.get("candidate") or {}
         out.append({
             "id": key.replace("report_", "", 1),
-            "file_name": v.get("file_name"),
+            # `_owner_file_name` is the legacy key — report blobs written by
+            # earlier versions only carry that one. See analysis.py's
+            # _stamp_report_metadata().
+            "file_name": v.get("file_name") or v.get("_owner_file_name") or "",
             "candidate_name": cand.get("name") or "Unknown",
             "overall_score": cred.get("overall", 0),
             "recommendation": cred.get("recommendation", "manual_review"),

@@ -15,6 +15,18 @@ class ForbiddenError(HireLensException):
 class NotFoundError(HireLensException):
     http_status = 404; code = "not_found"; message = "Resource not found."
 
+class ConflictError(HireLensException):
+    """
+    The request is well-formed and authenticated, but conflicts with existing
+    state — e.g. signing up with an email that already has an account.
+
+    Signup previously raised AuthError (401) for that case. 401 is wrong
+    twice over: the caller is not being asked to authenticate, and clients
+    that treat any 401 as "session expired" (this app's own API client
+    among them) would log the user out in response to a duplicate signup.
+    """
+    http_status = 409; code = "conflict"; message = "This conflicts with existing data."
+
 class FileTooLarge(HireLensException):
     http_status = 413; code = "file_too_large"
     def __init__(self, max_mb: int = 10):

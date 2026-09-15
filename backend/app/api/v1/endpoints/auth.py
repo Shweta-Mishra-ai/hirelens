@@ -9,13 +9,21 @@ Fixed:
 
 import logging
 import uuid
-import hashlib
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, EmailStr, field_validator
 
 from app.core.dependencies import get_db, get_current_user, get_redis
-from app.core.security import create_access_token
-from app.core.exceptions import AuthError, HireLensException, CapacityLimitExceeded
+from app.core.security import (
+    create_access_token,
+    hash_password,
+    verify_password,
+)
+from app.core.exceptions import (
+    AuthError,
+    ConflictError,
+    HireLensException,
+    CapacityLimitExceeded,
+)
 from app.core.rate_limit import check_rate_limit, get_client_ip
 from app.core import local_db
 from app.services.teams.access import accept_pending_invites_for_email
@@ -29,10 +37,6 @@ MAX_RECRUITERS_CAPACITY = 5000
 
 # In-memory user store for dev/testing when Supabase DB is unconfigured or unreachable
 _mem_users: dict[str, dict] = {}
-
-
-def _hash_pw(pw: str) -> str:
-    return hashlib.sha256(f"hirelens_salt_{pw}".encode()).hexdigest()
 
 
 class SignupRequest(BaseModel):
@@ -147,20 +151,20 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
         except Exception as e:
             err_str = str(e).lower()
             if "already registered" in err_str or "already exists" in err_str or "duplicate" in err_str:
-                raise AuthError("An account with this email already exists. Please log in instead.")
+                raise ConflictError("An account with this email already exists. Please log in instead.")
             logger.warning(f"Supabase signup failed for {email_str}: {e} — using local auth store fallback")
 
     # Persistent local SQLite and in-memory fallback (when DB is unconfigured or Supabase connection fails)
     existing_u = local_db.get_user_by_email(email_str) or _mem_users.get(email_str)
     if existing_u:
-        raise AuthError("An account with this email already exists. Please log in instead.")
+        raise ConflictError("An account with this email already exists. Please log in instead.")
 
     u_record = local_db.create_user(email_str, body.password, body.full_name, body.company or "")
     uid = u_record["id"]
     _mem_users[email_str] = {
         "id": uid,
         "email": email_str,
-        "password_hash": _hash_pw(body.password),
+        "password_hash": hash_password(body.password),
         "full_name": body.full_name,
         "company": body.company or "",
     }
@@ -245,7 +249,7 @@ async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=
 
     # In-memory fallback store lookup (for unit tests)
     mem_user = _mem_users.get(email_str)
-    if mem_user and mem_user["password_hash"] == _hash_pw(body.password):
+    if mem_user and verify_password(body.password, mem_user.get("password_hash") or ""):
         token = create_access_token({"sub": mem_user["id"], "email": mem_user["email"]})
         return {
             "access_token": token,
@@ -300,18 +304,22 @@ async def oauth_verify(body: OAuthVerifyRequest, db=Depends(get_db)):
         except Exception as e:
             logger.warning(f"OAuth verification failed in Supabase: {e}")
 
-    uid = str(uuid.uuid4())
-    token = create_access_token({"sub": uid, "email": "google_user@hirelens.ai"})
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user": {
-            "id": uid,
-            "email": "google_user@hirelens.ai",
-            "full_name": "Google Recruiter",
-            "company": "",
-        },
-    }
+    # SECURITY: there is deliberately no fallback here.
+    #
+    # This endpoint used to end by minting a signed JWT for a synthetic
+    # "google_user@hirelens.ai" identity whenever `db` was unset or the
+    # Supabase lookup raised. Because the only input is an unverified
+    # `access_token` string, that made the endpoint an unauthenticated token
+    # issuer: POSTing any value at all — including an empty or random
+    # string — returned a valid 7-day session token that every other
+    # endpoint accepted. Anyone who could reach the API could read and write
+    # candidate reports without an account.
+    #
+    # The only safe behaviour when we cannot positively verify the token with
+    # the identity provider is to reject it. If Supabase is not configured,
+    # Google sign-in is not available — which the frontend already handles by
+    # hiding the button.
+    raise AuthError("Google sign-in could not be verified. Sign in with your email and password instead.")
 
 
 @router.get("/me")
