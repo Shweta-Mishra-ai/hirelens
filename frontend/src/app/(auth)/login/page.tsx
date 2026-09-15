@@ -3,27 +3,73 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/auth";
 import { authAPI, APIError } from "@/lib/api";
-import { supabase } from "@/lib/supabase";
+import { useGoogleAuth } from "@/hooks/useGoogleAuth";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Feedback";
 import { Card } from "@/components/ui/Card";
 import { AuthLayout, AuthFooterLink, GoogleButton, OrDivider } from "../AuthLayout";
 
-/** Google sign-in only works when Supabase is wired up; hide it otherwise. */
-function googleConfigured() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  return Boolean(url) && !url!.includes("placeholder") && !url!.includes("your-project");
+/**
+ * Turn a sign-in failure into something the person can act on.
+ *
+ * The previous handler showed `err.message` for everything, so a rate limit,
+ * an unconfirmed email and a wrong password were indistinguishable — and a
+ * network failure read as though the credentials were wrong.
+ */
+function signInError(err: unknown): { message: string; hint?: string } {
+  if (!(err instanceof APIError)) {
+    return { message: "Something went wrong signing you in. Please try again." };
+  }
+
+  if (err.status === 0 || err.code === "network_error") {
+    return {
+      message: "Can't reach the HireLens server.",
+      hint: "Check your connection. If you're on a VPN or office network, it may be blocking the API.",
+    };
+  }
+  if (err.code === "timeout") {
+    return {
+      message: "The server took too long to respond.",
+      hint: "It may be waking up from idle. Try again in a few seconds.",
+    };
+  }
+  if (err.status === 429) {
+    return {
+      message: "Too many sign-in attempts from this network.",
+      hint: "For security, sign-in is limited to 10 attempts every 15 minutes. Wait a few minutes and try again.",
+    };
+  }
+  if (err.status === 401) {
+    // The API deliberately does not reveal whether the account exists, and
+    // neither should this copy.
+    return {
+      message: err.message.toLowerCase().includes("confirm")
+        ? err.message
+        : "That email and password don't match.",
+      hint: err.message.toLowerCase().includes("confirm")
+        ? "Open the confirmation link we emailed you, then sign in."
+        : "Check for typos, or reset your password if you've forgotten it.",
+    };
+  }
+  if (err.status >= 500) {
+    return {
+      message: "The server had a problem signing you in.",
+      hint: "This is on our side, not yours. Please try again in a moment.",
+    };
+  }
+  return { message: err.message };
 }
 
 export default function LoginPage() {
   const router = useRouter();
   const { token, hasHydrated, setAuth } = useAuthStore();
+  const google = useGoogleAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; hint?: string } | null>(null);
 
   const [forgotOpen, setForgotOpen] = useState(false);
   const [forgotEmail, setForgotEmail] = useState("");
@@ -44,19 +90,10 @@ export default function LoginPage() {
       setAuth(res.access_token, res.user);
       router.replace("/dashboard");
     } catch (err) {
-      setError(err instanceof APIError ? err.message : "Could not sign in. Please try again.");
+      setError(signInError(err));
     } finally {
       setLoading(false);
     }
-  }
-
-  async function handleGoogle() {
-    setError(null);
-    const { error: oauthError } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: `${window.location.origin}/dashboard` },
-    });
-    if (oauthError) setError(oauthError.message);
   }
 
   async function handleForgot(e: React.FormEvent) {
@@ -83,17 +120,25 @@ export default function LoginPage() {
       footer={<AuthFooterLink prompt="New to HireLens?" href="/signup" label="Create an account" />}
     >
       {error && (
-        <Alert tone="error" className="mb-5" onDismiss={() => setError(null)}>
-          {error}
+        <Alert tone="error" title={error.message} className="mb-5" onDismiss={() => setError(null)}>
+          {error.hint}
         </Alert>
       )}
 
-      {googleConfigured() && (
-        <>
-          <GoogleButton onClick={handleGoogle} label="Continue with Google" />
-          <OrDivider />
-        </>
+      {google.error && (
+        <Alert tone="error" className="mb-5" onDismiss={google.clearError}>
+          {google.error}
+        </Alert>
       )}
+
+      <GoogleButton
+        onClick={google.signIn}
+        label="Continue with Google"
+        loading={google.redirecting}
+        disabled={google.state.status !== "ready"}
+        reason={google.state.status === "unconfigured" ? google.state.reason : undefined}
+      />
+      <OrDivider />
 
       <form onSubmit={handleSubmit} className="space-y-4" noValidate>
         <Input

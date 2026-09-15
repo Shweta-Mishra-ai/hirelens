@@ -27,7 +27,7 @@ from app.core.exceptions import (
     NotFoundError, ForbiddenError, EmptyBatch, TooManyFiles,
     TooManyBatches, FileTooLarge, InvalidJobDescription,
 )
-from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload
+from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload, require_analysis_available
 from app.services.ai.engine import engine
 from app.services.parser.document_parser import extract_text
 from app.services.queue import batch_store
@@ -94,6 +94,7 @@ async def match_upload(
     if active >= settings.BULK_MAX_CONCURRENT_BATCHES_PER_USER:
         raise TooManyBatches(settings.BULK_MAX_CONCURRENT_BATCHES_PER_USER)
 
+    require_analysis_available()
     _check_rate_limit(redis, user_id)
 
     valid_items: list[dict] = []

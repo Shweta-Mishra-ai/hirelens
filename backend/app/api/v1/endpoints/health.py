@@ -55,6 +55,13 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
             "anthropic": "configured" if settings.ANTHROPIC_API_KEY else "not_configured",
         },
         "llm_ready": llm_configured,
+        # Google sign-in needs Supabase on BOTH sides: the browser starts the
+        # OAuth flow with the public anon key, and this API exchanges the
+        # resulting token via the service key. The frontend can only see its
+        # own half, so it reads this flag for ours — otherwise the button
+        # either disappears without explanation or appears and then fails at
+        # the verification step.
+        "google_auth_ready": bool(settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY),
     }
 
 

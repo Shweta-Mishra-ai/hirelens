@@ -31,6 +31,16 @@ os.environ.setdefault("APP_ENV", "development")
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-tests-only-not-production")
 os.environ.setdefault("ALLOWED_ORIGINS", "http://localhost:3000")
 
+# Represent a *configured* server by default, since that is the normal
+# deployment and what almost every test is about. Upload endpoints now refuse
+# up front when no AI provider is configured (see
+# analysis.require_analysis_available), so without this every upload test
+# would exercise the unconfigured path instead of the one it means to test.
+# The engine itself is always mocked, so this key is never used to make a
+# call. `test_analysis_unavailable.py` clears it deliberately to cover the
+# unconfigured case.
+os.environ.setdefault("GEMINI_API_KEY", "test-key-never-used-engine-is-mocked")
+
 
 @pytest.fixture(autouse=True)
 def isolate_stores():

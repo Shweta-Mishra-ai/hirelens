@@ -502,9 +502,13 @@ export const copilotAPI = {
 // ── Health ────────────────────────────────────────────────────────────────────
 export const healthAPI = {
   check: () =>
-    req<{ status: string; version: string; llm_ready: boolean }>(
-      "/api/v1/health",
-    ),
+    req<{
+      status: string;
+      version: string;
+      llm_ready: boolean;
+      /** Older backends omit this; treat `undefined` as "unknown", not "off". */
+      google_auth_ready?: boolean;
+    }>("/api/v1/health"),
   diagnostics: () =>
     req<{
       health: { status: string; version: string; env: string; llm_ready: boolean };

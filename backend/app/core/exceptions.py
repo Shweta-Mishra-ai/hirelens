@@ -55,6 +55,23 @@ class LLMError(HireLensException):
     http_status = 503; code = "llm_unavailable"
     message = "AI service temporarily unavailable."
 
+class AnalysisUnavailable(HireLensException):
+    """
+    Raised at upload time when no AI provider is configured at all.
+
+    This is distinct from LLMError, which means a configured provider failed.
+    Uploads used to be accepted and queued in this state, so the user waited
+    through the whole progress animation before being shown a raw internal
+    message about setting GEMINI_API_KEY in a .env file — advice that means
+    nothing to a recruiter and everything to the operator.
+    """
+    http_status = 503; code = "analysis_unavailable"
+    message = (
+        "Resume analysis is not available right now because no AI provider is "
+        "configured on the server. Your file was not uploaded. Contact your "
+        "administrator to finish setting up HireLens."
+    )
+
 class RateLimitExceeded(HireLensException):
     http_status = 429; code = "rate_limit_exceeded"
     def __init__(self, retry_after: int = 60):

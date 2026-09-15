@@ -3,6 +3,7 @@ import { useEffect, useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Loader2, RotateCcw, FileText } from "lucide-react";
 import { useAnalysis } from "@/hooks/useAnalysis";
+import { useAnalysisReadiness, readinessMessage } from "@/hooks/useAnalysisReadiness";
 import { AppShell, PageHeader, RequireAuth } from "@/components/AppShell";
 import { FileDropzone, type FileRejection } from "@/components/FileDropzone";
 import { Card, CardBody } from "@/components/ui/Card";
@@ -73,6 +74,8 @@ function StageList({ currentStage, failed }: { currentStage: string; failed?: bo
 function AnalyzeContent() {
   const router = useRouter();
   const { state, analyze, reset } = useAnalysis();
+  const readiness = useAnalysisReadiness();
+  const readinessWarning = readinessMessage(readiness);
   const [rejections, setRejections] = useState<FileRejection[]>([]);
 
   useEffect(() => {
@@ -99,6 +102,12 @@ function AnalyzeContent() {
         title="Analyze a resume"
         description="Upload a PDF or DOCX. HireLens reads the actual document text and returns a credibility assessment in which every flag quotes the sentence that raised it."
       />
+
+      {readinessWarning && (
+        <Alert tone={readinessWarning.tone} title={readinessWarning.title} className="mb-5">
+          {readinessWarning.body}
+        </Alert>
+      )}
 
       {rejections.length > 0 && (
         <Alert tone="warning" className="mb-5" onDismiss={() => setRejections([])}>
@@ -169,6 +178,7 @@ function AnalyzeContent() {
       ) : state.phase !== "error" ? (
         <FileDropzone
           onFiles={handleFiles}
+          disabled={readiness.state === "no_provider" || readiness.state === "unreachable"}
           title="Drop a resume here"
           hint="PDF or DOCX, up to 10MB. The file must have selectable text — scanned images cannot be read."
         />

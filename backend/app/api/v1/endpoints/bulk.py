@@ -29,7 +29,7 @@ from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.rate_limit import check_rate_limit
 from app.core.exceptions import NotFoundError, ForbiddenError, EmptyBatch, TooManyFiles, TooManyBatches, FileTooLarge
-from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload
+from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload, require_analysis_available
 from app.services.queue import batch_store
 from app.services.fraud.duplicate_detection import extract_fingerprint_text, find_duplicate_clusters
 
@@ -70,6 +70,7 @@ async def bulk_upload(
         raise TooManyBatches(settings.BULK_MAX_CONCURRENT_BATCHES_PER_USER)
 
     # One rate-limit tick per batch (not per file) — a batch is one action.
+    require_analysis_available()
     _check_rate_limit(redis, user_id)
 
     # ── Read + validate every file up front ───────────────────────────────

@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔎 HireLens
+# HireLens
 
 ### AI-Powered Resume Credibility, Fraud Detection & Recruiter Intelligence Platform
 
@@ -62,7 +62,7 @@ Paste or upload a job description, upload multiple resumes, get each candidate's
 
 ### 6. Real-Time Public Data Verification (`/report/[id]` → Verify tab)
 Real-time (not cached, not mocked) checks against:
-- **GitHub** — live `api.github.com` calls cross-checking claimed skills against full repo language breakdowns.
+- **GitHub** — live `api.github.com` calls cross-checking claimed skills against full repo language breakdowns. Skill matching is token- and alias-aware: `Dockerfile` satisfies a claim of `Docker`, but `Java` is **not** matched by a JavaScript repo, and short names like `R`, `Go` and `C` require an exact token rather than a substring.
 - **Education** — university-domain registry lookup with automatic multi-variant retry logic.
 - **Certifications** — live URL verification for embedded certificate links.
 - **Employers** — company-website domain check.
@@ -109,6 +109,10 @@ HireLens is hardened for production launch supporting **5,000 active recruiters/
 - **MIME & Magic Byte Verification**: `validate_upload()` checks PDF/DOCX magic bytes to reject executable/malicious uploads.
 - **SSRF Protection**: `ssrf_guard.py` validates verification URLs against loopback, private, link-local, and cloud metadata IPs (169.254.169.254).
 - **Injection Defense**: Multi-stage prompt fencing + heuristic injection scan.
+
+### Analysis Availability
+
+Uploads are refused with `503 analysis_unavailable` when no AI provider is configured, rather than queued and failed later. `GET /api/v1/health` reports `llm_ready` and `google_auth_ready`, and the Analyze page reads them so a recruiter sees the problem before choosing a file.
 
 ### Error Handling
 - All endpoints return structured JSON payloads with tracking `x-request-id` headers on every response:
@@ -229,7 +233,7 @@ ALLOWED_ORIGINS=http://localhost:3000,https://your-app.vercel.app
 | `/api/v1/match/upload` | POST | JD match upload |
 | `/api/v1/verify/{id}/run` | POST | Real-time public data verification |
 | `/api/v1/teams` | POST/GET | Team workspace creation and listing |
-| `/api/v1/health` | GET | System health check |
+| `/api/v1/health` | GET | System health check (`llm_ready`, `google_auth_ready`) |
 | `/api/v1/health/diagnostics` | GET | Capacity & system diagnostics |
 
 ---

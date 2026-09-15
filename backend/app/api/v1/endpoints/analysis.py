@@ -17,7 +17,13 @@ from fastapi import APIRouter, Depends, File, UploadFile, BackgroundTasks
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
-from app.core.exceptions import FileTooLarge, UnsupportedFileType, NotFoundError, ForbiddenError
+from app.core.exceptions import (
+    FileTooLarge,
+    UnsupportedFileType,
+    NotFoundError,
+    ForbiddenError,
+    AnalysisUnavailable,
+)
 from app.services.parser.document_parser import extract_text, check_magic_bytes
 from app.services.parser.resume_heuristic import looks_like_resume
 from app.services.ai.engine import engine
@@ -68,6 +74,20 @@ def _check_rate_limit(redis, user_id: str) -> None:
     """
     from app.core.rate_limit import check_rate_limit
     check_rate_limit(redis, user_id, settings.RATE_LIMIT_PER_MINUTE, window_seconds=60)
+
+
+def require_analysis_available() -> None:
+    """
+    Reject an upload up front when there is no AI provider to run it.
+
+    Accepting a file we already know cannot be processed costs the user the
+    upload, a ~15-second wait and a confusing failure. The condition is
+    static — it depends only on configuration — so there is no reason to
+    discover it asynchronously in a background task.
+    """
+    if not any((settings.GEMINI_API_KEY, settings.GROQ_API_KEY, settings.ANTHROPIC_API_KEY)):
+        logger.error("Upload rejected: no LLM provider configured (set GEMINI_API_KEY)")
+        raise AnalysisUnavailable()
 
 
 def validate_upload(contents: bytes, filename: str, mime: str) -> str:
@@ -128,6 +148,9 @@ async def upload_resume(
     # Cleanup old jobs periodically
     if len(_jobs) > 100:
         _cleanup_old_jobs()
+
+    # Refuse before reading the file if there is no provider to analyse it.
+    require_analysis_available()
 
     # Rate limit check
     _check_rate_limit(redis, current_user["id"])
@@ -225,6 +248,76 @@ def _stamp_report_metadata(result: dict, *, user_id: str, filename: str, report_
     result["created_at"] = now
     return result
 
+def _parse_failure_message(filename: str, error: Exception) -> str:
+    """
+    Turn a parser exception into something a recruiter can act on.
+
+    The raw exception text was previously passed straight through, which
+    surfaced messages like "No /Root object! - Is this really a PDF?" —
+    accurate, but it tells the user nothing about what to do next.
+    """
+    detail = str(error).strip()
+    lowered = detail.lower()
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    if "scan" in lowered or "text-selectable" in lowered or "no text" in lowered:
+        return (
+            "This file has no selectable text — it looks like a scan or a set of "
+            "images. Ask the candidate for the original PDF or DOCX, or run it "
+            "through OCR first."
+        )
+    if "password" in lowered or "encrypt" in lowered:
+        return (
+            "This file is password-protected, so its text could not be read. "
+            "Ask the candidate for an unprotected copy."
+        )
+    if "root object" in lowered or "really a pdf" in lowered or "corrupt" in lowered:
+        return (
+            f"This file could not be opened as a {ext.upper() or 'document'}. It may be "
+            "corrupted, or saved with the wrong extension. Try re-exporting it."
+        )
+    return (
+        "This file could not be read. Make sure it is a text-based PDF or DOCX "
+        "and try again."
+    )
+
+
+def _analysis_failure_message(error: Exception) -> str:
+    """
+    Map an engine failure to recruiter-facing copy.
+
+    Never echo the provider's raw error: it can name internal configuration
+    ("set GEMINI_API_KEY in your .env file"), which is advice for the
+    operator, not the person waiting on a report.
+    """
+    detail = str(error).lower()
+
+    if "rate limit" in detail or "429" in detail:
+        return (
+            "The AI provider is rate-limiting requests right now. Wait a minute "
+            "and try again — nothing was lost."
+        )
+    if "timed out" in detail or "timeout" in detail:
+        return (
+            "Analysis took longer than expected and was stopped. This usually "
+            "means an unusually long resume — try again, or split it up."
+        )
+    if "no llm api key" in detail or "no provider" in detail:
+        return (
+            "Resume analysis is not configured on this server. Contact your "
+            "administrator."
+        )
+    if "blocked" in detail or "safety" in detail:
+        return (
+            "The AI provider declined to process this document. If it contains "
+            "unusual content, review the original file directly."
+        )
+    return (
+        "Analysis could not be completed. This is usually temporary — please "
+        "try again in a moment."
+    )
+
+
 # ── Background Analysis Task ──────────────────────────────────────────────────
 
 async def _run_analysis(
@@ -260,7 +353,7 @@ async def _run_analysis(
             raw_text = extract_text(file_bytes, mime_type, filename)
         except Exception as e:
             logger.error(f"[{job_id}] Parse failed: {e}")
-            upd(status="failed", stage="failed", error=f"Could not read file: {str(e)}")
+            upd(status="failed", stage="failed", error=_parse_failure_message(filename, e))
             return
 
         logger.info(f"[{job_id}] Parsed {len(raw_text)} chars from {filename}")
@@ -278,7 +371,7 @@ async def _run_analysis(
             result = await engine.run(raw_text=raw_text, on_progress=on_progress)
         except Exception as e:
             logger.error(f"[{job_id}] AI analysis failed: {e}", exc_info=True)
-            upd(status="failed", stage="failed", error=f"AI analysis failed: {str(e)}")
+            upd(status="failed", stage="failed", error=_analysis_failure_message(e))
             return
 
         # ── Step 2b: Optional enrichment (e.g. JD match) ───────────────────────
@@ -325,7 +418,7 @@ async def _run_analysis(
 
         upd(status="complete", stage="complete", progress=100, report_id=report_id)
         logger.info(
-            f"[{job_id}] ✓ Complete | report={report_id} "
+            f"[{job_id}] Complete | report={report_id} "
             f"score={result.get('credibility', {}).get('overall')} "
             f"rec={result.get('credibility', {}).get('recommendation')}"
         )

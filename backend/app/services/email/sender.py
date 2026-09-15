@@ -75,7 +75,7 @@ async def send_team_invite_email(to_email: str, team_name: str, inviter_name: st
     <html>
     <body style="background-color: #0B0F17; color: #F8FAFC; font-family: sans-serif; padding: 30px;">
       <div style="max-width: 540px; margin: 0 auto; background: #1E293B; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 32px;">
-        <div style="font-size: 24px; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">🔎 HireLens</div>
+        <div style="font-size: 24px; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">HireLens</div>
         <h2 style="font-size: 20px; color: #F8FAFC; margin-top: 0;">Team Invitation</h2>
         <p style="font-size: 14px; color: #CBD5E1; line-height: 1.6;">
           <strong style="color: #818CF8;">{inviter_name}</strong> invited you to collaborate in the workspace <strong style="color: #F8FAFC;">"{team_name}"</strong> on HireLens.
@@ -164,7 +164,7 @@ async def send_candidate_decision_email(to_email: str, subject: str, body: str) 
     <html>
     <body style="background-color: #0B0F17; color: #F8FAFC; font-family: sans-serif; padding: 30px;">
       <div style="max-width: 540px; margin: 0 auto; background: #1E293B; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 32px;">
-        <div style="font-size: 22px; font-weight: 800; color: #F8FAFC; margin-bottom: 20px;">🔎 HireLens</div>
+        <div style="font-size: 22px; font-weight: 800; color: #F8FAFC; margin-bottom: 20px;">HireLens</div>
         <div style="font-size: 14px; color: #E2E8F0; line-height: 1.7; white-space: pre-line;">{safe_body_html}</div>
       </div>
     </body>

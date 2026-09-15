@@ -5,16 +5,38 @@ import Link from "next/link";
 import { MailCheck } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { authAPI, APIError } from "@/lib/api";
+import { useGoogleAuth } from "@/hooks/useGoogleAuth";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Feedback";
-import { AuthLayout, AuthFooterLink } from "../AuthLayout";
+import { AuthLayout, AuthFooterLink, GoogleButton, OrDivider } from "../AuthLayout";
 
 const MIN_PASSWORD_LENGTH = 8;
+
+/** Sign-up failures that aren't about a single field. */
+function signupError(err: unknown): string {
+  if (!(err instanceof APIError)) return "Could not create your account. Please try again.";
+  if (err.status === 0 || err.code === "network_error") {
+    return "Can't reach the HireLens server. Check your connection and try again.";
+  }
+  if (err.code === "timeout") {
+    return "The server took too long to respond. It may be waking up — try again in a few seconds.";
+  }
+  if (err.status === 429) {
+    return err.code === "capacity_limit_exceeded"
+      ? "HireLens has reached its registration limit. Contact your administrator for access."
+      : "Too many sign-up attempts from this network. Wait a few minutes and try again.";
+  }
+  if (err.status >= 500) {
+    return "The server had a problem creating your account. This is on our side — please try again shortly.";
+  }
+  return err.message;
+}
 
 export default function SignupPage() {
   const router = useRouter();
   const { token, hasHydrated, setAuth } = useAuthStore();
+  const google = useGoogleAuth();
 
   const [fullName, setFullName] = useState("");
   const [company, setCompany] = useState("");
@@ -69,9 +91,21 @@ export default function SignupPage() {
       if (err instanceof APIError && err.status === 409) {
         // A duplicate email is a fact about one field, so it belongs on
         // that field rather than in a generic banner.
-        setFieldErrors({ email: "An account with this email already exists." });
+        setFieldErrors({ email: "An account with this email already exists. Sign in instead." });
+      } else if (err instanceof APIError && err.status === 422) {
+        // The API client turns FastAPI's validation payload into
+        // "Email: ..." / "Password: ..." — route it to the right field.
+        const routed: Record<string, string> = {};
+        for (const part of err.message.split(/(?=\b(?:Email|Password|Full name|Company):)/)) {
+          const m = part.match(/^(Email|Password|Full name|Company):\s*(.+)$/);
+          if (!m) continue;
+          const key = { Email: "email", Password: "password", "Full name": "fullName", Company: "company" }[m[1]];
+          if (key) routed[key] = m[2].trim();
+        }
+        if (Object.keys(routed).length) setFieldErrors(routed);
+        else setError(err.message);
       } else {
-        setError(err instanceof APIError ? err.message : "Could not create your account. Try again.");
+        setError(signupError(err));
       }
     } finally {
       setLoading(false);
@@ -111,6 +145,21 @@ export default function SignupPage() {
           {error}
         </Alert>
       )}
+
+      {google.error && (
+        <Alert tone="error" className="mb-5" onDismiss={google.clearError}>
+          {google.error}
+        </Alert>
+      )}
+
+      <GoogleButton
+        onClick={google.signIn}
+        label="Sign up with Google"
+        loading={google.redirecting}
+        disabled={google.state.status !== "ready"}
+        reason={google.state.status === "unconfigured" ? google.state.reason : undefined}
+      />
+      <OrDivider />
 
       <form onSubmit={handleSubmit} className="space-y-4" noValidate>
         <Input
