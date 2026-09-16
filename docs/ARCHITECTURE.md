@@ -148,10 +148,11 @@ flowchart TB
     Process -.->|"rebuilt from"| Durable
 ```
 
-The distinction is load-bearing. Reports used to live only in `_jobs`, so a
-Render sleep erased a recruiter's entire history. Everything that must outlive
-the process is written to Postgres (or the SQLite fallback) first; the
-in-process copy is only there to save a round trip.
+The distinction is load-bearing. Everything that must outlive the process is
+written to Postgres (or the local fallback) first, and the in-process copy
+exists only to save a round trip — so replacing the container costs nothing
+but a cache. An analysis whose progress is lost that way is recovered from
+the report it produced, by job id.
 
 **Redis is optional on purpose.** Without it, rate limits and batch grouping
 are per-process, which is correct for the single-worker free tier. Setting
@@ -188,11 +189,11 @@ flowchart LR
     RESP --> REQ
 ```
 
-CORS is **outermost** by design. It used to sit inside the catch-all, so a 500
-came back with no `Access-Control-Allow-Origin` header and the browser refused
-to hand it to the app — making a server error indistinguishable from the API
-being down. Everything the server says, including "something went wrong", has
-to be readable by the app that asked.
+CORS is **outermost** by design, so that error responses carry the same
+headers as successful ones. A 500 that the browser refuses to hand to the app
+is indistinguishable from the API being unreachable — everything the server
+says, including "something went wrong", has to be readable by the app that
+asked.
 
 Every error response carries the same envelope:
 

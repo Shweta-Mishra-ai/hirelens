@@ -38,6 +38,20 @@ class Settings(BaseSettings):
 
     # Limits
     MAX_FILE_SIZE_MB: int = 10
+    # How many proxies sit in front of this app.
+    #
+    # Rate limits are keyed on the client IP, and behind a proxy that IP comes
+    # from X-Forwarded-For — a header the caller also controls. The proxy
+    # APPENDS the address it saw, so only the rightmost entries are evidence;
+    # everything to the left is whatever the caller chose to send. Reading the
+    # leftmost entry means a caller can mint a fresh rate-limit bucket per
+    # request simply by changing a header, which takes brute-force protection
+    # on sign-in down to nothing.
+    #
+    # 1 is right for Render, Vercel and most single-proxy setups. Behind
+    # Cloudflare in front of Render it is 2. Set 0 when nothing proxies this
+    # app, and the header is ignored entirely.
+    TRUSTED_PROXY_HOPS: int = 1
     RATE_LIMIT_PER_MINUTE: int = 20
     NOTIFY_RATE_LIMIT_PER_MINUTE: int = 10  # candidate emails are an external cost — tighter limit than general API use
     ANALYSIS_TIMEOUT_SECONDS: int = 120

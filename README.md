@@ -203,21 +203,23 @@ service, one Vercel project.
 
 ## Built to degrade, not to break
 
-The interesting engineering here is not the happy path.
+A screening tool is used under time pressure, often on a shortlist that took
+weeks to assemble. It is designed so that no single failure costs a recruiter
+their work.
 
-| When this happens | The app does this |
+| Condition | Behaviour |
 |---|---|
-| Gemini rate-limits | Hands off to Groq immediately — no backoff burned on a 429 |
-| Supabase is unreachable at signup | Returns 503. It will **not** create a local account whose id Postgres has never heard of |
-| Supabase rejects a password | 401 stands — a stale local password cannot override the identity provider |
-| The database blips mid-session | The list raises a real error; an empty page must never read as "your candidates are gone" |
-| One verification check throws | The other three still return |
-| A stored report has the wrong shape | Coerced at the read boundary — one odd report cannot take down the whole list |
-| A panel throws while rendering | Its error boundary catches it; navigation and every other panel stay up |
-| A 380 KB DOCX unpacks to 194 MB | Refused from the archive directory, before a byte is decompressed |
+| The primary model is rate-limited | Falls through to the next provider immediately |
+| No model is reachable | Uploads are refused up front, rather than producing a partial report |
+| The database is unreachable at signup | A clear 503 — accounts are never created outside the identity store |
+| The database blips mid-session | A real error the UI can retry. An empty page never stands in for "your candidates are gone" |
+| One verification check fails | The other three still return, and the failing one says so |
+| A stored report is shaped unexpectedly | Coerced at the read boundary, so one record cannot affect the rest of the list |
+| A panel fails to render | Contained by its error boundary — navigation and every other panel stay up |
+| An analysis outlives the process that ran it | Recovered from storage and reported complete, never re-charged |
+| An upload is engineered to exhaust memory | Refused from the archive header, before anything is decompressed |
 
-Each of those is a bug that was found by running the thing, reproduced, fixed,
-and then pinned by a test that fails without the fix.
+Every row is covered by a test that fails if the behaviour regresses.
 
 ---
 
@@ -235,19 +237,17 @@ cd frontend && npm run build                       # types + production build
 | Frontend | **105** tests · strict TypeScript · zero lint warnings |
 | CI | pytest · vitest · `pip-audit` · `npm audit` · production build |
 
-Two habits the suite is built on:
+Two things the suite does that a typical one does not:
 
-**Both storage paths are tested.** Every endpoint has a Supabase
-implementation and a SQLite fallback. `tests/fake_supabase.py` carries the real
-column list for every table and raises the same `PGRST204` the database would —
-which is what caught `create_team` inserting an `id` into a table that has
-none, silently leaving every team's owner without a membership row.
+**Both storage paths are covered.** Every endpoint has a Supabase
+implementation and a local fallback, and both are exercised.
+`tests/fake_supabase.py` holds the real column list for every table and raises
+the same errors PostgREST would, so a query that could only fail against the
+real database fails in CI instead.
 
-**A missing name is a test failure.** A batch edit once added `as_dict(...)`
-calls without the import; `NameError` fires only when the line runs, that line
-sat inside an `except Exception`, and the endpoint still answered 200 — so
-saving interview notes had quietly stopped working with every test green. A
-pyflakes test now fails on any name used before it is defined.
+**Undefined names fail the build.** A pyflakes check runs as a test, so a name
+used before it is imported or defined is caught immediately rather than on the
+one request that reaches that line.
 
 ---
 

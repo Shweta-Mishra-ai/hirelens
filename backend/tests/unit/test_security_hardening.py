@@ -64,14 +64,26 @@ class TestRateLimitHelper:
         with pytest.raises(RateLimitExceeded):
             check_rate_limit(None, key, limit=5, window_seconds=60)
 
-    def test_get_client_ip_uses_forwarded_for(self):
+    def test_get_client_ip_trusts_only_the_proxy_written_entries(self):
+        """
+        This used to assert the LEFTMOST entry of X-Forwarded-For.
+
+        That is the wrong end. A proxy APPENDS the address it saw, so the
+        rightmost entries are written by infrastructure and everything to the
+        left is whatever the caller sent. Keying the rate limiter on the
+        leftmost entry let a caller mint a fresh bucket per request by
+        changing a header — unlimited password guesses against sign-in.
+
+        Only `TRUSTED_PROXY_HOPS` entries from the right count, which for a
+        single proxy is the last one. Full coverage in test_client_ip.py.
+        """
         from app.core.rate_limit import get_client_ip
 
         class FakeRequest:
             headers = {"x-forwarded-for": "203.0.113.5, 10.0.0.1"}
             client = None
 
-        assert get_client_ip(FakeRequest()) == "203.0.113.5"
+        assert get_client_ip(FakeRequest()) == "10.0.0.1"
 
     def test_get_client_ip_falls_back_to_client_host(self):
         from app.core.rate_limit import get_client_ip

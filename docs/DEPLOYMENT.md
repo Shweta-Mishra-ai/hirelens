@@ -92,11 +92,19 @@ than showing one that fails at the verification step.
 | `SUPABASE_ANON_KEY` | ✅ | Public key, used for the OAuth round trip |
 | `ALLOWED_ORIGINS` | ✅ | Your Vercel URL, comma-separated for several |
 | `APP_ENV` | ✅ | `production` |
+| `TRUSTED_PROXY_HOPS` | ➖ | Proxies in front of the app. `1` (the default) is right for Render; `2` behind Cloudflare; `0` with no proxy |
 | `GITHUB_TOKEN` | ➖ | Lifts GitHub verification from 60 to 5,000 requests/hour |
 | `GROQ_API_KEY` | ➖ | Second LLM provider |
 | `ANTHROPIC_API_KEY` | ➖ | Third LLM provider |
 | `RESEND_API_KEY` | ➖ | Candidate and invite emails |
 | `REDIS_URL` | ➖ | Shared rate limits and batches across instances |
+
+> **Get `TRUSTED_PROXY_HOPS` right.** Rate limits are keyed on the caller's
+> IP, which behind a proxy comes from `X-Forwarded-For` — a header the caller
+> also sets. Each proxy appends the address it saw, so only that many entries
+> from the right are evidence. Setting it too high keys everyone to the same
+> proxy address; too low, and a caller can change the header per request.
+> Render is one hop.
 
 > **The service key must never reach a browser.** It bypasses row-level
 > security entirely. Put it on Render only — never in Vercel, and never in any

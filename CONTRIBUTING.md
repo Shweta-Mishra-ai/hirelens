@@ -44,13 +44,10 @@ CI runs the same, plus `pip-audit` and `npm audit`.
 
 ### 1 · Both paths
 
-Every endpoint has a **Supabase** implementation and a **SQLite fallback**, and
-`SUPABASE_URL` is unset under test — so the branch that runs in production is
-the one nothing exercises by default. That is not theoretical: `create_team`
-inserted an `id` into `team_members`, a table keyed on `(team_id, user_id)`
-with no `id` column, so PostgREST refused the insert, the endpoint swallowed
-the error, and every team ended up in Supabase with its owner holding no
-membership row.
+Every endpoint has a **Supabase** implementation and a **local fallback**, and
+`SUPABASE_URL` is unset under test — so without care, the branch that runs in
+production is the one nothing exercises. A query that is wrong only against
+the real database is exactly the kind that reaches customers.
 
 Use `tests/fake_supabase.py`. It carries the real column list for every table
 and raises the same `PGRST204` the database would, and a test parses

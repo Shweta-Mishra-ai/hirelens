@@ -14,9 +14,10 @@ human.
 | Credibility scores and flags | Judgements that affect someone's livelihood |
 | Recruiter accounts | Credentials, team membership |
 
-The interview notes are the sharpest edge in the product. A leak there is not
-an inconvenience; it is a recruiter's private assessment of a named person,
-reaching that person or a competitor.
+Interview notes are the most sensitive record in the product: a recruiter's
+private assessment of a named person, alongside compensation expectations.
+They are treated accordingly — every route that touches them checks access
+first, and a report you may not see is a 404 rather than a 403.
 
 ---
 
@@ -42,18 +43,6 @@ authenticated keys stay safe if anything is ever read straight from a browser.
 A report you may not see returns **404, not 403** — 403 confirms the id exists,
 which is a candidate's existence confirmed to someone with no right to it.
 
-### Fixed here
-
-| | |
-|---|---|
-| **Auth bypass** | `/auth/oauth-verify` minted a valid 7-day token for *any* string, including an empty one. Its only input is an unverified access token, which made it an unauthenticated token issuer. There is now no fallback: unverifiable means refused |
-| **Cross-tenant co-pilot leak** | The read path took a report id with no access check, and the write path wrote before checking. Any account could read and overwrite another's interview notes |
-| **Reports visible to everyone** | The in-memory listing checked a key report blobs never had and treated "no owner" as "everyone". It now fails closed |
-| **Removal that did nothing** | Removing a member rebound a module-level name instead of mutating the shared list, so the authorization check never saw it. Deleting a team left membership behind entirely — ex-members kept access to anything shared with it |
-| **Shadow identities** | A Supabase blip during signup created a local account whose id `auth.users` had never heard of. A rejected login fell through to the local store, where a stale password could beat the real one |
-
----
-
 ## Resume-borne attacks
 
 A resume is a file from a stranger, parsed by an LLM, and often containing URLs
@@ -75,20 +64,20 @@ guessed from company names, ATS resume URLs — goes through
 private, loopback, link-local, reserved and multicast addresses plus the known
 metadata hostnames.
 
-**The guard re-runs on every redirect hop.** Checking only the first URL is no
-check at all: a host returns a public-looking URL, then a 302 to
-`169.254.169.254`. Redirects are followed manually, capped at 3 hops, with the
-guard in front of each.
+**The guard re-runs on every redirect hop.** Checking only the first URL would
+be no check at all — a host can answer with a public-looking URL and then
+redirect to an internal address. Redirects are followed manually, capped at 3
+hops, with the guard in front of each one.
 
 ### Resource exhaustion
 
 | Vector | Bound |
 |---|---|
 | Large upload | 10 MB per file, 150 MB per batch, enforced as bytes arrive |
-| **DOCX zip bomb** | 380 KB unpacking to 194 MB passed every size check and cost 531 MB of RSS. The archive directory is now read first; over 25 MB is refused before a byte is decompressed |
+| Compressed archives | A DOCX is a ZIP, so the upload cap alone does not bound it. The archive directory is read first and anything unpacking past 25 MB is refused before a byte is decompressed |
 | Runaway text | Extraction stops past twice the 60,000 characters ever sent to the model |
-| ATS download | Streamed, aborted past 10 MB rather than buffered and measured after |
-| CSV | Oversized fields and NUL bytes are skipped rows, not a 500 |
+| ATS download | Streamed and aborted past 10 MB, so the limit bounds memory rather than being checked after the fact |
+| CSV | Oversized fields and NUL bytes are skipped rows, never a failed import |
 
 ---
 
@@ -96,11 +85,12 @@ guard in front of each.
 
 | | |
 |---|---|
-| Passwords | bcrypt, cost 12. Over 72 bytes are pre-hashed, since bcrypt silently truncates there |
+| Passwords | bcrypt, cost 12. Inputs over 72 bytes are pre-hashed, so a long passphrase keeps its full entropy |
 | Legacy hashes | An older unsalted SHA-256 still verifies via `hmac.compare_digest`, and is upgraded in place on the next successful login |
 | Sessions | HS256 JWT, 7 days, signed with `SECRET_KEY` |
+| Brute force | 10 sign-in attempts per 15 minutes per address, 8 signups per hour. Keyed on the address the proxy observed, counted `TRUSTED_PROXY_HOPS` entries from the right of `X-Forwarded-For`, so the header cannot be used to mint a fresh bucket |
 | Service key | Render only. Never in Vercel, never in a `NEXT_PUBLIC_*` variable |
-| Seeded account | A `demo@hirelens.ai` account with a fixed password used to be created on every startup — including in production, which is exactly where the Supabase fallback runs. Removed |
+| Default accounts | None. No account is seeded at startup on any deployment, so there is no shared or well-known credential to find |
 
 ---
 
@@ -108,20 +98,23 @@ guard in front of each.
 
 | Surface | Rule |
 |---|---|
-| `/health` | Whether a service is well, never why. Detail is in the logs and in the authenticated diagnostics route. The switch is a function, not a route argument — an argument would be a query parameter, and `?detail=true` would hand it straight back |
+| `/health` | Whether a service is well, never why. The detail is in the logs and in the authenticated diagnostics route, and is not reachable by any query parameter |
 | 500 responses | A generic sentence and a request id. The traceback goes to the log |
 | Login failures | Never reveal whether the address exists |
 | Forgot password | Always 200, same body |
-| LLM errors | The Gemini key is in the query string, so httpx puts it in connection errors. It is masked before the error is logged or surfaced |
-| DOCX parse errors | The library's own message is logged; the user gets advice |
+| LLM errors | Provider credentials are masked before an error is logged or surfaced, including the ones carried in a query string |
+| Parse errors | The library's own message is logged; the person uploading gets advice they can act on |
 
 ---
 
 ## Dependencies
 
 CI runs `pip-audit` on the backend and `npm audit` on the frontend on every
-push. Eight frontend packages nothing imported were removed rather than kept
-patched.
+push, and the dependency tree is kept deliberately small — an unused package
+is removed rather than carried and patched.
+
+Every production dependency permits commercial, closed-source distribution.
+See [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md).
 
 ---
 
