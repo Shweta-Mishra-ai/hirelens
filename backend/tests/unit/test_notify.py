@@ -92,15 +92,69 @@ class TestSendRawEmailFallback:
         result = asyncio.run(send_raw_email("candidate@example.com", "Subject", "<p>hi</p>", "hi"))
         assert result is False
 
-    def test_bad_resend_key_falls_through_without_raising(self):
-        settings.RESEND_API_KEY = "invalid_test_key_wont_work"
+    def _with_resend(self, monkeypatch, handler):
+        """Point the sender's httpx client at a scripted transport.
+
+        This used to make a real HTTPS request to api.resend.com with a bogus
+        key, which made the test depend on the network and — worse — sent a
+        candidate's email address to a third party from every test run.
+        """
+        import httpx
+
+        real = httpx.AsyncClient
+
+        def factory(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", factory)
+        settings.RESEND_API_KEY = "test-key"
         settings.SMTP_HOST = ""
-        # Should attempt Resend, fail gracefully (network/auth error caught
-        # internally), and return False rather than propagate an exception.
+
+    def test_a_rejected_resend_key_returns_false_without_raising(self, monkeypatch):
+        import httpx
+
+        self._with_resend(monkeypatch, lambda r: httpx.Response(401, text="invalid api key"))
         result = asyncio.run(send_raw_email("candidate@example.com", "Subject", "<p>hi</p>", "hi"))
         assert result is False
 
+    def test_a_resend_outage_returns_false_without_raising(self, monkeypatch):
+        import httpx
+
+        def boom(request):
+            raise httpx.ConnectError("no route to host", request=request)
+
+        self._with_resend(monkeypatch, boom)
+        result = asyncio.run(send_raw_email("candidate@example.com", "Subject", "<p>hi</p>", "hi"))
+        assert result is False
+
+    def test_a_delivered_email_returns_true(self, monkeypatch):
+        """Nothing covered the success path, so a change that stopped mail
+        going out would not have failed a single test."""
+        import httpx
+
+        sent = {}
+
+        def handler(request):
+            import json as _json
+
+            sent.update(_json.loads(request.content))
+            sent["auth"] = request.headers.get("Authorization")
+            return httpx.Response(200, json={"id": "email-1"})
+
+        self._with_resend(monkeypatch, handler)
+        result = asyncio.run(
+            send_raw_email("candidate@example.com", "Interview invite", "<p>hi</p>", "hi")
+        )
+        assert result is True
+        assert sent["to"] == ["candidate@example.com"]
+        assert sent["subject"] == "Interview invite"
+        assert sent["html"] == "<p>hi</p>"
+        assert sent["auth"] == "Bearer test-key"
+
     def test_bad_smtp_host_falls_through_without_raising(self):
+        # `.test` is reserved by RFC 6761 and never resolves, so this fails
+        # at DNS without leaving the machine.
         settings.RESEND_API_KEY = ""
         settings.SMTP_HOST = "smtp.invalid-host-that-does-not-exist.test"
         settings.SMTP_USER = "user"

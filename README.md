@@ -184,6 +184,39 @@ npm run dev
 
 ---
 
+## Setting up the Supabase database
+
+Without Supabase the app runs on a local SQLite file, which is fine for
+development but is wiped whenever the container is replaced. For a real
+deployment, create a Supabase project and run these three files in the SQL
+Editor, **in order**:
+
+| File | What it creates |
+|---|---|
+| `backend/sql/001_core_schema.sql` | `reports` (with the indexes the dashboard's filters and sorts need) and `profiles` |
+| `backend/sql/002_team_collaboration.sql` | `teams`, `team_members`, `team_invites`, `report_comments`, `report_votes`, and `reports.team_id` |
+| `backend/sql/003_candidate_notifications.sql` | the two `candidate_notified_*` columns on `reports` |
+
+Every statement is idempotent, so re-running the set on a project that
+already has some of it is a no-op rather than an error. 002 must come after
+001: it adds a column to `reports` and foreign-keys four tables to it.
+
+`profiles` is what turns a user id into a name. Supabase keeps users in
+`auth.users`, which PostgREST does not expose, so 001 mirrors the readable
+fields into `public.profiles`, keeps them in step with a trigger, and
+backfills anyone who signed up earlier. Without it, comment threads and
+team rosters show a neutral badge instead of a person, and candidate emails
+are signed with the recruiter's raw email address.
+
+A note on row-level security: the backend connects with the service-role
+key, which bypasses RLS entirely. Tenant separation is enforced in
+application code — every query filters on `user_id`, and
+`app/services/teams/access.py` gates shared reports. The policies in these
+files are the second line, so the anon and authenticated keys stay safe if
+anything is ever read straight from the browser.
+
+---
+
 ## Testing
 
 Run the automated test suites:

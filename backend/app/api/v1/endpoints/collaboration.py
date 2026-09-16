@@ -17,6 +17,7 @@ from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import HireLensException, NotFoundError, ForbiddenError, DBRequiredError
 from app.api.v1.endpoints.analysis import _jobs
 from app.core.shapes import as_dict, as_str
+from app.services import directory
 from app.core import local_db
 from app.services.teams.access import user_can_access_report, is_team_member
 
@@ -93,7 +94,7 @@ def _fetch_report_row(db, report_id: str) -> dict:
     raise NotFoundError(f"Report '{report_id}' not found.")
 
 
-def _with_display_names(rows: list[dict], current_user_id: str) -> list[dict]:
+def _with_display_names(rows: list[dict], current_user_id: str, db=None) -> list[dict]:
     """
     Add `user_name` to each row so the UI never has to render a raw user id.
 
@@ -104,7 +105,7 @@ def _with_display_names(rows: list[dict], current_user_id: str) -> list[dict]:
     if not rows:
         return rows
 
-    names = local_db.get_display_names([r.get("user_id") for r in rows])
+    names = directory.get_display_names(db, [r.get("user_id") for r in rows])
     out = []
     for row in rows:
         enriched = dict(row)
@@ -177,13 +178,13 @@ async def list_comments(report_id: str, current_user: dict = Depends(get_current
     if _local_mode(db):
         return {
             "comments": _with_display_names(
-                local_db.list_comments(report_id), current_user["id"]
+                local_db.list_comments(report_id), current_user["id"], db
             )
         }
 
     try:
         res = db.table("report_comments").select("*").eq("report_id", report_id).order("created_at").execute()
-        return {"comments": _with_display_names(res.data or [], current_user["id"])}
+        return {"comments": _with_display_names(res.data or [], current_user["id"], db)}
     except Exception as e:
         logger.error(f"List comments failed for {report_id}: {e}")
         return {"comments": []}
@@ -198,7 +199,7 @@ async def add_comment(report_id: str, body: CommentRequest, current_user: dict =
         created = local_db.add_comment(report_id, current_user["id"], body.comment)
         if not created:
             raise HireLensException("Could not post comment. Please try again.")
-        return _with_display_names([created], current_user["id"])[0]
+        return _with_display_names([created], current_user["id"], db)[0]
 
     try:
         res = db.table("report_comments").insert({
@@ -257,7 +258,7 @@ async def list_votes(report_id: str, current_user: dict = Depends(get_current_us
 
     my_vote = next((v["vote"] for v in votes if v["user_id"] == current_user["id"]), None)
     return {
-        "votes": _with_display_names(votes, current_user["id"]),
+        "votes": _with_display_names(votes, current_user["id"], db),
         "tally": tally,
         "my_vote": my_vote,
     }

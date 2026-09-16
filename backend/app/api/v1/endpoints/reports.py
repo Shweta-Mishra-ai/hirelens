@@ -18,6 +18,7 @@ from app.core.exceptions import NotFoundError, ForbiddenError, HireLensException
 from app.core.rate_limit import check_rate_limit
 from app.core.config import settings
 from app.core import local_db
+from app.services import directory
 from app.core.shapes import (
     as_dict,
     as_score,
@@ -596,8 +597,8 @@ async def get_notify_draft(
     candidate_email = candidate.get("email")
     candidate_name = candidate.get("name") or "Candidate"
 
-    sender_name = local_db.get_display_name(
-        current_user["id"], current_user.get("email") or "The Hiring Team"
+    sender_name = directory.get_display_name(
+        db, current_user["id"], current_user.get("email") or "The Hiring Team"
     )
     team_name = "HireLens"
     if db:

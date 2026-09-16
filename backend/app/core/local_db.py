@@ -809,23 +809,6 @@ def accept_invites_for_email(email: str, user_id: str) -> int:
 
 
 
-def get_display_name(user_id: str, fallback: str = "") -> str:
-    """
-    One person's name for the top of an email, with a fallback.
-
-    The JWT carries only the user id and email, so every caller that wanted
-    a name was reading `current_user.get("full_name")` — a key that is never
-    present. Candidate decision emails were therefore signed with the
-    recruiter's raw email address, and team invites said an email address
-    had invited you, in both cases with the name sitting unread in the users
-    table.
-    """
-    if not user_id:
-        return fallback
-    profile = get_display_names([user_id]).get(str(user_id)) or {}
-    return (profile.get("full_name") or "").strip() or fallback
-
-
 init_local_db()
 init_collaboration_tables()
 init_team_tables()

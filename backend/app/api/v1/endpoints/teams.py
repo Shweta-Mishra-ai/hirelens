@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, EmailStr, field_validator
 
 from app.core import local_db
+from app.services import directory
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import HireLensException, NotFoundError, ForbiddenError
 from app.services.teams.access import (
@@ -106,7 +107,7 @@ async def list_my_teams(current_user: dict = Depends(get_current_user), db=Depen
     return {"teams": list(by_id.values())}
 
 
-def _with_member_names(rows: list[dict], current_user_id: str) -> list[dict]:
+def _with_member_names(rows: list[dict], current_user_id: str, db=None) -> list[dict]:
     """
     Add `user_name` so the member list shows people, not user ids.
 
@@ -118,7 +119,7 @@ def _with_member_names(rows: list[dict], current_user_id: str) -> list[dict]:
     if not rows:
         return rows
 
-    names = local_db.get_display_names([r.get("user_id") for r in rows])
+    names = directory.get_display_names(db, [r.get("user_id") for r in rows])
     out = []
     for row in rows:
         enriched = dict(row)
@@ -146,14 +147,14 @@ async def list_team_members(team_id: str, current_user: dict = Depends(get_curre
         try:
             res = db.table("team_members").select("user_id,role,joined_at").eq("team_id", team_id).execute()
             if res.data:
-                return {"members": _with_member_names(res.data, current_user["id"])}
+                return {"members": _with_member_names(res.data, current_user["id"], db)}
         except Exception as e:
             logger.warning(f"DB list members failed ({e}) — using in-memory fallback")
 
     members = local_db.list_team_members(team_id)
     if not members:
         members = [m for m in _mem_team_members if m["team_id"] == team_id]
-    return {"members": _with_member_names(members, current_user["id"])}
+    return {"members": _with_member_names(members, current_user["id"], db)}
 
 
 @router.post("/{team_id}/invite")
@@ -205,8 +206,8 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
         team_name = _mem_teams[team_id].get("name", team_name)
 
     invite_url = f"{settings.FRONTEND_URL}/signup?invite_email={body.email}&team_id={team_id}"
-    inviter_name = local_db.get_display_name(
-        current_user["id"], current_user.get("email") or "A recruiter"
+    inviter_name = directory.get_display_name(
+        db, current_user["id"], current_user.get("email") or "A recruiter"
     )
 
     # Send real email via Resend / SMTP
