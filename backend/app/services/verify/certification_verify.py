@@ -50,7 +50,7 @@ async def _safe_fetch(client: httpx.AsyncClient, url: str) -> httpx.Response | N
             next_url = r.headers.get("location")
             if not next_url:
                 return r
-            current_url = httpx.URL(current_url).join(next_url).human_repr()
+            current_url = str(httpx.URL(current_url).join(next_url))
             continue
         return r
     return None  # too many redirects

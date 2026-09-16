@@ -64,10 +64,17 @@ def isolate_stores():
     from app.api.v1.endpoints import auth as auth_ep
     from app.api.v1.endpoints.analysis import _jobs
     from app.core.rate_limit import _mem_rate_limit
+    from app.services.queue import batch_store
 
     def _reset():
         _mem_rate_limit.clear()
         auth_ep._mem_users.clear()
+        # Batches are capped per user (BULK_MAX_CONCURRENT_BATCHES_PER_USER)
+        # and nothing marks them finished in a test, so the third upload by
+        # the same test account anywhere in the suite starts coming back 429
+        # — in whichever file happens to run third.
+        batch_store._mem_batches.clear()
+        batch_store._mem_active_batches_by_user.clear()
         try:
             _jobs.clear()
         except Exception:
