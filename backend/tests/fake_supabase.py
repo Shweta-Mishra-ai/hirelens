@@ -50,6 +50,7 @@ class _Query:
         self.op = "select"
         self.payload: dict | None = None
         self.json_path_rejected: str | None = None
+        self.on_conflict: list[str] = []
 
     # ── builder ────────────────────────────────────────────────────────────
     def select(self, _columns="*", count=None):
@@ -122,6 +123,7 @@ class _Query:
     def upsert(self, payload: dict, on_conflict=None):
         self.op = "upsert"
         self.payload = payload
+        self.on_conflict = [c.strip() for c in (on_conflict or "").split(",") if c.strip()]
         return self
 
     # ── execution ──────────────────────────────────────────────────────────
@@ -141,8 +143,17 @@ class _Query:
             )
 
         if self.op in ("insert", "upsert"):
-            self.client.tables.setdefault(self.table_name, []).append(dict(self.payload or {}))
-            return Result([dict(self.payload or {})])
+            payload = dict(self.payload or {})
+            rows = self.client.tables.setdefault(self.table_name, [])
+            if self.op == "upsert" and self.on_conflict:
+                for row in rows:
+                    if all(row.get(c) == payload.get(c) for c in self.on_conflict):
+                        row.update(payload)
+                        return Result([dict(row)])
+            payload.setdefault("id", f"{self.table_name}-{len(rows) + 1}")
+            payload.setdefault("created_at", f"2026-01-01T00:00:{len(rows):02d}+00:00")
+            rows.append(payload)
+            return Result([dict(payload)])
 
         matched = self._rows()
 
