@@ -205,8 +205,11 @@ def count_users() -> int:
         return 0
 
 
-# Ensure database is initialized upon import
-init_local_db()
+# Ensure database is initialized upon import.
+# NOTE: this call must stay at the BOTTOM of the module. It used to sit
+# mid-file, which was fine while `init_local_db` was the only initialiser,
+# but any table helper defined below it would not yet exist at call time.
+_INIT_MOVED_TO_BOTTOM = True
 
 
 # ── Reports ───────────────────────────────────────────────────────────────────
@@ -364,3 +367,191 @@ def count_reports(user_id: str | None = None) -> int:
         return row["c"] if row else 0
     except Exception:
         return 0
+
+
+# ── Co-pilot evaluations ─────────────────────────────────────────────────────
+#
+# Interview notes and scorecards were previously kept in a module-level dict
+# keyed by report id, with no ownership check on read or write, and lost on
+# every restart. Storing them beside the report — scoped to the owner in the
+# query — fixes both.
+
+
+def save_copilot(report_id: str, user_id: str, payload: dict) -> bool:
+    """Attach co-pilot data to a report the user owns. False if not theirs."""
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT report_data FROM reports WHERE id = ? AND user_id = ?",
+                (report_id, user_id),
+            ).fetchone()
+            if not row:
+                return False
+            try:
+                data = json.loads(row["report_data"] or "{}")
+            except json.JSONDecodeError:
+                data = {}
+            data["copilot_data"] = payload
+            conn.execute(
+                "UPDATE reports SET report_data = ? WHERE id = ? AND user_id = ?",
+                (json.dumps(data, default=str), report_id, user_id),
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Could not save co-pilot data for {report_id}: {e}")
+        return False
+
+
+def get_copilot(report_id: str, user_id: str) -> dict | None:
+    """Co-pilot data for a report the user owns, or None."""
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT report_data FROM reports WHERE id = ? AND user_id = ?",
+                (report_id, user_id),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            return (json.loads(row["report_data"] or "{}") or {}).get("copilot_data") or {}
+        except json.JSONDecodeError:
+            return {}
+    except Exception as e:
+        logger.error(f"Could not load co-pilot data for {report_id}: {e}")
+        return None
+
+
+# ── Collaboration: comments and votes ────────────────────────────────────────
+
+
+def init_collaboration_tables() -> None:
+    try:
+        with _get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS report_comments (
+                    id TEXT PRIMARY KEY,
+                    report_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    comment TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS report_votes (
+                    report_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    vote TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (report_id, user_id)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_comments_report ON report_comments(report_id)"
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Could not initialise collaboration tables: {e}")
+
+
+def add_comment(report_id: str, user_id: str, comment: str) -> dict | None:
+    try:
+        cid = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT INTO report_comments (id, report_id, user_id, comment, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (cid, report_id, user_id, comment, now),
+            )
+            conn.commit()
+        return {
+            "id": cid, "report_id": report_id, "user_id": user_id,
+            "comment": comment, "created_at": now,
+        }
+    except Exception as e:
+        logger.error(f"Could not add comment to {report_id}: {e}")
+        return None
+
+
+def list_comments(report_id: str) -> list[dict]:
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM report_comments WHERE report_id = ? ORDER BY created_at ASC",
+                (report_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Could not list comments for {report_id}: {e}")
+        return []
+
+
+def delete_comment(comment_id: str, user_id: str) -> bool:
+    """Only the comment's author may delete it."""
+    try:
+        with _get_connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM report_comments WHERE id = ? AND user_id = ?",
+                (comment_id, user_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Could not delete comment {comment_id}: {e}")
+        return False
+
+
+def cast_vote(report_id: str, user_id: str, vote: str) -> bool:
+    """One vote per user per report; re-voting replaces the previous one."""
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT INTO report_votes (report_id, user_id, vote, created_at)"
+                " VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(report_id, user_id) DO UPDATE SET vote = excluded.vote,"
+                " created_at = excluded.created_at",
+                (report_id, user_id, vote, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Could not record vote on {report_id}: {e}")
+        return False
+
+
+def list_votes(report_id: str) -> list[dict]:
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                "SELECT report_id, user_id, vote FROM report_votes WHERE report_id = ?",
+                (report_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Could not list votes for {report_id}: {e}")
+        return []
+
+
+
+def list_reports_any_owner(report_id: str) -> list[dict]:
+    """
+    Look up a report by id without scoping to an owner.
+
+    Used only where the caller needs the owner in order to run its own
+    access check (collaboration's `_fetch_report_row`). Every user-facing
+    read path should use `get_report`, which scopes by owner in the query.
+    """
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, user_id, candidate_name FROM reports WHERE id = ?", (report_id,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Could not look up report {report_id}: {e}")
+        return []
+
+
+init_local_db()
+init_collaboration_tables()
