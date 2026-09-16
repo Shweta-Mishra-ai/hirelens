@@ -618,13 +618,50 @@ class AnalysisEngine:
                 d = d.get(k, default)
             return d if d is not None else default
 
-        skills_raw    = extracted.get("skills") or {}
-        skills_ver    = analysis.get("skills_verification") or {}
-        cred_raw      = analysis.get("credibility") or {}
-        sub_scores    = cred_raw.get("sub_scores") or {}
+        def clamp_score(value, default: int = 70) -> int:
+            """
+            Coerce an LLM-supplied score into a valid 0-100 integer.
+
+            Scores arrived here as `int(value)` directly, which is wrong twice
+            over. A model that answers "74%" or "high" instead of 74 raised
+            ValueError and took the whole analysis down — despite this
+            method's docstring promising that every field access is safe.
+            And sub-scores were never range-checked, so a negative value
+            passed straight through to the UI, which rendered a bar with a
+            negative width.
+            """
+            if isinstance(value, bool):  # bool is an int subclass; not a score
+                return default
+            if isinstance(value, (int, float)):
+                try:
+                    n = int(value)
+                except (ValueError, OverflowError):
+                    return default
+            elif isinstance(value, str):
+                # Tolerate "74", "74%", " 74 ", "74/100".
+                match = re.search(r"-?\d+", value)
+                if not match:
+                    return default
+                n = int(match.group())
+            else:
+                return default
+            return max(0, min(100, n))
+
+        skills_raw    = extracted.get("skills")
+        if not isinstance(skills_raw, dict):
+            skills_raw = {}
+        skills_ver    = analysis.get("skills_verification")
+        if not isinstance(skills_ver, dict):
+            skills_ver = {}
+        cred_raw      = analysis.get("credibility")
+        if not isinstance(cred_raw, dict):
+            cred_raw = {}
+        sub_scores    = cred_raw.get("sub_scores")
+        if not isinstance(sub_scores, dict):
+            sub_scores = {}
 
         # Compute overall if missing or 0
-        overall = int(cred_raw.get("overall") or 0)
+        overall = clamp_score(cred_raw.get("overall"), default=0)
         if overall == 0 and sub_scores:
             weights = {
                 "timeline": 0.25, "skills_consistency": 0.20,
@@ -632,7 +669,7 @@ class AnalysisEngine:
                 "resume_quality": 0.10, "content_authenticity": 0.15,
             }
             overall = round(sum(
-                int(sub_scores.get(k) or 70) * w
+                clamp_score(sub_scores.get(k)) * w
                 for k, w in weights.items()
             ))
 
@@ -648,42 +685,47 @@ class AnalysisEngine:
             else:
                 recommendation = "high_risk"
 
-        flags = list(analysis.get("flags") or [])
+        def as_list(value) -> list:
+            """A model that answers with a string where a list belongs must
+            not crash the merge; treat anything non-list as absent."""
+            return list(value) if isinstance(value, list) else []
+
+        flags = as_list(analysis.get("flags"))
 
         report = {
             "candidate": extracted.get("candidate") or {},
             "skills": {
-                "all_claimed":           list(skills_raw.get("all_claimed") or []),
-                "verified_by_evidence":  list(skills_ver.get("verified_by_evidence") or []),
-                "unverified":            list(skills_ver.get("unverified") or []),
+                "all_claimed":           as_list(skills_raw.get("all_claimed")),
+                "verified_by_evidence":  as_list(skills_ver.get("verified_by_evidence")),
+                "unverified":            as_list(skills_ver.get("unverified")),
                 "keyword_stuffing_risk": skills_raw.get("keyword_stuffing_risk") or "none",
                 "primary_domain":        skills_raw.get("primary_domain") or "",
                 "domain_spread_concern": bool(skills_ver.get("domain_spread_concern")),
                 "domain_spread_note":    skills_ver.get("domain_spread_note"),
             },
-            "experience":    list(extracted.get("experience") or []),
-            "education":     list(extracted.get("education") or []),
-            "projects":      list(extracted.get("projects") or []),
-            "certifications": list(extracted.get("certifications") or []),
+            "experience":    as_list(extracted.get("experience")),
+            "education":     as_list(extracted.get("education")),
+            "projects":      as_list(extracted.get("projects")),
+            "certifications": as_list(extracted.get("certifications")),
             "credibility": {
                 "overall":        overall,
                 "recommendation": recommendation,
                 "confidence":     cred_raw.get("confidence") or "medium",
                 "sub_scores": {
-                    "timeline":             int(sub_scores.get("timeline") or 70),
-                    "skills_consistency":   int(sub_scores.get("skills_consistency") or 70),
-                    "education":            int(sub_scores.get("education") or 70),
-                    "project_authenticity": int(sub_scores.get("project_authenticity") or 70),
-                    "resume_quality":       int(sub_scores.get("resume_quality") or 70),
-                    "content_authenticity": int(sub_scores.get("content_authenticity") or 70),
+                    "timeline":             clamp_score(sub_scores.get("timeline")),
+                    "skills_consistency":   clamp_score(sub_scores.get("skills_consistency")),
+                    "education":            clamp_score(sub_scores.get("education")),
+                    "project_authenticity": clamp_score(sub_scores.get("project_authenticity")),
+                    "resume_quality":       clamp_score(sub_scores.get("resume_quality")),
+                    "content_authenticity": clamp_score(sub_scores.get("content_authenticity")),
                 },
                 "score_rationale": cred_raw.get("score_rationale") or {},
             },
             "ai_content_analysis": self._merge_ai_content_analysis(analysis.get("ai_content_analysis")),
-            "timeline_gaps":        list(analysis.get("timeline_gaps") or []),
+            "timeline_gaps":        as_list(analysis.get("timeline_gaps")),
             "flags":                flags,
-            "positive_signals":     list(analysis.get("positive_signals") or []),
-            "interview_questions":  list(analysis.get("interview_questions") or []),
+            "positive_signals":     as_list(analysis.get("positive_signals")),
+            "interview_questions":  as_list(analysis.get("interview_questions")),
             "summary":              str(analysis.get("summary") or "Analysis complete."),
             "one_liner":            str(analysis.get("one_liner") or ""),
             "recruiter_decision":   None,
@@ -695,7 +737,7 @@ class AnalysisEngine:
         # function of role count and skill count that saturated at 98 for
         # nearly every resume) was removed rather than tuned.
         report["career_trajectory"] = compute_career_trajectory(
-            list(extracted.get("experience") or [])
+            as_list(extracted.get("experience"))
         )
 
 

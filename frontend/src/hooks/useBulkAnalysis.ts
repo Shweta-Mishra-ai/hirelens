@@ -49,15 +49,26 @@ export function useBulkAnalysis() {
   const pollBatch = useCallback(
     (batchId: string) => {
       let attempts = 0;
+      // The first poll runs before any interval exists, so `stopPolling()`
+      // inside it has nothing to clear. Without this flag, a batch that was
+      // already finished on that first call still had an interval started
+      // immediately afterwards, and went on polling a completed batch for
+      // the full MAX_ATTEMPTS ceiling — 240 requests over ten minutes,
+      // re-setting state each time.
+      let finished = false;
+      const finish = () => {
+        finished = true;
+        stopPolling();
+      };
 
       const pollOnce = async () => {
         if (!mountedRef.current || !token) {
-          stopPolling();
+          finish();
           return;
         }
         attempts++;
         if (attempts > MAX_ATTEMPTS) {
-          stopPolling();
+          finish();
           safeSetState({
             phase: "error",
             message: "This batch is taking unusually long. Check your dashboard shortly.",
@@ -70,14 +81,14 @@ export function useBulkAnalysis() {
           if (!mountedRef.current) return;
 
           if (batch.is_done) {
-            stopPolling();
+            finish();
             safeSetState({ phase: "done", batch });
           } else {
             safeSetState({ phase: "processing", batch });
           }
         } catch (err) {
           if (err instanceof APIError && (err.status === 401 || err.status === 404)) {
-            stopPolling();
+            finish();
             safeSetState({
               phase: "error",
               message:
@@ -91,7 +102,11 @@ export function useBulkAnalysis() {
       };
 
       return pollOnce().then(() => {
-        pollRef.current = setInterval(pollOnce, POLL_MS);
+        // Only schedule the interval if that first poll did not already
+        // reach a terminal state.
+        if (!finished && mountedRef.current) {
+          pollRef.current = setInterval(pollOnce, POLL_MS);
+        }
       });
     },
     [token, stopPolling, safeSetState],
