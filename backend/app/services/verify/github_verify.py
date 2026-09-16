@@ -140,16 +140,16 @@ def _skill_matches_evidence(skill: str, evidence_terms: set[str]) -> bool:
     """
     Decide whether a claimed skill is evidenced by GitHub activity.
 
-    This used to accept a match whenever either string contained the other:
+    Substring matching is not an option here. Accepting a match whenever
+    either string contains the other —
 
         if skill_l == term_l or skill_l in term_l or term_l in skill_l:
 
-    which made the check actively misleading rather than merely noisy.
-    "Java" was verified by a JavaScript repo. "R" matched "Rust", "React"
-    and "Terraform". "Go" matched "Google", "MongoDB" and "Django". "C"
-    matched essentially any evidence term. Because a false "verified" tells
-    a recruiter a claim has been independently corroborated when it has
-    not, these errors are worse than reporting nothing.
+    — verifies "Java" from a JavaScript repo, matches "R" against "Rust",
+    "React" and "Terraform", "Go" against "Google", "MongoDB" and "Django",
+    and "C" against almost anything. A false "verified" tells a recruiter a
+    claim has been independently corroborated when it has not, which is worse
+    than reporting nothing.
 
     A skill now matches only when one of the following holds:
 

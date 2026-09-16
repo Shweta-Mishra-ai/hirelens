@@ -10,13 +10,11 @@ a name. Where those names live depends on how the instance is deployed:
     a trigger, and backfills anyone who signed up earlier).
   * Without Supabase, they are rows in the local SQLite `users` table.
 
-Every caller used to read the SQLite table directly. On a Supabase
-deployment that table has no rows at all, so the fix that stopped raw UUIDs
-appearing in the UI never actually applied to the deployment that runs in
-production: teammates showed as a neutral badge and every candidate email
-went out signed with the recruiter's raw email address instead of their
-name. This module asks Supabase first and falls back to SQLite, so one
-lookup is right on both.
+Reading the SQLite table directly is wrong on a Supabase deployment, where it
+holds no rows at all: teammates come back as a neutral badge, and candidate
+emails go out signed with the recruiter's raw email address instead of their
+name. This module asks Supabase first and falls back to SQLite, so one lookup
+is right on both.
 """
 
 import logging

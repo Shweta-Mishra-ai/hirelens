@@ -182,11 +182,11 @@ export interface Report {
  * A row from `GET /api/v1/reports`. This is NOT the same shape as `Report` —
  * the list endpoint returns a flat summary, not the full nested report.
  *
- * The dashboard previously typed its state as `Report[]` without importing
- * `Report` at all. `Report` is also a DOM lib global (the Reporting API), so
- * TypeScript resolved it to that interface and reported no error, while every
- * field access had to be cast through `as any`. Having a real type for the
- * row is what makes those casts unnecessary.
+ * Worth naming explicitly: `Report` is also a DOM lib global (the Reporting
+ * API), so a component that annotates its state as `Report[]` without
+ * importing this module resolves to that interface, compiles clean, and needs
+ * an `as any` on every field access. A real type for the row removes the
+ * casts and the trap.
  */
 export interface ReportSummary {
   id: string;

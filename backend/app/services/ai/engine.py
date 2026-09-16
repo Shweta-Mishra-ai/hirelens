@@ -1,13 +1,15 @@
 """
-HireLens — AI Engine (Gemini 2.5 Flash Primary)
-Fixed:
-- Gemini model name updated to stable endpoint
-- Proper KeyError handling on Gemini response structure
-- Timeout per provider (not just total)
-- LLMError wraps all provider errors
-- _merge handles missing/null fields safely
-- JSON extraction handles nested JSON in text
-- Max tokens increased to handle large resumes
+HireLens — AI Engine (Gemini 2.5 Flash primary, Groq and Anthropic behind it)
+
+Two passes over a resume: extract it into structured JSON, then analyse that
+structure into scores, flags and questions.
+
+Providers are tried in order, each with its own timeout, and a rate limit hands
+off to the next provider immediately rather than spending a backoff first.
+Every provider error is wrapped as LLMError so the caller has one thing to
+handle. A model's answer is treated as untrusted input throughout: JSON is
+extracted from whatever prose surrounds it, and every field _merge() reads is
+coerced to the type and range the report promises.
 """
 
 import asyncio

@@ -1,9 +1,12 @@
 /**
  * HireLens — Auth Store (Zustand + persist)
- * Fixed:
- * - signup handles requires_email_confirmation response
- * - Token expiry detection
- * - isLoading always reset (even on error)
+ *
+ * The session, persisted across reloads.
+ *
+ * Sign-up handles the confirmation-required answer as its own outcome rather
+ * than an error, an expired token is detected before a request is sent with
+ * it, and `isLoading` is reset on every path out — including the failing ones,
+ * which is what keeps a failed sign-in from leaving a spinner on screen.
  */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";

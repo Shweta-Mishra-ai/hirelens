@@ -1,11 +1,16 @@
 """
 HireLens — Analysis API
-Fixed:
-- Supabase .execute() is SYNC — no await
-- MIME type detection improved (browsers send wrong types)
-- Job cleanup after 1 hour to prevent memory leak
-- Background task error isolation
-- Rate limiting with Redis (sync client)
+
+Upload a resume, run it through the pipeline in the background, and report
+progress against a job id.
+
+The endpoint returns as soon as the file is accepted; everything after that
+happens in a background task that catches its own exceptions, so a document
+that defeats the parser fails one job rather than the process. The uploaded
+content type is treated as a hint only — browsers routinely send the wrong one
+— and the real type is taken from the bytes. Job records are kept for an hour
+and finished reports are recovered from storage, so an analysis survives the
+process that ran it.
 """
 
 import uuid
@@ -62,16 +67,15 @@ def _cleanup_old_jobs():
 
 def _check_rate_limit(redis, user_id: str) -> None:
     """
-    Rate limiting for expensive upload endpoints (analysis, bulk, match, ats).
+    Rate limiting for the expensive upload endpoints (analysis, bulk, match,
+    ats).
 
-    This used to `return` immediately whenever redis was falsy — meaning
-    with REDIS_URL unset (the shipped default), these endpoints had NO
-    rate limit at all. core.rate_limit.check_rate_limit() already has a
-    proper in-memory fallback (a module-level dict, cleaned up
-    opportunistically) for exactly this situation; this function now
-    delegates to it instead of re-implementing a weaker version. Kept as
-    a thin wrapper so existing callers (analysis.py, bulk.py, match.py,
-    ats.py) don't need to change their call sites.
+    Delegates to core.rate_limit.check_rate_limit(), which falls back to an
+    in-process window when Redis is unconfigured — as it is by default. The
+    limit has to hold in that configuration too: these endpoints each spend an
+    LLM call, and skipping the check when Redis is absent would leave the
+    shipped default with no limit at all. Kept as a thin wrapper so the four
+    call sites stay identical.
     """
     from app.core.rate_limit import check_rate_limit
     check_rate_limit(redis, user_id, settings.RATE_LIMIT_PER_MINUTE, window_seconds=60)
@@ -210,9 +214,9 @@ def _recover_finished_job(job_id: str, user_id: str, db) -> dict | None:
 
     On a free tier that is not an edge case: the container is replaced on
     every deploy and every wake from sleep, and an analysis takes up to two
-    minutes. The endpoint used to answer 404 and the UI told them to upload
-    again — a second LLM call, a second charge, and a duplicate report for a
-    CV that had already been analysed.
+    minutes. Answering 404 there would send the recruiter back to upload the
+    same CV again — a second LLM call, a second charge, and a duplicate report
+    for a candidate already analysed.
     """
     if db:
         try:
@@ -282,18 +286,11 @@ def _stamp_report_metadata(result: dict, *, user_id: str, filename: str, report_
     would otherwise carry, so the in-memory path is not a second-class
     citizen.
 
-    Two fields here were previously missing or misnamed, and both were
-    visible to users:
-
-    * `file_name` — the writer stamped `_owner_file_name`, but every reader
-      (reports.py's list, CSV export and search) looked for `file_name`. The
-      dashboard therefore showed a blank filename for every report whenever
-      the DB path wasn't taken, and searching by filename never matched.
-    * `created_at` — nothing set it at all. The list endpoint emitted `""`,
-      and the dashboard rendered that as "NaNd ago".
-
-    `_owner_file_name` is still written for backwards compatibility with
-    report blobs persisted by an earlier version.
+    The names have to be exactly the ones the readers use — reports.py's list,
+    CSV export and search all read `file_name` and `created_at`, and a blob
+    missing either shows a recruiter a blank filename and a date that renders
+    as "NaNd ago". `_owner_file_name` is written alongside for report blobs
+    persisted by an earlier version.
     """
     now = datetime.now(timezone.utc).isoformat()
     result["id"] = report_id
@@ -309,10 +306,10 @@ def _persist_report_locally(
     """
     Write the report to the local SQLite store.
 
-    This is what makes a report survive a restart. Before it existed, a
-    deployment without Supabase kept reports only in `_jobs`, a process-local
-    dict — so every Render free-tier sleep, redeploy or crash silently
-    discarded everything the recruiter had analysed.
+    This is what makes a report survive a restart. `_jobs` is a process-local
+    dict, so without a durable copy a deployment running without Supabase
+    would lose everything the recruiter had analysed on each free-tier sleep,
+    redeploy or crash.
 
     Failure here is logged and swallowed: the in-memory copy is still good
     for this process, and a storage problem should not turn a completed
@@ -342,9 +339,9 @@ def _parse_failure_message(filename: str, error: Exception) -> str:
     """
     Turn a parser exception into something a recruiter can act on.
 
-    The raw exception text was previously passed straight through, which
-    surfaced messages like "No /Root object! - Is this really a PDF?" —
-    accurate, but it tells the user nothing about what to do next.
+    Library text passed straight through produces messages like "No /Root
+    object! - Is this really a PDF?" — accurate, and useless to the person
+    holding the file. Every branch below ends in a next step.
     """
     detail = str(error).strip()
     lowered = detail.lower()
@@ -491,13 +488,11 @@ async def _run_analysis(
                 logger.info(f"[{job_id}] Stored report {report_id} in Supabase")
             except Exception as e:
                 logger.warning(f"[{job_id}] DB store failed — using in-memory fallback: {e}")
-                # Store in memory as fallback so report is still accessible.
-                # user_id and file_name are stamped onto the blob itself here —
-                # without this, the in-memory read/list/delete paths in
-                # reports.py have no reliable way to check ownership, which
-                # was a real access-control gap (any authenticated user could
-                # read/list/delete any in-memory report). See reports.py's
-                # _mem_reports_for_user() and get_report() for the read side.
+                # Store in memory as a fallback so the report is still
+                # reachable. The owner is stamped onto the blob itself: it is
+                # the only thing the in-memory read, list and delete paths in
+                # reports.py can check ownership against, and they fail closed
+                # without it. See _mem_reports_for_user() and get_report().
                 _stamp_report_metadata(result, user_id=user_id, filename=filename, report_id=report_id)
                 _persist_report_locally(
                 result, report_id=report_id, user_id=user_id, filename=filename, job_id=job_id

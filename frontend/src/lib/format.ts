@@ -1,11 +1,10 @@
 /**
  * Shared formatting helpers.
  *
- * `relativeTime` exists because the dashboard used to render "NaNd ago" for
- * any report whose `created_at` was absent — the in-memory storage path never
- * set one. The backend now always stamps it, but a formatter that turns bad
- * input into visible garbage is a bug in its own right, so this one fails
- * closed to a dash.
+ * `relativeTime` renders a dash for anything it cannot read as a date. The
+ * backend always stamps `created_at`, but a formatter that turns a missing or
+ * malformed value into visible garbage — "NaNd ago" — is a defect on its own
+ * terms, so this one fails closed.
  */
 /**
  * Timestamps here are always creation times for records this product wrote,

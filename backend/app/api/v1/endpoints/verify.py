@@ -108,12 +108,11 @@ RANK_TO_RECOMMENDATION = {v: k for k, v in RECOMMENDATION_RANK.items()}
 
 def _apply_verification_to_recommendation(report: dict, trust: dict) -> dict | None:
     """
-    The AI's initial recommendation is set BEFORE verification ever runs —
-    so strong real-world evidence uncovered by verification (e.g. the
-    candidate's claimed GitHub account doesn't exist) previously never fed
-    back into the headline recommendation shown on the dashboard/rankings,
-    even though it's exactly the kind of signal that should change a
-    recruiter's read on a candidate.
+    The AI's initial recommendation is set BEFORE verification ever runs, so
+    without this, strong real-world evidence — the candidate's claimed GitHub
+    account not existing, say — never reaches the headline recommendation on
+    the dashboard and rankings, which is exactly the signal that should change
+    a recruiter's read on a candidate.
 
     Deliberately asymmetric and conservative:
     - DOWNGRADE by one level (recommended → manual_review → high_risk) when

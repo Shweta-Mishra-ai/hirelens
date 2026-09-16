@@ -1,10 +1,13 @@
 """
 HireLens — Auth API
-Fixed:
-- Supabase auth calls are SYNC — no await
-- Email confirmation handling
-- Seamless fallback in-memory auth for dev/unconfigured Supabase environments
-- Enforced 5,000 active recruiter capacity limit
+
+Sign-up, sign-in, Google OAuth, and the session the rest of the API trusts.
+
+Supabase is the identity store when it is configured, and the local store when
+it is not — but never both for the same account. A Supabase instance that
+answers with a rejection is authoritative; one that cannot be reached at all
+produces a 503, because creating an account locally in that moment would fork
+the identity of whoever signs up during the outage.
 """
 
 import logging
@@ -121,11 +124,10 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
 
     # ── Capacity check: max 5,000 registered recruiters ─────────────────
     #
-    # This used to count ROWS IN THE REPORTS TABLE — one row per resume
-    # analysed, not per user. Five recruiters who had each analysed a
-    # thousand candidates would therefore lock the product to every new
-    # signup, while five thousand recruiters who had analysed nothing would
-    # pass. Count distinct users instead, which is what the limit is about.
+    # Counted as DISTINCT USERS, which is what the limit is about. Counting
+    # rows in the reports table instead would count resumes analysed: five
+    # busy recruiters would close the product to new signups, and five
+    # thousand idle ones would sail through.
     #
     # A failure to evaluate capacity must not block signup: the check is a
     # commercial guardrail, not a security control, and an outage in the
@@ -243,12 +245,10 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
         "company": body.company or "",
     }
 
-    # Join any team this address was invited to.
-    #
-    # This call previously existed only on the Supabase branch, so on a
-    # deployment without Supabase team invites never worked at all: the
-    # invitee signed up, joined nothing, and neither they nor the person who
-    # invited them saw an error.
+    # Join any team this address was invited to. This belongs on every
+    # sign-up path, not only the Supabase one: invites are stored durably in
+    # both back-ends, and skipping the call means the invitee signs up, joins
+    # nothing, and neither they nor the person who invited them sees an error.
     _accept_invites_quietly(db, uid, email_str)
 
     token = create_access_token({"sub": uid, "email": email_str})
@@ -401,14 +401,12 @@ async def oauth_verify(body: OAuthVerifyRequest, db=Depends(get_db)):
 
     # SECURITY: there is deliberately no fallback here.
     #
-    # This endpoint used to end by minting a signed JWT for a synthetic
-    # "google_user@hirelens.ai" identity whenever `db` was unset or the
-    # Supabase lookup raised. Because the only input is an unverified
-    # `access_token` string, that made the endpoint an unauthenticated token
-    # issuer: POSTing any value at all — including an empty or random
-    # string — returned a valid 7-day session token that every other
-    # endpoint accepted. Anyone who could reach the API could read and write
-    # candidate reports without an account.
+    # The only input to this endpoint is an `access_token` string that nothing
+    # has verified yet. Supabase is what turns it into an identity, so if
+    # Supabase is unset or the lookup fails, there is no identity — and minting
+    # a session anyway would make this an unauthenticated token issuer, where
+    # posting any string at all buys a valid session that every other endpoint
+    # accepts. An outage means sign-in is unavailable, never that it is open.
     #
     # The only safe behaviour when we cannot positively verify the token with
     # the identity provider is to reject it. If Supabase is not configured,

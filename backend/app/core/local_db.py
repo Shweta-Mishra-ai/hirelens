@@ -106,13 +106,12 @@ def init_local_db():
         logger.error(f"Failed to initialize local SQLite database: {e}")
 
 
-# NOTE: this used to seed a `demo@hirelens.ai` account with the fixed
-# password "Password123!" on every startup. That account was created in any
-# deployment where Supabase was unconfigured or unreachable — including
-# production, where the Supabase fallback is exactly the path a misconfigured
-# or degraded deploy takes. A publicly-known credential that grants access to
-# candidate reports is a backdoor regardless of intent, so the seeding is
-# gone. Create accounts through /api/v1/auth/signup.
+# NOTE: no account is ever seeded here. Seeding a demo login would create it
+# in any deployment where Supabase is unconfigured or unreachable — including
+# production, since the local store is exactly the path a misconfigured or
+# degraded deploy takes — and a credential published in source that opens
+# candidate reports is a backdoor whatever it was meant for. Accounts are
+# created through /api/v1/auth/signup.
 
 
 def get_user_by_email(email: str) -> dict | None:
@@ -216,27 +215,26 @@ def count_users() -> int:
         return 0
 
 
-# Ensure database is initialized upon import.
-# NOTE: this call must stay at the BOTTOM of the module. It used to sit
-# mid-file, which was fine while `init_local_db` was the only initialiser,
-# but any table helper defined below it would not yet exist at call time.
-_INIT_MOVED_TO_BOTTOM = True
+# Initialisation happens at the BOTTOM of this module, not here. Every table
+# helper has to be defined before the init calls run, and one sitting mid-file
+# would leave anything declared below it undefined at call time.
+_INIT_AT_MODULE_BOTTOM = True
 
 
 # ── Reports ───────────────────────────────────────────────────────────────────
 #
-# The `reports` table has existed since the first version of this module but
-# had no read or write functions, so nothing ever used it. Without Supabase,
-# analysed reports lived only in `analysis._jobs` — a process-local dict. On
-# Render's free tier the container sleeps after ~15 minutes idle and restarts
-# on the next request, and every redeploy restarts it too, so a recruiter
-# could analyse fifty candidates in the morning and find an empty dashboard
-# after lunch, with no error and nothing to recover.
+# What makes the SQLite fallback an actual store rather than a cache.
 #
-# These functions make the SQLite fallback an actual store. It is still a
-# single-node fallback — Supabase remains the right answer for multi-instance
-# deployments — but it means "no database configured" degrades to "slower and
-# single-node" instead of "silently loses your work".
+# Without these, a deployment running without Supabase keeps analysed reports
+# only in `analysis._jobs`, a process-local dict. On Render's free tier the
+# container sleeps after ~15 minutes idle, restarts on the next request, and
+# restarts again on every redeploy — so a recruiter could analyse fifty
+# candidates in the morning and find an empty dashboard after lunch, with no
+# error and nothing to recover.
+#
+# It is still a single-node fallback; Supabase remains the right answer for a
+# multi-instance deployment. But it means "no database configured" degrades to
+# "slower and single-node" rather than "loses your work".
 
 
 def save_report(
@@ -409,10 +407,9 @@ def count_reports(user_id: str | None = None) -> int:
 
 # ── Co-pilot evaluations ─────────────────────────────────────────────────────
 #
-# Interview notes and scorecards were previously kept in a module-level dict
-# keyed by report id, with no ownership check on read or write, and lost on
-# every restart. Storing them beside the report — scoped to the owner in the
-# query — fixes both.
+# Interview notes and scorecards live beside the report they belong to, scoped
+# to the owner in the query. A module-level dict keyed by report id would lose
+# them on every restart and carry no owner to authorize a read against.
 
 
 def save_copilot(report_id: str, user_id: str, payload: dict) -> bool:
@@ -624,12 +621,10 @@ def get_display_names(user_ids: list[str]) -> dict[str, dict]:
 
 # ── Teams ────────────────────────────────────────────────────────────────────
 #
-# Teams, memberships and invites were process-local lists in
-# services/teams/access.py, so a team created without Supabase disappeared on
-# the next restart — taking its membership with it, and leaving any report
-# already shared to that team pointing at a team_id that no longer resolved.
-# Reports, comments, votes and co-pilot data all persist; this was the last
-# store that did not.
+# Teams, memberships and invites, kept on disk rather than in the process-local
+# lists in services/teams/access.py. A team that lives only in memory vanishes
+# on the next restart, taking its membership with it and leaving any report
+# already shared to it pointing at a team_id that no longer resolves.
 
 
 def init_team_tables() -> None:
@@ -770,11 +765,11 @@ def delete_team(team_id: str, owner_id: str) -> bool:
     """
     Remove a team, everyone in it, and any invite still outstanding.
 
-    Deleting a team used to touch only this process's caches, so on the
-    SQLite path the team and its whole roster were still on disk and came
-    back on the next restart. Membership outliving the team also matters
-    for access: a report stamped with that team_id stays readable to anyone
-    whose membership row survives.
+    All three, not just the team row. Touching only this process's caches
+    leaves the team and its whole roster on disk, to come back on the next
+    restart — and membership that outlives its team is an access question,
+    since a report stamped with that team_id stays readable to anyone whose
+    membership row survived.
     """
     try:
         with _get_connection() as conn:

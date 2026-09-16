@@ -56,16 +56,13 @@ async def _download_resume(client: httpx.AsyncClient, url: str) -> bytes:
     Downloads a resume URL from an ATS-exported CSV, re-validating the SSRF
     guard on every redirect hop rather than just the original URL.
 
-    This used to call `client.get(url, follow_redirects=True)` after a
-    single is_public_http_url() check on the ORIGINAL url — httpx would
-    then silently follow any number of redirects, including one pointing
-    at a cloud metadata endpoint (e.g. 169.254.169.254) or an internal
-    service, without ever re-checking where it actually ended up. A
-    malicious/compromised host only has to return a safe-looking URL on
-    the first request and a 302 on the follow-up. This mirrors the
-    correct pattern already used in certification_verify.py's
-    _safe_fetch(): follow_redirects=False + a manual loop that re-runs the
-    guard on every Location header before following it.
+    Checking only the original URL is not enough. With follow_redirects=True
+    httpx follows the rest of the chain unchecked, so a hostile or compromised
+    host need only answer the first request with a safe-looking URL and the
+    second with a 302 to a cloud metadata endpoint (169.254.169.254) or an
+    internal service. This mirrors certification_verify.py's _safe_fetch():
+    follow_redirects=False plus a manual loop that re-runs the guard against
+    every Location header before following it.
 
     Also streams and aborts as soon as MAX_DOWNLOAD_MB is exceeded, rather
     than buffering the full response body first and checking len()
@@ -123,12 +120,9 @@ async def ats_import(
     """
     user_id = current_user["id"]
 
-    # This endpoint had NO rate limiting at all before this fix — every
-    # other expensive upload path (analysis, bulk, match) at least called
-    # _check_rate_limit, even though that function itself had its own bug
-    # (see the C-06 fix in analysis.py). ATS import can trigger up to
-    # BULK_MAX_FILES downloads + full analyses per call, so it's at least
-    # as expensive as bulk upload and needs the same guard.
+    # The same guard the other upload paths use. One ATS import can trigger
+    # up to BULK_MAX_FILES downloads and full analyses, which makes it at
+    # least as expensive as a bulk upload.
     require_analysis_available()
     _check_rate_limit(redis, user_id)
 

@@ -1,10 +1,14 @@
 """
 HireLens — Document Parser
-Fixed:
-- Better encoding handling for international resumes
-- Fallback chain for corrupted PDFs
-- DOCX table extraction improved
-- Minimum text validation with helpful error
+
+Text out of a PDF or DOCX, or a message explaining why not.
+
+PDFs go through three extraction strategies in turn, so a file one library
+chokes on still has two chances. Encoding is detected rather than assumed,
+since resumes arrive from everywhere. DOCX tables are walked explicitly —
+plenty of resumes put the whole employment history in one. A document that
+yields too little text is refused with something the uploader can act on,
+rather than analysed into a confident report about nothing.
 """
 
 import io
@@ -26,12 +30,14 @@ SUPPORTED_MIME = {
 MAX_TEXT_CHARS = 60_000
 EXTRACT_STOP_CHARS = MAX_TEXT_CHARS * 2
 
-# A DOCX is a ZIP, and the upload cap applies to the COMPRESSED bytes. A
-# 380KB archive that unpacks to 194MB passes every check this parser used to
-# make — valid signature, well under the size limit, perfectly well-formed
-# XML — and cost 531MB of resident memory on one request when measured. On a
-# 512MB instance that is an OOM kill, which takes the API down for everyone
-# rather than just failing the upload. A real CV's XML is a fraction of this.
+# A DOCX is a ZIP, and the upload cap applies to the COMPRESSED bytes, so the
+# size of the file says nothing about the size of its contents. A 380KB archive
+# that unpacks to 194MB has a valid signature, sits well under the upload
+# limit, and contains perfectly well-formed XML; decompressing it cost 531MB of
+# resident memory on one request when measured, which on a 512MB instance is an
+# OOM kill that takes the API down for everyone rather than failing one upload.
+# The declared uncompressed size is read from the archive directory and checked
+# before anything is decompressed. A real CV's XML is a fraction of this.
 MAX_DOCX_UNCOMPRESSED_MB = 25
 
 

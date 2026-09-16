@@ -46,12 +46,10 @@ async def _safe_head(client: httpx.AsyncClient, url: str) -> httpx.Response | No
 
     The company domain here is guessed from the candidate's resume text
     (via _guess_domain), which makes it indirectly attacker-influenced the
-    same way a directly-supplied URL would be. This used to run on a
-    client constructed with follow_redirects=True (plus a redundant
-    per-call follow_redirects=True) — httpx would silently follow any
-    redirect chain, including one ending at an internal/metadata address,
-    after only checking the guessed domain itself. Mirrors the same
-    per-hop re-check pattern used elsewhere in this codebase.
+    same way a directly-supplied URL would be. With follow_redirects=True the
+    guard would only ever see the guessed domain, and httpx would follow the
+    rest of the chain unchecked — including a hop ending at an internal or
+    metadata address. Mirrors the per-hop re-check used elsewhere here.
     """
     current_url = url
     for _ in range(_MAX_REDIRECT_HOPS + 1):

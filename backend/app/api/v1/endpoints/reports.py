@@ -1,10 +1,13 @@
 """
 HireLens — Reports API
-Fixed:
-- All Supabase calls are SYNC (no await)
-- Proper error handling on each DB call
-- ForbiddenError not swallowed
-- Decision validation with proper 422
+
+Reading, listing, filtering, exporting and deleting stored reports, plus the
+recruiter's decision on a candidate.
+
+Two rules run through the whole module. Supabase calls are synchronous — the
+v2 client is not awaitable — and every one of them is wrapped, because a
+database that is briefly unavailable has to produce an error the UI can
+retry rather than an empty list that reads as "your candidates are gone".
 """
 
 import re
@@ -82,11 +85,11 @@ def _sort_key(column: str):
     """
     A comparison key that cannot raise, whatever the rows hold.
 
-    The local branch used to sort on `r.get(column) or ""`. For the score
-    columns that turns a legitimate 0 into a string, and Python refuses to
-    compare a string with an int — so a single candidate scoring zero, which
-    is what a failed or genuinely poor analysis produces, made "Score: high
-    to low" return 500 for the whole list. Each column now yields one type.
+    Every column has to yield exactly one type. The obvious `row.get(col) or ""`
+    does not: for a score column it turns a legitimate 0 into a string, and
+    Python will not compare a string with an int — so one candidate scoring
+    zero, which is what a failed or genuinely poor analysis produces, would
+    take down sorting for the whole list.
     """
     if column == "overall_score":
         return lambda row: as_score(row.get(column))
@@ -136,17 +139,14 @@ def _mem_reports_for_user(user_id: str) -> list[dict]:
             continue
         # Reports are stamped with `_owner_user_id` at write time (see
         # analysis.py's _run_analysis and verify.py's _persist_verification).
-        # This used to check the wrong key (`user_id`, which report blobs
-        # never actually had) and treated a missing owner as "visible to
-        # everyone" — which meant, in practice, that this endpoint returned
-        # every user's reports to every user whenever the DB path wasn't
-        # taken. Fail closed: no owner stamp means nobody sees it here.
+        # That exact key is the ownership test, and it fails closed: a blob
+        # with no owner stamp is visible to nobody here, never to everybody.
         if v.get("_owner_user_id") != user_id:
             continue
-        # A blob whose fields are the wrong type used to raise here, and
-        # this loop runs over every report the user owns — so one bad
-        # report returned 500 for the whole list and the dashboard showed
-        # no candidates at all. See app/core/shapes.py.
+        # Shapes are coerced rather than trusted. This loop runs over every
+        # report the user owns, so a single blob with a field of the wrong
+        # type would otherwise take down the whole list and leave the
+        # dashboard showing no candidates at all. See app/core/shapes.py.
         row = report_summary_row(
             key.replace("report_", "", 1),
             v,
@@ -216,12 +216,10 @@ async def list_reports(
         if search:
             s = _sanitize_search(search)
             # NOTE: .or_() only builds the filter — it makes no network call,
-            # so it can't itself raise a PostgREST error. The previous
-            # try/except here was dead code; any actual failure (e.g. an
-            # unsupported JSON-path filter) only surfaces from .execute()
-            # below, which is now wrapped separately so search failures are
-            # distinguishable from "no results" instead of silently
-            # returning an empty list either way.
+            # so it cannot raise a PostgREST error and wrapping it here would
+            # catch nothing. A real failure (an unsupported JSON-path filter,
+            # say) surfaces from .execute() below, which is wrapped separately
+            # so a failed search is distinguishable from an empty one.
             query = query.or_(
                 f"candidate_name.ilike.%{s}%,"
                 f"file_name.ilike.%{s}%,"
@@ -278,11 +276,10 @@ async def list_reports(
             "pages": max(1, (total + limit - 1) // limit),
         }
     except Exception as e:
-        # This used to return {"reports": [], "total": 0} — indistinguishable
-        # from "you have no reports yet" in the UI. A DB outage should never
-        # look identical to a brand-new, empty account; the frontend needs a
-        # real error here so it can show "couldn't load, retry" instead of
-        # a false empty state.
+        # Raise, rather than returning {"reports": [], "total": 0}. A database
+        # outage must never look identical to a brand-new empty account: the
+        # frontend needs a real error here so it can offer a retry instead of
+        # telling a recruiter their candidates are gone.
         logger.error(f"list_reports failed for user {current_user['id']}: {e}")
         raise HireLensException(
             "Could not load your reports right now due to a database error. Please try again."
@@ -482,8 +479,7 @@ async def get_report(
 
     # ── Fallback: in-memory store ─────────────────────────────────────────────
     # Same ownership rule as the DB path above: no owner stamp means nobody
-    # can read it here, not "everybody can". See _mem_reports_for_user()
-    # above for the fuller explanation of why this was previously fail-open.
+    # can read it here, not "everybody can". See _mem_reports_for_user().
     data = _jobs.get(f"report_{report_id}")
     if isinstance(data, dict) and data:
         if data.get("_owner_user_id") != current_user["id"]:
@@ -512,17 +508,15 @@ async def submit_decision(
     db=Depends(get_db),
 ):
     """
-    Record recruiter's hiring decision.
-    This feeds the model improvement feedback loop.
+    Record the recruiter's hiring decision. This feeds the model-improvement
+    feedback loop.
 
-    This used to always return {"status": "ok"} — even when the DB write
-    raised an exception, and even when the update matched zero rows (wrong
-    report_id, or a report belonging to someone else). Both cases told the
-    recruiter "recorded" when nothing was saved. It also never wrote
-    anything to the in-memory fallback store at all, so a decision made
-    while the DB was unavailable was silently discarded every time. Both
-    are fixed below: DB errors and zero-row matches now raise a real error,
-    and the in-memory path actually persists the decision.
+    "Recorded" is only ever reported when something was actually written. A
+    failed write raises, and so does an update that matched zero rows — a
+    wrong report_id, or a report belonging to someone else — because both of
+    those would otherwise tell a recruiter their decision was saved when it
+    was not. The fallback store is written too, so a decision made while the
+    database is unavailable is still kept.
     """
     saved = False
 
@@ -710,9 +704,8 @@ async def delete_report(
             logger.warning(f"Delete failed for {report_id}: {e}")
 
     # Also remove from in-memory — but only if this user actually owns it.
-    # This used to pop() unconditionally: any authenticated user could
-    # delete any other user's in-memory report just by guessing/obtaining
-    # its ID, with no ownership check at all.
+    # An unconditional pop() here would let any authenticated user delete
+    # anyone else's report from the fallback store knowing only its id.
     mem_key = f"report_{report_id}"
     existing = _jobs.get(mem_key)
     if existing is not None:

@@ -29,8 +29,8 @@ def decode_token(token: str) -> dict:
 
 # ── Password hashing ──────────────────────────────────────────────────────────
 #
-# The local auth store previously hashed passwords as
-# ``sha256("hirelens_salt_" + password)``. That is not a password hash:
+# Passwords are hashed with bcrypt. A construction like
+# ``sha256("hirelens_salt_" + password)`` is not a password hash:
 #
 #   * the salt is a compile-time constant shared by every account, so it adds
 #     no per-user entropy and does nothing to stop a precomputed table;

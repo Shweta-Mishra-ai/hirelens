@@ -50,11 +50,10 @@ def _fetch_report_row(db, report_id: str) -> dict:
     The report row, from Supabase when configured and the local store
     otherwise.
 
-    This used to raise DBRequiredError the moment `db` was falsy, which took
-    the entire Discuss tab — comments, votes and sharing — out of service on
-    any deployment without Supabase. The feature is documented as working, so
-    failing the whole tab with a 503 rather than degrading was a bug, not a
-    deliberate limitation.
+    Raising DBRequiredError when `db` is falsy would take the entire Discuss
+    tab — comments, votes and sharing — out of service on any deployment
+    running without Supabase. The local store answers the same question, so
+    the tab degrades rather than returning 503.
     """
     if db:
         try:

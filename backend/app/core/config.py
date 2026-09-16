@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     BULK_CONCURRENCY: int = 3               # simultaneous AI analyses within a batch
     BULK_MAX_CONCURRENT_BATCHES_PER_USER: int = 2
     BATCH_TTL_SECONDS: int = 21_600         # 6 hours — how long batch/job state is kept
+    # How long a batch may hold one of a user's concurrent-batch slots before
+    # the slot is assumed abandoned and reclaimed. A full batch is at worst
+    # ceil(BULK_MAX_FILES / BULK_CONCURRENCY) waves of ANALYSIS_TIMEOUT_SECONDS
+    # — 17 x 120s = 34 min — so 45 minutes leaves headroom without leaving a
+    # user locked out of bulk upload after a restart mid-batch.
+    BATCH_LEASE_SECONDS: int = 2_700
 
     # JD Match (Feature 2)
     JD_MAX_CHARS: int = 6000

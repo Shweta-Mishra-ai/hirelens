@@ -13,7 +13,7 @@ class TestBatchStore:
         from app.services.queue import batch_store
         # Isolate each test from module-level in-memory state
         batch_store._mem_batches.clear()
-        batch_store._mem_active_batches_by_user.clear()
+        batch_store._mem_leases.clear()
         self.store = batch_store
 
     def test_create_and_get_batch_no_redis(self):

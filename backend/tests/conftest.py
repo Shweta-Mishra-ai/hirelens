@@ -74,7 +74,7 @@ def isolate_stores():
         # the same test account anywhere in the suite starts coming back 429
         # — in whichever file happens to run third.
         batch_store._mem_batches.clear()
-        batch_store._mem_active_batches_by_user.clear()
+        batch_store._mem_leases.clear()
         try:
             _jobs.clear()
         except Exception:

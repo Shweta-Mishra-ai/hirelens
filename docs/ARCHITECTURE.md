@@ -222,7 +222,7 @@ backend/
       teams/            access
       email/            sender
       directory.py      user id → a person's name, on either store
-  sql/                  001 core · 002 collaboration · 003 notifications
+  sql/                  001 core · 002 collaboration · 003 notifications · 004 invite addresses
   tests/                unit/ · integration/ · fake_supabase.py
 
 frontend/

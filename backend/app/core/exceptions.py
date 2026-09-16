@@ -36,10 +36,10 @@ class ConflictError(HireLensException):
     The request is well-formed and authenticated, but conflicts with existing
     state — e.g. signing up with an email that already has an account.
 
-    Signup previously raised AuthError (401) for that case. 401 is wrong
-    twice over: the caller is not being asked to authenticate, and clients
-    that treat any 401 as "session expired" (this app's own API client
-    among them) would log the user out in response to a duplicate signup.
+    409, not 401. A 401 would be wrong twice over: the caller is not being
+    asked to authenticate, and any client that reads 401 as "session expired"
+    — this app's own API client among them — would sign the user out in
+    response to a duplicate signup.
     """
     http_status = 409; code = "conflict"; message = "This conflicts with existing data."
 
@@ -75,11 +75,10 @@ class AnalysisUnavailable(HireLensException):
     """
     Raised at upload time when no AI provider is configured at all.
 
-    This is distinct from LLMError, which means a configured provider failed.
-    Uploads used to be accepted and queued in this state, so the user waited
-    through the whole progress animation before being shown a raw internal
-    message about setting GEMINI_API_KEY in a .env file — advice that means
-    nothing to a recruiter and everything to the operator.
+    Distinct from LLMError, which means a configured provider failed. Raised
+    at upload rather than during the run: accepting the file would make the
+    recruiter sit through the whole progress animation to be told about a
+    missing GEMINI_API_KEY, which is advice for the operator, not for them.
     """
     http_status = 503; code = "analysis_unavailable"
     message = (

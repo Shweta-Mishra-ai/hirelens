@@ -157,7 +157,15 @@ class TestInvites:
         body = res.json()
         assert body["status"] == "invited"
         assert body["email_sent"] is True
-        assert "invite_email=new@example.com" in body["invite_url"]
+
+        # The address is percent-encoded in the link. This asserted the raw
+        # form, which cannot be right: a `+` in a query string decodes to a
+        # space, so a plus-addressed invitee reached the sign-up page with an
+        # address that matched no invite. What matters is that the parameter
+        # decodes back to exactly the address that was invited.
+        from urllib.parse import urlparse, parse_qs
+        params = parse_qs(urlparse(body["invite_url"]).query)
+        assert params["invite_email"] == ["new@example.com"]
         assert any(i["email"] == "new@example.com" for i in db.tables["team_invites"])
 
     def test_the_invite_email_names_the_team_and_the_inviter(self, owner, db, mailer):

@@ -88,9 +88,9 @@ def parse_ats_csv(file_bytes: bytes) -> dict:
     skipped: list[dict] = []
 
     # csv raises on a field over its internal limit (131072 chars by default),
-    # which previously escaped as an unhandled 500 on any CSV with one
-    # oversized cell. Iterate manually so a bad record is reported as a
-    # skipped row instead of failing the whole import.
+    # and one oversized cell would otherwise escape as a 500 that fails the
+    # whole import. Iterate manually so a bad record is reported as a skipped
+    # row alongside the ones that parsed.
     row_iter = iter(reader)
     i = 1
     while True:

@@ -10,7 +10,7 @@ Every score cites the sentence that produced it. Every claim is checked against
 public record. Nothing is decided for you.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Shweta-Mishra-ai/hirelens/ci.yml?branch=main&style=flat-square&label=CI)](../../actions)
-[![Tests](https://img.shields.io/badge/tests-1%2C149%20backend%20·%20105%20frontend-10B981?style=flat-square)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1%2C215%20backend%20·%20114%20frontend-10B981?style=flat-square)](#testing)
 [![Coverage](https://img.shields.io/badge/backend%20coverage-86%25-10B981?style=flat-square)](#testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Next.js](https://img.shields.io/badge/Next.js-14.2-000?style=flat-square&logo=next.js)](https://nextjs.org)
@@ -196,7 +196,7 @@ App on **localhost:3000**, interactive API docs on **localhost:8000/docs**.
 
 Leave the Supabase variables unset and everything runs on a local SQLite file —
 no cloud account needed to develop. For production, follow
-[**docs/DEPLOYMENT.md**](docs/DEPLOYMENT.md): three SQL files, one Render
+[**docs/DEPLOYMENT.md**](docs/DEPLOYMENT.md): four SQL files, one Render
 service, one Vercel project.
 
 ---
@@ -226,15 +226,15 @@ Every row is covered by a test that fails if the behaviour regresses.
 ## Testing
 
 ```bash
-cd backend && python -m pytest tests/ -v           # 1,149 tests
-cd frontend && npm test                            # 105 tests
+cd backend && python -m pytest tests/ -v           # 1,215 tests
+cd frontend && npm test                            # 114 tests
 cd frontend && npm run build                       # types + production build
 ```
 
 | | |
 |---|---|
-| Backend | **1,149** tests · **86%** coverage |
-| Frontend | **105** tests · strict TypeScript · zero lint warnings |
+| Backend | **1,215** tests · **86%** coverage |
+| Frontend | **114** tests · strict TypeScript · zero lint warnings |
 | CI | pytest · vitest · `pip-audit` · `npm audit` · production build |
 
 Two things the suite does that a typical one does not:

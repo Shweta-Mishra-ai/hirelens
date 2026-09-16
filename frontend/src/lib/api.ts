@@ -1,10 +1,13 @@
 /**
  * HireLens — Typed API Client
- * Fixed:
- * - Network error handling (fetch can throw TypeError)
- * - Response content-type check before .json()
- * - Timeout handling
- * - 204 No Content handled correctly
+ *
+ * One place where every request is made and every failure is turned into an
+ * APIError the UI can render.
+ *
+ * fetch rejects with a TypeError when the network is down, which is not an
+ * HTTP error and has no status; the content type is checked before parsing,
+ * because an error page is not JSON; requests time out rather than hanging;
+ * and a 204 is not fed to .json().
  */
 import type {
   TeamInvite,

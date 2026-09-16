@@ -31,11 +31,9 @@ async def _keep_alive_loop():
     considers the service idle and spins it down.
     Only runs in production; development can skip it.
 
-    Requires BACKEND_URL to be set explicitly. This used to derive the URL
-    by string-replacing two specific hardcoded hostnames inside
-    FRONTEND_URL — which silently pinged the wrong URL (or a URL that
-    doesn't exist) the moment either domain changed. Failing loudly and
-    skipping is safer than guessing.
+    Requires BACKEND_URL to be set explicitly, and skips with a warning when
+    it is not. Deriving it from FRONTEND_URL would mean guessing, and a
+    keep-alive that pings the wrong host looks exactly like one that works.
     """
     import httpx
 
@@ -168,15 +166,13 @@ async def request_middleware(request: Request, call_next):
         })
 
 # CORS is added LAST so it ends up OUTERMOST: Starlette wraps each new
-# middleware around the ones already added. It used to be registered before
-# the two above, which put the catch-all in request_middleware outside it
-# rather than inside — so a
-# 500 was returned without an Access-Control-Allow-Origin header, and the
-# browser refused to let the app read it. From the frontend, a server error
-# was indistinguishable from the API being unreachable: no status, no
-# message, just a failed fetch and a silent empty page. Everything the
-# server says, including "something went wrong", has to be readable by the
-# app that asked.
+# middleware around the ones already added, and the catch-all handler above
+# has to run INSIDE the CORS layer. Outside it, a 500 goes back without an
+# Access-Control-Allow-Origin header and the browser refuses to let the app
+# read it — which leaves the frontend unable to tell a server error from an
+# unreachable API: no status, no message, just a failed fetch. Everything the
+# server says, "something went wrong" included, has to be readable by the app
+# that asked.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins_list,
@@ -277,8 +273,9 @@ async def validation_handler(request: Request, exc: RequestValidationError):
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """
     Envelope for everything Starlette raises directly — chiefly 404 for an
-    unknown route and 405 for a wrong method, which previously returned
-    `{"detail": "Not Found"}`.
+    unknown route and 405 for a wrong method. Those come out of Starlette as
+    `{"detail": "..."}`, and this puts them in the same shape as every other
+    error the API returns, so the client has one thing to parse.
     """
     codes = {
         400: "bad_request",

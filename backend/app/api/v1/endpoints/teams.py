@@ -6,6 +6,7 @@ Enhanced with explicit UUID generation & in-memory fallback for demo mode.
 import uuid
 import time
 import logging
+from urllib.parse import quote
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, EmailStr, field_validator
 
@@ -14,12 +15,29 @@ from app.services import directory
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import HireLensException, NotFoundError, ForbiddenError
 from app.services.teams.access import (
-    get_user_role, can_manage_team,
+    get_user_role, can_manage_team, normalize_email as directory_normalize_email,
     _mem_teams, _mem_team_members, _mem_team_invites,
 )
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
+
+
+def _invite_url(email: str, team_id: str) -> str:
+    """The link in the invite email.
+
+    The address is percent-encoded. Interpolating it raw breaks plus-addressing
+    — `a+team@gmail.com` arrives at the sign-up page as `a team@gmail.com`,
+    because a `+` in a query string decodes to a space — and the prefilled
+    address then matches no invite.
+    """
+    from app.core.config import settings
+    return (
+        f"{settings.FRONTEND_URL}/signup"
+        f"?invite_email={quote(email, safe='')}&team_id={quote(team_id, safe='')}"
+    )
+
+
 
 
 class CreateTeamRequest(BaseModel):
@@ -116,10 +134,9 @@ def _with_member_names(rows: list[dict], current_user_id: str, db=None) -> list[
     """
     Add `user_name` so the member list shows people, not user ids.
 
-    The team page previously rendered the raw UUID as the member's name and
-    built their avatar initials from it. The names are already in the users
-    table; nothing was reading them. Unresolvable ids are left without a
-    name so the UI can show a neutral badge instead of inventing one.
+    Without it the team page has only a UUID to render, both as the name and
+    as the avatar initials. An id that resolves to nobody is left without a
+    name, so the UI can show a neutral badge rather than invent one.
     """
     if not rows:
         return rows
@@ -173,6 +190,13 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
     invite_id = str(uuid.uuid4())
     team_name = "HireLens Workspace"
 
+    # Every store matches invites on the lowercased address, and so does the
+    # acceptance path at signup. Writing whatever spelling the inviter typed
+    # means the invitee signs up and joins nothing, with no error on either
+    # side. See access.normalize_email().
+    invite_email = directory_normalize_email(body.email)
+    invite_url = _invite_url(invite_email, team_id)
+
     if db:
         try:
             team_data = db.table("teams").select("name").eq("id", team_id).maybe_single().execute()
@@ -182,17 +206,17 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
             existing = (
                 db.table("team_invites")
                 .select("id")
-                .eq("team_id", team_id).eq("email", body.email).eq("status", "pending")
+                .eq("team_id", team_id).eq("status", "pending")
+                .eq("email", invite_email)
                 .execute()
             )
             if existing.data:
-                invite_url = f"{settings.FRONTEND_URL}/signup?invite_email={body.email}&team_id={team_id}"
-                return {"status": "already_invited", "email": body.email, "invite_url": invite_url}
+                return {"status": "already_invited", "email": invite_email, "invite_url": invite_url}
 
             db.table("team_invites").insert({
                 "id": invite_id,
                 "team_id": team_id,
-                "email": body.email,
+                "email": invite_email,
                 "invited_by": current_user["id"],
                 "status": "pending",
             }).execute()
@@ -200,7 +224,7 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
             # Attempt Supabase native admin invite email if available
             try:
                 if hasattr(db, "auth") and hasattr(db.auth, "admin"):
-                    db.auth.admin.invite_user_by_email(str(body.email))
+                    db.auth.admin.invite_user_by_email(invite_email)
             except Exception as e:
                 logger.warning(f"Supabase admin invite email skipped: {e}")
 
@@ -210,14 +234,13 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
     if team_id in _mem_teams:
         team_name = _mem_teams[team_id].get("name", team_name)
 
-    invite_url = f"{settings.FRONTEND_URL}/signup?invite_email={body.email}&team_id={team_id}"
     inviter_name = directory.get_display_name(
         db, current_user["id"], current_user.get("email") or "A recruiter"
     )
 
     # Send real email via Resend / SMTP
     email_sent = await send_team_invite_email(
-        to_email=str(body.email),
+        to_email=invite_email,
         team_name=team_name,
         inviter_name=inviter_name,
         invite_url=invite_url,
@@ -226,18 +249,18 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
     # Persist the invite, then mirror it into this process's cache. Without
     # the durable row an invite sent before a restart could never be
     # accepted — the invitee would sign up and silently join nothing.
-    local_db.create_invite(invite_id, team_id, str(body.email))
+    local_db.create_invite(invite_id, team_id, invite_email)
     _mem_team_invites.append({
         "id": invite_id,
         "team_id": team_id,
-        "email": body.email,
+        "email": invite_email,
         "invited_by": current_user["id"],
         "status": "pending",
     })
 
     return {
         "status": "invited",
-        "email": body.email,
+        "email": invite_email,
         "email_sent": email_sent,
         "invite_url": invite_url,
     }
@@ -328,16 +351,14 @@ async def remove_member(team_id: str, user_id: str, current_user: dict = Depends
         except Exception as e:
             logger.warning(f"DB remove member failed: {e}")
 
-    # Remove from memory.
+    # Remove from memory, by MUTATING the list rather than rebinding it.
     #
-    # This used to do `global _mem_team_members; _mem_team_members = [...]`,
-    # which only rebinds the NAME `_mem_team_members` inside this module
-    # (teams.py). It does not touch the list object that access.py's
-    # get_user_role() actually reads — that's a separate binding of the
-    # same original name, imported at the top of this file. The practical
-    # effect: removing a team member was a complete no-op for every
-    # authorization check for as long as the process stayed up, even
-    # though this endpoint returned {"status": "removed"}.
+    # `global _mem_team_members; _mem_team_members = [...]` would only rebind
+    # the name inside this module. access.py's get_user_role() reads the
+    # original list object through its own binding of that name, so it would
+    # never see the change — and removing a member would be a no-op for every
+    # authorization check while this process stayed up, with the endpoint
+    # still answering {"status": "removed"}.
     #
     # Mutating the list in place (slice assignment) instead of rebinding
     # the name means every module holding a reference to this list — this

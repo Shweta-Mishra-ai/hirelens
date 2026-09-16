@@ -21,11 +21,10 @@ from app.services.teams.access import user_can_access_report
 logger = logging.getLogger("hirelens")
 router = APIRouter()
 
-# NOTE: the module-level `_copilot_store` dict that used to live here is
-# gone. It was keyed by report id with no owner in the key and no ownership
-# check on the read path, which made it a cross-tenant leak (see
-# _assert_can_access below). Co-pilot data now lives with the report it
-# belongs to, in Supabase and/or the local SQLite store.
+# NOTE: co-pilot data lives with the report it belongs to, in Supabase and/or
+# the local SQLite store — deliberately not in a module-level dict here. A
+# store keyed by report id alone carries no owner, which leaves the read path
+# with nothing to authorize against. See _assert_can_access below.
 
 
 class CustomQuestion(BaseModel):
@@ -41,12 +40,11 @@ class CompetencyScore(BaseModel):
     category: str  # technical_depth, problem_solving, culture_fit, authenticity
     # 0 means "not yet rated", 1-5 is the rating.
     #
-    # This used to be ge=1, which made a partially-filled scorecard
-    # unsaveable — and a partially-filled scorecard is the normal case. The
-    # UI starts every category unrated and lets an interviewer clear a rating
-    # by clicking it again, so any save before all four were rated returned
-    # 422 and silently discarded the interviewer's notes along with it,
-    # mid-interview, with no indication of which field was at fault.
+    # ge=0, not ge=1: a partially-filled scorecard is the normal case. The UI
+    # starts every category unrated and lets an interviewer clear a rating by
+    # clicking it again, so requiring a rating would 422 any save made before
+    # all four were scored — discarding the interviewer's notes along with it,
+    # mid-interview, and naming no field as the cause.
     score: int = Field(0, ge=0, le=5)
     notes: str | None = Field(None, max_length=2000)
 

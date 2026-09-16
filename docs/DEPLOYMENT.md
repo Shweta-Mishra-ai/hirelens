@@ -25,6 +25,7 @@ error.
 | 1 | `backend/sql/001_core_schema.sql` | `reports` with the indexes the dashboard's filters and sorts need, `profiles` with its trigger and backfill |
 | 2 | `backend/sql/002_team_collaboration.sql` | `teams`, `team_members`, `team_invites`, `report_comments`, `report_votes`, `reports.team_id` |
 | 3 | `backend/sql/003_candidate_notifications.sql` | the `candidate_notified_*` columns |
+| 4 | `backend/sql/004_normalize_invite_emails.sql` | one spelling for an invited address, so an invite always matches the person who was invited |
 
 **002 must come after 001** — it adds a column to `reports` and foreign-keys
 four tables to it.
