@@ -92,6 +92,35 @@ def _fetch_report_row(db, report_id: str) -> dict:
     raise NotFoundError(f"Report '{report_id}' not found.")
 
 
+def _with_display_names(rows: list[dict], current_user_id: str) -> list[dict]:
+    """
+    Add `user_name` to each row so the UI never has to render a raw user id.
+
+    `user_name` is the person's name where we can resolve it, "You" for the
+    caller, and absent otherwise — the frontend shows a neutral badge in that
+    last case rather than inventing initials from a UUID.
+    """
+    if not rows:
+        return rows
+
+    names = local_db.get_display_names([r.get("user_id") for r in rows])
+    out = []
+    for row in rows:
+        enriched = dict(row)
+        uid = row.get("user_id")
+        if uid == current_user_id:
+            enriched["user_name"] = "You"
+            enriched["is_me"] = True
+        else:
+            profile = names.get(uid) or {}
+            display = (profile.get("full_name") or "").strip() or (profile.get("email") or "").strip()
+            if display:
+                enriched["user_name"] = display
+            enriched["is_me"] = False
+        out.append(enriched)
+    return out
+
+
 def _local_mode(db) -> bool:
     """True when there is no Supabase and the SQLite fallback is in play."""
     return not db
@@ -145,11 +174,15 @@ async def list_comments(report_id: str, current_user: dict = Depends(get_current
     if not user_can_access_report(db, row, current_user["id"]):
         raise ForbiddenError()
     if _local_mode(db):
-        return {"comments": local_db.list_comments(report_id)}
+        return {
+            "comments": _with_display_names(
+                local_db.list_comments(report_id), current_user["id"]
+            )
+        }
 
     try:
         res = db.table("report_comments").select("*").eq("report_id", report_id).order("created_at").execute()
-        return {"comments": res.data or []}
+        return {"comments": _with_display_names(res.data or [], current_user["id"])}
     except Exception as e:
         logger.error(f"List comments failed for {report_id}: {e}")
         return {"comments": []}
@@ -164,7 +197,7 @@ async def add_comment(report_id: str, body: CommentRequest, current_user: dict =
         created = local_db.add_comment(report_id, current_user["id"], body.comment)
         if not created:
             raise HireLensException("Could not post comment. Please try again.")
-        return created
+        return _with_display_names([created], current_user["id"])[0]
 
     try:
         res = db.table("report_comments").insert({
@@ -222,7 +255,11 @@ async def list_votes(report_id: str, current_user: dict = Depends(get_current_us
             tally[v["vote"]] += 1
 
     my_vote = next((v["vote"] for v in votes if v["user_id"] == current_user["id"]), None)
-    return {"votes": votes, "tally": tally, "my_vote": my_vote}
+    return {
+        "votes": _with_display_names(votes, current_user["id"]),
+        "tally": tally,
+        "my_vote": my_vote,
+    }
 
 
 @router.post("/{report_id}/vote")

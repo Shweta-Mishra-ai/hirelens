@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Textarea, Select } from "@/components/ui/Field";
 import { Alert, EmptyState, Skeleton } from "@/components/ui/Feedback";
-import { relativeTime, initials } from "@/lib/format";
+import { relativeTime } from "@/lib/format";
+import { PersonAvatar, personLabel } from "@/components/ui/Person";
 import { cn } from "@/lib/cn";
 import type { ReportComment, VotesResult, Team } from "@/types";
 
@@ -43,6 +44,7 @@ export function DiscussPanel({
   newComment,
   posting,
   currentUserId,
+  currentUserName,
   onNewCommentChange,
   onPostComment,
   onDeleteComment,
@@ -59,6 +61,7 @@ export function DiscussPanel({
   newComment: string;
   posting: boolean;
   currentUserId: string | undefined;
+  currentUserName?: string;
   onNewCommentChange: (v: string) => void;
   onPostComment: () => void;
   onDeleteComment: (id: string) => void;
@@ -164,22 +167,22 @@ export function DiscussPanel({
             <ul className="space-y-3">
               {comments.map((c) => (
                 <li key={c.id} className="flex gap-3">
-                  <span
-                    aria-hidden
-                    className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-canvas-overlay text-2xs font-semibold text-content-muted"
-                  >
-                    {initials(c.user_id)}
-                  </span>
+                  <PersonAvatar
+                    name={c.user_name}
+                    avatarName={(c.is_me ?? c.user_id === currentUserId) ? currentUserName : undefined}
+                    size="sm"
+                    className="mt-0.5"
+                  />
                   <div className="min-w-0 flex-1 rounded-lg border border-line bg-canvas-inset px-3.5 py-2.5">
                     <div className="flex items-baseline justify-between gap-3">
-                      <span className="truncate font-mono text-xs text-content-faint">
-                        {c.user_id === currentUserId ? "You" : c.user_id}
+                      <span className="truncate text-xs font-medium text-content-muted">
+                        {personLabel(c.user_name)}
                       </span>
                       <div className="flex shrink-0 items-center gap-2">
                         <time className="text-xs text-content-faint" dateTime={c.created_at}>
                           {relativeTime(c.created_at)}
                         </time>
-                        {c.user_id === currentUserId && (
+                        {(c.is_me ?? c.user_id === currentUserId) && (
                           <button
                             type="button"
                             aria-label="Delete comment"

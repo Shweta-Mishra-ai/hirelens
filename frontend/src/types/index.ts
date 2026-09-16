@@ -350,6 +350,9 @@ export interface TeamMember {
   user_id: string;
   role: "owner" | "admin" | "member";
   joined_at: string;
+  /** See ReportComment.user_name — absent means "could not resolve". */
+  user_name?: string;
+  is_me?: boolean;
 }
 
 export interface ReportComment {
@@ -358,6 +361,14 @@ export interface ReportComment {
   user_id: string;
   comment: string;
   created_at: string;
+  /**
+   * Resolved display name — "You" for the caller, a real name where the
+   * server could look one up, absent otherwise. Never render `user_id` as a
+   * fallback: it is an opaque UUID, and doing so was what put "F1" in the
+   * avatar and a raw id where a person's name belongs.
+   */
+  user_name?: string;
+  is_me?: boolean;
 }
 
 export interface VotesResult {

@@ -9,6 +9,7 @@ import logging
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, EmailStr, field_validator
 
+from app.core import local_db
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import HireLensException, NotFoundError, ForbiddenError
 from app.services.teams.access import (
@@ -102,6 +103,36 @@ async def list_my_teams(current_user: dict = Depends(get_current_user), db=Depen
     return {"teams": teams}
 
 
+def _with_member_names(rows: list[dict], current_user_id: str) -> list[dict]:
+    """
+    Add `user_name` so the member list shows people, not user ids.
+
+    The team page previously rendered the raw UUID as the member's name and
+    built their avatar initials from it. The names are already in the users
+    table; nothing was reading them. Unresolvable ids are left without a
+    name so the UI can show a neutral badge instead of inventing one.
+    """
+    if not rows:
+        return rows
+
+    names = local_db.get_display_names([r.get("user_id") for r in rows])
+    out = []
+    for row in rows:
+        enriched = dict(row)
+        uid = row.get("user_id")
+        if uid == current_user_id:
+            enriched["user_name"] = "You"
+            enriched["is_me"] = True
+        else:
+            profile = names.get(uid) or {}
+            display = (profile.get("full_name") or "").strip() or (profile.get("email") or "").strip()
+            if display:
+                enriched["user_name"] = display
+            enriched["is_me"] = False
+        out.append(enriched)
+    return out
+
+
 @router.get("/{team_id}/members")
 async def list_team_members(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     role = get_user_role(db, team_id, current_user["id"])
@@ -112,12 +143,12 @@ async def list_team_members(team_id: str, current_user: dict = Depends(get_curre
         try:
             res = db.table("team_members").select("user_id,role,joined_at").eq("team_id", team_id).execute()
             if res.data:
-                return {"members": res.data}
+                return {"members": _with_member_names(res.data, current_user["id"])}
         except Exception as e:
             logger.warning(f"DB list members failed ({e}) — using in-memory fallback")
 
     members = [m for m in _mem_team_members if m["team_id"] == team_id]
-    return {"members": members}
+    return {"members": _with_member_names(members, current_user["id"])}
 
 
 @router.post("/{team_id}/invite")

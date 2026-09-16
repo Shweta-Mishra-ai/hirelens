@@ -553,5 +553,36 @@ def list_reports_any_owner(report_id: str) -> list[dict]:
         return []
 
 
+def get_display_names(user_ids: list[str]) -> dict[str, dict]:
+    """
+    Map user ids to something a person can read.
+
+    Comment threads and team member lists were rendering the raw UUID as the
+    author's name, and an avatar built from the first characters of that
+    UUID — so a teammate showed up as "F1" / "8c3f1a2e-...". The names have
+    been in this table all along; nothing was reading them.
+
+    Ids that cannot be resolved are simply absent from the result, and the
+    caller is expected to fall back to a neutral label rather than printing
+    the id.
+    """
+    ids = [str(u) for u in dict.fromkeys(user_ids) if u]
+    if not ids:
+        return {}
+    try:
+        with _get_connection() as conn:
+            placeholders = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                f"SELECT id, full_name, email FROM users WHERE id IN ({placeholders})", ids
+            ).fetchall()
+        return {
+            r["id"]: {"full_name": r["full_name"] or "", "email": r["email"] or ""}
+            for r in rows
+        }
+    except Exception as e:
+        logger.error(f"Could not resolve display names: {e}")
+        return {}
+
+
 init_local_db()
 init_collaboration_tables()

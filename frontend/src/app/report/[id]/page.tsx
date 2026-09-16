@@ -733,6 +733,7 @@ function ReportContent() {
           newComment={newComment}
           posting={postingComment}
           currentUserId={user?.id}
+          currentUserName={user?.full_name || user?.email}
           onNewCommentChange={setNewComment}
           onPostComment={postComment}
           onDeleteComment={removeComment}

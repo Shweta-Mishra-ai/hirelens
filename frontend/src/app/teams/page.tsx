@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Field";
 import { Alert, EmptyState, Skeleton } from "@/components/ui/Feedback";
 import { relativeTime, initials, pluralize } from "@/lib/format";
+import { PersonAvatar, personLabel } from "@/components/ui/Person";
 import { cn } from "@/lib/cn";
 import type { Team, TeamMember } from "@/types";
 
@@ -299,14 +300,13 @@ function TeamsContent() {
                   <ul className="divide-y divide-line-subtle">
                     {members.map((m) => (
                       <li key={m.user_id} className="flex items-center gap-3 py-2.5">
-                        <span
-                          aria-hidden
-                          className="flex size-7 shrink-0 items-center justify-center rounded-full bg-canvas-overlay text-2xs font-semibold text-content-muted"
-                        >
-                          {initials(m.user_id)}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-content-muted">
-                          {m.user_id === user?.id ? "You" : m.user_id}
+                        <PersonAvatar
+                          name={m.user_name}
+                          avatarName={(m.is_me ?? m.user_id === user?.id) ? (user?.full_name || user?.email) : undefined}
+                          size="sm"
+                        />
+                        <span className="min-w-0 flex-1 truncate text-sm text-content-muted">
+                          {personLabel(m.user_name)}
                         </span>
                         <Badge tone={ROLE_TONE[m.role] ?? "neutral"} className="capitalize">
                           {m.role}
