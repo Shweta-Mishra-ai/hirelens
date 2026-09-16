@@ -107,6 +107,13 @@ BEGIN
 END;
 $$;
 
+-- A SECURITY DEFINER function in `public` is exposed by PostgREST as
+-- POST /rest/v1/rpc/handle_new_user, so anyone holding the anon key could
+-- call it. It only ever runs as a trigger; nothing should invoke it directly.
+REVOKE EXECUTE ON FUNCTION public.handle_new_user() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.handle_new_user() FROM anon;
+REVOKE EXECUTE ON FUNCTION public.handle_new_user() FROM authenticated;
+
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT OR UPDATE OF email, raw_user_meta_data ON auth.users

@@ -127,9 +127,9 @@ class TestNamesInTheUi:
             ],
             "teams": [{"id": "t1", "name": "Platform Hiring", "owner_id": owner["user_id"]}],
             "team_members": [
-                {"id": "m1", "team_id": "t1", "user_id": owner["user_id"], "role": "owner",
+                {"team_id": "t1", "user_id": owner["user_id"], "role": "owner",
                  "joined_at": "2026-01-01T00:00:00+00:00"},
-                {"id": "m2", "team_id": "t1", "user_id": member["user_id"], "role": "member",
+                {"team_id": "t1", "user_id": member["user_id"], "role": "member",
                  "joined_at": "2026-01-02T00:00:00+00:00"},
             ],
             "team_invites": [],

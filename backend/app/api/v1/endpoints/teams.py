@@ -53,8 +53,13 @@ async def create_team(body: CreateTeamRequest, current_user: dict = Depends(get_
             }).execute()
             team = team_res.data[0] if team_res.data else {"id": team_id, "name": body.name, "owner_id": user_id}
             
+            # No "id" here: team_members is keyed on (team_id, user_id) and
+            # has no id column, so PostgREST rejected the whole insert. The
+            # except below swallowed it, which left the team row in Supabase
+            # with its owner holding no membership — and on a deployment
+            # whose local disk is ephemeral, the owner lost access to their
+            # own team on the next restart while invitees kept theirs.
             db.table("team_members").insert({
-                "id": str(uuid.uuid4()),
                 "team_id": team_id,
                 "user_id": user_id,
                 "role": "owner",

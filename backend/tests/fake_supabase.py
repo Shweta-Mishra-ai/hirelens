@@ -152,6 +152,7 @@ class _Query:
             )
 
         if self.op in ("insert", "upsert"):
+            self.client.check_columns(self.table_name, self.payload or {})
             payload = dict(self.payload or {})
             rows = self.client.tables.setdefault(self.table_name, [])
             if self.op == "upsert" and self.on_conflict:
@@ -167,6 +168,7 @@ class _Query:
         matched = self._rows()
 
         if self.op == "update":
+            self.client.check_columns(self.table_name, self.payload or {})
             for row in matched:
                 row.update(self.payload or {})
             return Result([dict(r) for r in matched])
@@ -195,13 +197,51 @@ class _Query:
         )
 
 
+# The real column list for each table, from backend/sql/*.sql. A write naming
+# anything else is what PostgREST rejects, so the fake rejects it too.
+#
+# This is not pedantry: create_team used to insert an "id" into team_members,
+# a table keyed on (team_id, user_id) with no id column. PostgREST refused the
+# whole insert, the endpoint swallowed the error, and the team ended up in
+# Supabase with its owner holding no membership row. The fake happily accepted
+# the extra key, so no test noticed.
+SCHEMA: dict[str, set[str]] = {
+    "reports": {
+        "id", "user_id", "job_id", "file_name", "candidate_name", "overall_score",
+        "recommendation", "report_data", "recruiter_decision", "decision_notes",
+        "created_at", "updated_at", "team_id", "candidate_notified_at",
+        "candidate_notified_decision",
+    },
+    "profiles": {"id", "email", "full_name", "company", "created_at", "updated_at"},
+    "teams": {"id", "name", "owner_id", "created_at"},
+    "team_members": {"team_id", "user_id", "role", "joined_at"},
+    "team_invites": {"id", "team_id", "email", "invited_by", "status", "created_at"},
+    "report_comments": {"id", "report_id", "user_id", "comment", "created_at"},
+    "report_votes": {"report_id", "user_id", "vote", "created_at"},
+}
+
+
 class FakeSupabase:
-    def __init__(self, tables: dict[str, list[dict]] | None = None):
+    def __init__(self, tables: dict[str, list[dict]] | None = None, strict: bool = True):
         self.tables = tables or {}
         self.calls: list[tuple[str, str]] = []
         # (table, op) pairs that should raise, and whether to keep raising.
         self.failures: dict[tuple[str, str], int] = {}
         self.reject_json_path = False
+        # Reject writes naming a column the real table does not have.
+        self.strict = strict
+
+    def check_columns(self, table: str, payload: dict) -> None:
+        if not self.strict:
+            return
+        known = SCHEMA.get(table)
+        if known is None:
+            return
+        unknown = sorted(set(payload or {}) - known)
+        if unknown:
+            raise RuntimeError(
+                f"PGRST204: column {table}.{unknown[0]!r} does not exist"
+            )
 
     def table(self, name: str) -> _Query:
         return _Query(self, name)

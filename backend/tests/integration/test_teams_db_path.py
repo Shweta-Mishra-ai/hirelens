@@ -56,9 +56,9 @@ def db(owner, member):
     fake = FakeSupabase({
         "teams": [{"id": "t1", "name": "Platform Hiring", "owner_id": owner["user_id"]}],
         "team_members": [
-            {"id": "m1", "team_id": "t1", "user_id": owner["user_id"], "role": "owner",
+            {"team_id": "t1", "user_id": owner["user_id"], "role": "owner",
              "joined_at": "2026-01-01T00:00:00+00:00"},
-            {"id": "m2", "team_id": "t1", "user_id": member["user_id"], "role": "member",
+            {"team_id": "t1", "user_id": member["user_id"], "role": "member",
              "joined_at": "2026-01-02T00:00:00+00:00"},
         ],
         "team_invites": [],
@@ -99,6 +99,25 @@ class TestCreateAndList:
         mine = next(m for m in members if m["team_id"] == team_id)
         assert mine["user_id"] == owner["user_id"]
         assert mine["role"] == "owner"
+
+    def test_creating_a_team_writes_a_membership_row_supabase_accepts(self, owner, db):
+        """team_members is keyed on (team_id, user_id) and has no id column.
+        The insert used to send one anyway, so PostgREST refused it, the
+        endpoint swallowed the error, and the team ended up in Supabase with
+        its owner holding no membership at all."""
+        before = len(db.tables["team_members"])
+        res = client.post("/api/v1/teams", headers=owner["headers"], json={"name": "Design Hiring"})
+        assert res.status_code == 200, res.text
+        team_id = res.json()["id"]
+
+        assert len(db.tables["team_members"]) == before + 1
+        row = next(m for m in db.tables["team_members"] if m["team_id"] == team_id)
+        assert row["user_id"] == owner["user_id"]
+        assert row["role"] == "owner"
+
+        # And the owner can immediately do owner-only things through Supabase.
+        assert client.get(f"/api/v1/teams/{team_id}/members", headers=owner["headers"]).status_code == 200
+        assert client.delete(f"/api/v1/teams/{team_id}", headers=owner["headers"]).status_code == 200
 
     def test_listing_shows_the_teams_you_belong_to_with_your_role(self, owner, member, db):
         owner_teams = client.get("/api/v1/teams", headers=owner["headers"]).json()["teams"]
