@@ -10,6 +10,7 @@ Fixed:
 import io
 import re
 import logging
+import zipfile
 from app.core.exceptions import ParseError, UnsupportedFileType
 
 logger = logging.getLogger("hirelens")
@@ -18,6 +19,20 @@ SUPPORTED_MIME = {
     "application/pdf": "pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
 }
+
+# Only ever 60k characters are sent to the model, so there is no reason to
+# hold more than that in memory while extracting. The slack is there so a
+# genuinely long CV still reads normally rather than being cut mid-sentence.
+MAX_TEXT_CHARS = 60_000
+EXTRACT_STOP_CHARS = MAX_TEXT_CHARS * 2
+
+# A DOCX is a ZIP, and the upload cap applies to the COMPRESSED bytes. A
+# 380KB archive that unpacks to 194MB passes every check this parser used to
+# make — valid signature, well under the size limit, perfectly well-formed
+# XML — and cost 531MB of resident memory on one request when measured. On a
+# 512MB instance that is an OOM kill, which takes the API down for everyone
+# rather than just failing the upload. A real CV's XML is a fraction of this.
+MAX_DOCX_UNCOMPRESSED_MB = 25
 
 
 def check_magic_bytes(file_bytes: bytes, fmt: str) -> None:
@@ -30,6 +45,32 @@ def check_magic_bytes(file_bytes: bytes, fmt: str) -> None:
     elif fmt == "docx":
         if not file_bytes.startswith(b"PK\x03\x04"):
             raise UnsupportedFileType("invalid DOCX file signature (missing ZIP PK header)")
+
+
+def check_docx_expansion(file_bytes: bytes) -> None:
+    """
+    Refuse a DOCX that unpacks to far more than any CV could contain.
+
+    The archive's own directory is read here — no entry is decompressed —
+    so this costs nothing and runs before the file reaches a parser that
+    would happily allocate every byte of it.
+    """
+    cap = MAX_DOCX_UNCOMPRESSED_MB * 1024 * 1024
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+            declared = sum(max(0, info.file_size) for info in archive.infolist())
+    except zipfile.BadZipFile:
+        raise UnsupportedFileType("this DOCX file is corrupted and could not be opened")
+
+    if declared > cap:
+        logger.warning(
+            f"Rejected DOCX that unpacks to {declared / 1024 / 1024:.0f}MB "
+            f"from {len(file_bytes) / 1024:.0f}KB (cap {MAX_DOCX_UNCOMPRESSED_MB}MB)"
+        )
+        raise UnsupportedFileType(
+            f"this DOCX unpacks to {declared / 1024 / 1024:.0f}MB, which is far larger "
+            f"than a CV should be (limit {MAX_DOCX_UNCOMPRESSED_MB}MB)"
+        )
 
 
 def extract_text(file_bytes: bytes, mime_type: str, filename: str = "") -> str:
@@ -57,6 +98,8 @@ def extract_text(file_bytes: bytes, mime_type: str, filename: str = "") -> str:
 
     # Verify magic bytes
     check_magic_bytes(file_bytes, fmt)
+    if fmt == "docx":
+        check_docx_expansion(file_bytes)
 
     logger.info(f"Parsing {fmt.upper()} | size={len(file_bytes)/1024:.0f}KB | file={filename}")
 
@@ -84,9 +127,9 @@ def extract_text(file_bytes: bytes, mime_type: str, filename: str = "") -> str:
                 "The file may be corrupted or empty."
             )
 
-    if char_count > 60_000:
+    if char_count > MAX_TEXT_CHARS:
         logger.warning(f"Text very long ({char_count} chars) — truncating to 60k")
-        text = text[:60_000]
+        text = text[:MAX_TEXT_CHARS]
 
     logger.info(f"Extracted {len(text)} chars successfully")
     return text
@@ -134,10 +177,16 @@ def _parse_pdf(data: bytes) -> str:
         from pdfminer.layout import LTTextContainer
 
         parts = []
+        collected = 0
         for page_layout in extract_pages(io.BytesIO(data)):
+            if collected > EXTRACT_STOP_CHARS:
+                logger.warning("PDF text exceeded the extraction cap — stopping early")
+                break
             for element in page_layout:
                 if isinstance(element, LTTextContainer):
-                    parts.append(element.get_text())
+                    chunk = element.get_text()
+                    parts.append(chunk)
+                    collected += len(chunk)
         text = "\n".join(parts)
         if text and len(text.strip()) > 50:
             return text
@@ -157,8 +206,16 @@ def _parse_docx(data: bytes) -> str:
 
         doc = docx.Document(io.BytesIO(data))
         parts = []
+        collected = 0
 
         for element in doc.element.body:
+            # A document can be legitimately long, or engineered to be. Either
+            # way only MAX_TEXT_CHARS is ever used, so there is nothing to gain
+            # by holding the rest.
+            if collected > EXTRACT_STOP_CHARS:
+                logger.warning("DOCX text exceeded the extraction cap — stopping early")
+                break
+
             tag = element.tag.split("}")[-1] if "}" in element.tag else element.tag
 
             if tag == "p":
@@ -167,6 +224,7 @@ def _parse_docx(data: bytes) -> str:
                     t = para.text.strip()
                     if t:
                         parts.append(t)
+                        collected += len(t)
                 except Exception:
                     pass
 
@@ -180,14 +238,25 @@ def _parse_docx(data: bytes) -> str:
                             if ct:
                                 cells.append(ct)
                         if cells:
-                            parts.append(" | ".join(cells))
+                            row_text = " | ".join(cells)
+                            parts.append(row_text)
+                            collected += len(row_text)
                 except Exception:
                     pass
 
         return "\n".join(parts)
 
+    except ParseError:
+        raise
     except Exception as e:
-        raise ParseError(f"DOCX extraction failed: {str(e)}")
+        # The underlying message is a library internal ("'lxml.etree._Element'
+        # object has no attribute 'overrides'"), which tells a recruiter
+        # nothing and exposes what we run. Log it, say something useful.
+        logger.warning(f"DOCX extraction failed: {e}")
+        raise ParseError(
+            "Could not read this DOCX file. It may be corrupted, password-protected, "
+            "or saved in an older Word format — try re-saving it as .docx or a PDF."
+        )
 
 
 def _clean_text(text: str) -> str:
