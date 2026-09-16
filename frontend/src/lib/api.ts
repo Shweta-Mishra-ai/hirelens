@@ -182,6 +182,32 @@ function genericMessage(status: number): string {
   return "That request could not be completed.";
 }
 
+/**
+ * Shape guards for responses.
+ *
+ * A render throws if the server sends a shape the page doesn't expect — and
+ * React unmounts the whole tree when it does, so one wrong field replaces the
+ * entire app with a generic crash page. Verified: `reports` arriving as an
+ * object instead of an array wiped the dashboard, navigation included.
+ *
+ * These coerce at the boundary instead. A contract drift, a partial deploy or
+ * a proxy returning something odd then degrades to "no rows" rather than
+ * taking the page down.
+ */
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function asCount(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export const authAPI = {
   login: (email: string, password: string) =>
@@ -410,17 +436,31 @@ export const collaborationAPI = {
 export const reportsAPI = {
   list: (
     token: string,
-    params?: { page?: number; recommendation?: string; search?: string; sort?: string },
+    params?: {
+      page?: number;
+      limit?: number;
+      recommendation?: string;
+      search?: string;
+      sort?: string;
+    },
   ) => {
     const qs = new URLSearchParams();
     if (params?.page) qs.set("page", String(params.page));
+    if (params?.limit) qs.set("limit", String(params.limit));
     if (params?.recommendation) qs.set("recommendation", params.recommendation);
     if (params?.search) qs.set("search", params.search);
     if (params?.sort) qs.set("sort", params.sort);
     // ReportSummary, not Report: the list endpoint returns a flat row, not
     // the full nested report. Typing it as Report[] here is what let the
     // dashboard bind to the DOM `Report` global and cast everything away.
-    return req<ReportListResponse>(`/api/v1/reports?${qs.toString()}`, { token });
+    return req<ReportListResponse>(`/api/v1/reports?${qs.toString()}`, { token }).then(
+      (res): ReportListResponse => ({
+        reports: asArray(res?.reports),
+        total: asCount(res?.total, asArray(res?.reports).length),
+        page: asCount(res?.page, 1),
+        pages: asCount(res?.pages, 1),
+      }),
+    );
   },
 
   downloadAllCsv: async (
@@ -484,7 +524,22 @@ export const reportsAPI = {
     ),
 
   analytics: (token: string) =>
-    req<PoolAnalytics>("/api/v1/reports/analytics", { token }),
+    req<PoolAnalytics>("/api/v1/reports/analytics", { token }).then(
+      (res): PoolAnalytics => {
+        const dist = asRecord(res?.distribution);
+        return {
+          total_candidates: asCount(res?.total_candidates),
+          avg_credibility_score: asCount(res?.avg_credibility_score),
+          distribution: {
+            recommended: asCount(dist.recommended),
+            manual_review: asCount(dist.manual_review),
+            high_risk: asCount(dist.high_risk),
+          },
+          top_skills: asArray(res?.top_skills),
+          risk_categories: asRecord(res?.risk_categories) as Record<string, number>,
+        };
+      },
+    ),
 };
 
 // ── Interview Co-Pilot (Feature A) ──────────────────────────────────────────

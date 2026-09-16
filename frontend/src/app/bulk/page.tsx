@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/Button";
 import { Alert, EmptyState } from "@/components/ui/Feedback";
 import { ScorePill } from "@/components/ui/Score";
 import { formatBytes, pluralize } from "@/lib/format";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { DuplicateCheckResult } from "@/types";
 
 const MAX_FILES = 50;
@@ -304,6 +305,7 @@ function BulkContent() {
                 description="Candidates appear here as each resume finishes analysing."
               />
             ) : (
+              <ErrorBoundary title="The ranking" resetKeys={[batch.batch_id]}>
               <div className="divide-y divide-line-subtle">
                 {batch.ranking.map((c, i) => (
                   <div key={c.report_id || i} className="flex items-center gap-4 px-5 py-3.5">
@@ -334,6 +336,7 @@ function BulkContent() {
                   </div>
                 ))}
               </div>
+              </ErrorBoundary>
             )}
           </Card>
         </div>

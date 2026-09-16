@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { APIError, toAPIError } from "@/lib/api";
 
 /**
@@ -103,5 +103,80 @@ describe("toAPIError", () => {
     const err = toAPIError(422, { detail: [null, 42, { nope: true }] });
     expect(err.message).toBeTruthy();
     expect(() => err.message).not.toThrow();
+  });
+});
+
+/**
+ * Response shape guards.
+ *
+ * These exist because a wrong shape used to reach a render and throw, and
+ * React unmounts the entire tree when that happens — one bad field replaced
+ * the whole dashboard, navigation included, with a generic crash page.
+ * Coercing at the boundary turns that into "no rows".
+ */
+describe("response shape coercion", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function mockJson(body: unknown) {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+  }
+
+  it("turns a non-array reports field into an empty list", async () => {
+    const { reportsAPI } = await import("@/lib/api");
+    mockJson({ reports: { oops: true }, total: 1, page: 1, pages: 1 });
+    const res = await reportsAPI.list("token");
+    expect(Array.isArray(res.reports)).toBe(true);
+    expect(res.reports).toEqual([]);
+  });
+
+  it("keeps a valid reports list intact", async () => {
+    const { reportsAPI } = await import("@/lib/api");
+    const row = {
+      id: "r1",
+      file_name: "cv.pdf",
+      candidate_name: "Priya",
+      overall_score: 74,
+      recommendation: "manual_review",
+      created_at: "2026-01-01T00:00:00Z",
+      recruiter_decision: null,
+    };
+    mockJson({ reports: [row], total: 1, page: 1, pages: 1 });
+    const res = await reportsAPI.list("token");
+    expect(res.reports).toHaveLength(1);
+    expect(res.total).toBe(1);
+  });
+
+  it("replaces non-numeric counts with numbers", async () => {
+    const { reportsAPI } = await import("@/lib/api");
+    mockJson({ reports: [], total: "many", page: null, pages: undefined });
+    const res = await reportsAPI.list("token");
+    expect(typeof res.total).toBe("number");
+    expect(typeof res.page).toBe("number");
+    expect(typeof res.pages).toBe("number");
+  });
+
+  it("normalises a malformed analytics payload", async () => {
+    const { reportsAPI } = await import("@/lib/api");
+    mockJson({ distribution: "nope", top_skills: 42, total_candidates: "many" });
+    const res = await reportsAPI.analytics("token");
+    expect(res.total_candidates).toBe(0);
+    expect(Array.isArray(res.top_skills)).toBe(true);
+    expect(res.distribution).toEqual({ recommended: 0, manual_review: 0, high_risk: 0 });
+  });
+
+  it("survives a completely empty body", async () => {
+    const { reportsAPI } = await import("@/lib/api");
+    mockJson({});
+    const list = await reportsAPI.list("token");
+    const analytics = await reportsAPI.analytics("token");
+    expect(list.reports).toEqual([]);
+    expect(analytics.distribution.recommended).toBe(0);
   });
 });

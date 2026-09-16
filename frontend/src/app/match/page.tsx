@@ -22,6 +22,7 @@ import { Textarea } from "@/components/ui/Field";
 import { Alert, EmptyState } from "@/components/ui/Feedback";
 import { ScorePill } from "@/components/ui/Score";
 import { cn } from "@/lib/cn";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { formatBytes, pluralize } from "@/lib/format";
 import type { MatchVerdict, MatchedCandidate } from "@/types";
 
@@ -477,6 +478,7 @@ function MatchContent() {
                   description="Candidates appear here as each resume finishes."
                 />
               ) : (
+                <ErrorBoundary title="The ranking" resetKeys={[batch.batch_id]}>
                 <div className="divide-y divide-line-subtle">
                   {batch.ranking.map((c, i) => (
                     <CandidateRow
@@ -490,6 +492,7 @@ function MatchContent() {
                     />
                   ))}
                 </div>
+                </ErrorBoundary>
               )}
             </Card>
           )}

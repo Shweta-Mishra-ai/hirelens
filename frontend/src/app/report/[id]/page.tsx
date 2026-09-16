@@ -52,6 +52,7 @@ import { CopilotPanel, type ProbeQuestion, type ScorecardItem } from "@/componen
 import { DiscussPanel } from "@/components/report/DiscussPanel";
 import { SkillsTab, TimelineTab, QuestionsTab } from "@/components/report/OverviewTabs";
 import { absoluteTime } from "@/lib/format";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { cn } from "@/lib/cn";
 
 // Keyed by SubScores so a renamed or added dimension is a compile error here
@@ -590,6 +591,7 @@ function ReportContent() {
 
       {/* ── Overview ───────────────────────────────────────────────────── */}
       <TabPanel id="overview" active={tab === "overview"}>
+        <ErrorBoundary title="The overview" resetKeys={[params.id]}>
         <div className="space-y-5">
           <Card>
             <CardHeader
@@ -649,10 +651,12 @@ function ReportContent() {
             </Card>
           )}
         </div>
+        </ErrorBoundary>
       </TabPanel>
 
       {/* ── Flags ──────────────────────────────────────────────────────── */}
       <TabPanel id="flags" active={tab === "flags"}>
+        <ErrorBoundary title="The flags list" resetKeys={[params.id]}>
         <Card>
           <CardHeader
             title="Concerns raised"
@@ -673,13 +677,17 @@ function ReportContent() {
             )}
           </CardBody>
         </Card>
+        </ErrorBoundary>
       </TabPanel>
 
       <TabPanel id="skills" active={tab === "skills"}>
+        <ErrorBoundary title="The skills breakdown" resetKeys={[params.id]}>
         <SkillsTab skills={report.skills} />
+        </ErrorBoundary>
       </TabPanel>
 
       <TabPanel id="timeline" active={tab === "timeline"}>
+        <ErrorBoundary title="The work history" resetKeys={[params.id]}>
         <TimelineTab
           experience={report.experience ?? []}
           education={report.education ?? []}
@@ -687,9 +695,11 @@ function ReportContent() {
           certifications={report.certifications ?? []}
           gaps={report.timeline_gaps ?? []}
         />
+        </ErrorBoundary>
       </TabPanel>
 
       <TabPanel id="verify" active={tab === "verify"}>
+        <ErrorBoundary title="The verification results" resetKeys={[params.id]}>
         <VerifyPanel
           verification={verification}
           loading={verifyLoading}
@@ -698,13 +708,17 @@ function ReportContent() {
           onGithubOverrideChange={setGithubOverride}
           onRun={runVerification}
         />
+        </ErrorBoundary>
       </TabPanel>
 
       <TabPanel id="questions" active={tab === "questions"}>
+        <ErrorBoundary title="The interview questions" resetKeys={[params.id]}>
         <QuestionsTab questions={report.interview_questions ?? []} />
+        </ErrorBoundary>
       </TabPanel>
 
       <TabPanel id="copilot" active={tab === "copilot"}>
+        <ErrorBoundary title="The interview co-pilot" resetKeys={[params.id]}>
         <CopilotPanel
           scorecard={scorecard}
           onScorecardChange={setScorecard}
@@ -719,9 +733,11 @@ function ReportContent() {
           error={copilotError}
           onSave={saveCopilotData}
         />
+        </ErrorBoundary>
       </TabPanel>
 
       <TabPanel id="discuss" active={tab === "discuss"}>
+        <ErrorBoundary title="The discussion" resetKeys={[params.id]}>
         <DiscussPanel
           loading={discussLoading}
           error={discussError}
@@ -740,6 +756,7 @@ function ReportContent() {
           onVote={castVote}
           onShare={shareWithTeam}
         />
+        </ErrorBoundary>
       </TabPanel>
 
       {/* ── Decision bar ───────────────────────────────────────────────── */}

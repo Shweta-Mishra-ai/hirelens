@@ -9,6 +9,8 @@ import {
   ScanLine,
   SearchX,
   ArrowRight,
+  ChevronLeft,
+  ChevronRight,
   Layers,
   Crosshair,
   AlertTriangle,
@@ -27,6 +29,7 @@ import { ScorePill } from "@/components/ui/Score";
 import { relativeTime, absoluteTime, initials, pluralize } from "@/lib/format";
 import { scoreColor } from "@/lib/design-tokens";
 import { cn } from "@/lib/cn";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { ReportSummary, PoolAnalytics } from "@/types";
 
 const SORT_OPTIONS = [
@@ -239,8 +242,16 @@ function DashboardContent() {
   const [sort, setSort] = useState<string>("newest");
   const [recommendation, setRecommendation] = useState("");
   const [exporting, setExporting] = useState(false);
+  // The API has always paginated at 20, but nothing sent a page number and
+  // nothing rendered a control — so a recruiter with more than 20 candidates
+  // saw the first 20, a total that said otherwise, and no way to reach the
+  // rest.
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(1);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestSeq = useRef(0);
+  const committedSearch = useRef("");
 
   // Complete the Google OAuth round trip. Supabase redirects back here with
   // the token in the URL fragment; it is exchanged for a HireLens session and
@@ -265,9 +276,32 @@ function DashboardContent() {
     };
   }, [setAuth]);
 
+  // Narrowing the result set can leave the current page out of range, which
+  // renders an empty list over rows that do exist. Every filter change goes
+  // back to page one — and does it in the same update as the filter itself,
+  // so the two land in one render and only one request goes out.
+  const applyRecommendation = useCallback((value: string) => {
+    setRecommendation(value);
+    setPage(1);
+  }, []);
+
+  const applySort = useCallback((value: string) => {
+    setSort(value);
+    setPage(1);
+  }, []);
+
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => setSearch(searchInput.trim()), 300);
+    debounceRef.current = setTimeout(() => {
+      const next = searchInput.trim();
+      // The timer also runs once on mount, and trimming can leave the query
+      // unchanged. Only a query that actually changed sends you back to the
+      // first page — otherwise browsing to page 2 would bounce you back.
+      if (next === committedSearch.current) return;
+      committedSearch.current = next;
+      setSearch(next);
+      setPage(1);
+    }, 300);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
@@ -275,17 +309,26 @@ function DashboardContent() {
 
   const loadReports = useCallback(async () => {
     if (!token) return;
+    // Typing in the search box can leave several requests in flight at once,
+    // and they do not necessarily come back in order. Only the newest one is
+    // allowed to write to the screen; an older answer is dropped instead of
+    // overwriting the newer list.
+    const seq = ++requestSeq.current;
     setLoading(true);
     setError(null);
     try {
       const res = await reportsAPI.list(token, {
+        page,
         search: search || undefined,
         sort,
         recommendation: recommendation || undefined,
       });
+      if (seq !== requestSeq.current) return;
       setReports(res.reports);
       setTotal(res.total);
+      setPages(Math.max(1, res.pages));
     } catch (e) {
+      if (seq !== requestSeq.current) return;
       if (e instanceof APIError && e.status === 401) {
         logout();
         router.replace("/login");
@@ -293,9 +336,9 @@ function DashboardContent() {
       }
       setError(e instanceof APIError ? e.message : "Could not load your reports.");
     } finally {
-      setLoading(false);
+      if (seq === requestSeq.current) setLoading(false);
     }
-  }, [token, logout, router, search, sort, recommendation]);
+  }, [token, logout, router, search, sort, recommendation, page]);
 
   useEffect(() => {
     if (!checkingOAuth) void loadReports();
@@ -376,16 +419,18 @@ function DashboardContent() {
         </div>
       ) : (
         <div className="space-y-5">
-          <PoolSummary
-            analytics={analytics}
-            activeFilter={recommendation}
-            onFilter={setRecommendation}
-          />
+          <ErrorBoundary title="The summary">
+            <PoolSummary
+              analytics={analytics}
+              activeFilter={recommendation}
+              onFilter={applyRecommendation}
+            />
+          </ErrorBoundary>
 
           {needsAttention > 0 && (
             <button
               type="button"
-              onClick={() => setRecommendation(recommendation ? "" : "manual_review")}
+              onClick={() => applyRecommendation(recommendation ? "" : "manual_review")}
               className="flex w-full items-center gap-2.5 rounded-lg border border-caution-line bg-caution-soft px-3.5 py-2.5 text-left text-sm text-caution transition-colors hover:bg-caution/[0.16] focus-visible:outline-none focus-visible:shadow-focus"
             >
               <AlertTriangle aria-hidden className="size-4 shrink-0" />
@@ -412,7 +457,7 @@ function DashboardContent() {
             <div className="w-44">
               <Select
                 value={recommendation}
-                onChange={(e) => setRecommendation(e.target.value)}
+                onChange={(e) => applyRecommendation(e.target.value)}
                 options={FILTERS}
                 aria-label="Filter by verdict"
               />
@@ -420,7 +465,7 @@ function DashboardContent() {
             <div className="w-48">
               <Select
                 value={sort}
-                onChange={(e) => setSort(e.target.value)}
+                onChange={(e) => applySort(e.target.value)}
                 options={SORT_OPTIONS}
                 aria-label="Sort reports"
               />
@@ -467,7 +512,7 @@ function DashboardContent() {
                   <Button
                     onClick={() => {
                       setSearchInput("");
-                      setRecommendation("");
+                      applyRecommendation("");
                     }}
                   >
                     Clear filters
@@ -475,10 +520,38 @@ function DashboardContent() {
                 }
               />
             ) : (
-              <div className="divide-y divide-line-subtle">
-                {reports.map((r) => (
-                  <ReportRow key={r.id} report={r} />
-                ))}
+              <ErrorBoundary title="The candidate list" resetKeys={[search, sort, recommendation]}>
+                <div className="divide-y divide-line-subtle">
+                  {reports.map((r) => (
+                    <ReportRow key={r.id} report={r} />
+                  ))}
+                </div>
+              </ErrorBoundary>
+            )}
+
+            {pages > 1 && (
+              <div className="flex items-center justify-between gap-4 border-t border-line-subtle px-5 py-3">
+                <span className="text-xs text-content-faint">
+                  Page {page} of {pages}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    disabled={page <= 1 || loading}
+                    icon={<ChevronLeft className="size-3.5" />}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={page >= pages || loading}
+                    iconRight={<ChevronRight className="size-3.5" />}
+                    onClick={() => setPage((p) => Math.min(pages, p + 1))}
+                  >
+                    Next
+                  </Button>
+                </div>
               </div>
             )}
           </Card>
