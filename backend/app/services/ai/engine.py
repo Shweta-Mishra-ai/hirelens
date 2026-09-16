@@ -237,11 +237,17 @@ async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000
             except LLMError as e:
                 last_error = e
                 logger.warning(f"LLM error | provider={provider_name} attempt={attempt+1}: {e}")
-                if attempt == 0:
-                    await asyncio.sleep(2)
-                # Don't retry on rate limit — move to next provider
+                # Don't retry on rate limit — move to next provider. The
+                # check has to come before the backoff: sleeping two
+                # seconds and then breaking meant a rate-limited provider
+                # still held the request open for the full backoff, and
+                # three rate-limited providers held it for six seconds
+                # before failing. Under load that is worker time spent
+                # waiting for nothing.
                 if "rate limit" in str(e).lower():
                     break
+                if attempt == 0:
+                    await asyncio.sleep(2)
 
             except ValueError as e:
                 # JSON parse error — try next provider
