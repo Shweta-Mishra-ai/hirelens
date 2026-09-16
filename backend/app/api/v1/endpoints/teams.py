@@ -66,11 +66,13 @@ async def create_team(body: CreateTeamRequest, current_user: dict = Depends(get_
         except Exception as e:
             logger.warning(f"DB Team creation failed ({e}) — using in-memory fallback")
 
-    # In-memory fallback
-    team = {"id": team_id, "name": body.name, "owner_id": user_id, "created_at": created_at}
+    # Local fallback — persisted, then mirrored into this process's cache.
+    team = {"id": team_id, "name": body.name, "owner_id": user_id, "created_at": created_at,
+            "my_role": "owner"}
+    local_db.create_team(team_id, body.name, user_id, created_at)
     _mem_teams[team_id] = team
     _mem_team_members.append({"team_id": team_id, "user_id": user_id, "role": "owner", "joined_at": created_at})
-    logger.info(f"Team created (in-memory) | id={team_id} owner={user_id} name={body.name}")
+    logger.info(f"Team created | id={team_id} owner={user_id} name={body.name}")
     return team
 
 
@@ -92,15 +94,16 @@ async def list_my_teams(current_user: dict = Depends(get_current_user), db=Depen
             logger.warning(f"DB list teams failed ({e}) — using in-memory fallback")
 
     # In-memory fallback
-    user_memberships = [m for m in _mem_team_members if m["user_id"] == user_id]
-    teams = []
-    for m in user_memberships:
-        t = _mem_teams.get(m["team_id"])
-        if t:
-            t_copy = dict(t)
-            t_copy["my_role"] = m["role"]
-            teams.append(t_copy)
-    return {"teams": teams}
+    # Durable rows first, then anything this process knows that has not been
+    # persisted, de-duplicated by team id.
+    by_id: dict[str, dict] = {t["id"]: t for t in local_db.list_teams_for_user(user_id)}
+
+    for m in (mm for mm in _mem_team_members if mm["user_id"] == user_id):
+        cached = _mem_teams.get(m["team_id"])
+        if cached and m["team_id"] not in by_id:
+            by_id[m["team_id"]] = {**cached, "my_role": m["role"]}
+
+    return {"teams": list(by_id.values())}
 
 
 def _with_member_names(rows: list[dict], current_user_id: str) -> list[dict]:
@@ -147,7 +150,9 @@ async def list_team_members(team_id: str, current_user: dict = Depends(get_curre
         except Exception as e:
             logger.warning(f"DB list members failed ({e}) — using in-memory fallback")
 
-    members = [m for m in _mem_team_members if m["team_id"] == team_id]
+    members = local_db.list_team_members(team_id)
+    if not members:
+        members = [m for m in _mem_team_members if m["team_id"] == team_id]
     return {"members": _with_member_names(members, current_user["id"])}
 
 
@@ -210,7 +215,10 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
         invite_url=invite_url,
     )
 
-    # In-memory store mirror
+    # Persist the invite, then mirror it into this process's cache. Without
+    # the durable row an invite sent before a restart could never be
+    # accepted — the invitee would sign up and silently join nothing.
+    local_db.create_invite(invite_id, team_id, str(body.email))
     _mem_team_invites.append({
         "id": invite_id,
         "team_id": team_id,
@@ -257,6 +265,7 @@ async def remove_member(team_id: str, user_id: str, current_user: dict = Depends
     # the name means every module holding a reference to this list — this
     # one and access.py — sees the same change, because it's still the
     # same object.
+    local_db.remove_team_member(team_id, user_id)
     _mem_team_members[:] = [
         m for m in _mem_team_members
         if not (m["team_id"] == team_id and m["user_id"] == user_id)

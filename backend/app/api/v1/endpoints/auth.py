@@ -39,6 +39,24 @@ MAX_RECRUITERS_CAPACITY = 5000
 _mem_users: dict[str, dict] = {}
 
 
+def _accept_invites_quietly(db, user_id: str, email: str) -> None:
+    """
+    Join any team this address was invited to, without ever failing the
+    sign-in that triggered it.
+
+    Invite acceptance is a convenience on top of authentication: if it
+    breaks, the user must still get their session. The three existing call
+    sites all wrapped it in try/except for that reason; this puts the rule in
+    one place so the local paths cannot forget it.
+    """
+    try:
+        accepted = accept_pending_invites_for_email(db, str(user_id), str(email))
+        if accepted:
+            logger.info(f"Accepted {accepted} pending team invite(s) for {email}")
+    except Exception as e:
+        logger.warning(f"Invite auto-accept failed for {email}: {e}")
+
+
 class SignupRequest(BaseModel):
     email: EmailStr
     password: str
@@ -193,6 +211,14 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
         "company": body.company or "",
     }
 
+    # Join any team this address was invited to.
+    #
+    # This call previously existed only on the Supabase branch, so on a
+    # deployment without Supabase team invites never worked at all: the
+    # invitee signed up, joined nothing, and neither they nor the person who
+    # invited them saw an error.
+    _accept_invites_quietly(db, uid, email_str)
+
     token = create_access_token({"sub": uid, "email": email_str})
     return {
         "access_token": token,
@@ -259,6 +285,7 @@ async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=
     # Persistent local SQLite fallback lookup
     local_user = local_db.verify_user_password(email_str, body.password)
     if local_user:
+        _accept_invites_quietly(db, local_user["id"], local_user["email"])
         token = create_access_token({"sub": local_user["id"], "email": local_user["email"]})
         return {
             "access_token": token,
@@ -274,6 +301,7 @@ async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=
     # In-memory fallback store lookup (for unit tests)
     mem_user = _mem_users.get(email_str)
     if mem_user and verify_password(body.password, mem_user.get("password_hash") or ""):
+        _accept_invites_quietly(db, mem_user["id"], mem_user["email"])
         token = create_access_token({"sub": mem_user["id"], "email": mem_user["email"]})
         return {
             "access_token": token,

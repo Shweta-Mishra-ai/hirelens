@@ -5,8 +5,16 @@ Supports DB & in-memory fallback.
 
 import logging
 
+from app.core import local_db
+
 logger = logging.getLogger("hirelens")
 
+# These remain as a per-process cache so existing imports and tests keep
+# working, but they are no longer the source of truth: without Supabase the
+# durable answer comes from local_db. They used to BE the store, which is why
+# a team created on a deployment without Supabase vanished on the next
+# restart, taking its membership with it and leaving any report already
+# shared to that team pointing at a team_id that no longer resolved.
 _mem_teams: dict[str, dict] = {}
 _mem_team_members: list[dict] = []
 _mem_team_invites: list[dict] = []
@@ -29,7 +37,11 @@ def get_user_role(db, team_id: str, user_id: str) -> str | None:
         except Exception as e:
             logger.warning(f"Team role lookup failed for team={team_id} user={user_id}: {e}")
 
-    # Fallback in-memory check
+    # Durable local store, then this process's cache.
+    role = local_db.get_team_role(team_id, user_id)
+    if role:
+        return role
+
     for m in _mem_team_members:
         if m["team_id"] == team_id and m["user_id"] == user_id:
             return m["role"]
@@ -80,11 +92,21 @@ def accept_pending_invites_for_email(db, user_id: str, email: str) -> int:
         except Exception as e:
             logger.warning(f"Invite lookup failed for {email}: {e}")
 
-    # In-memory invites auto-accept
+    # Durable local invites.
+    accepted += local_db.accept_invites_for_email(email, user_id)
+
+    # This process's cache, kept in step so a lookup in the same request
+    # doesn't have to hit disk again.
     for inv in _mem_team_invites:
         if inv["email"] == email and inv["status"] == "pending":
             inv["status"] = "accepted"
-            _mem_team_members.append({"team_id": inv["team_id"], "user_id": user_id, "role": "member"})
-            accepted += 1
+            already = any(
+                m["team_id"] == inv["team_id"] and m["user_id"] == user_id
+                for m in _mem_team_members
+            )
+            if not already:
+                _mem_team_members.append(
+                    {"team_id": inv["team_id"], "user_id": user_id, "role": "member"}
+                )
 
     return accepted

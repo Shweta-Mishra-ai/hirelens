@@ -584,5 +584,203 @@ def get_display_names(user_ids: list[str]) -> dict[str, dict]:
         return {}
 
 
+# ── Teams ────────────────────────────────────────────────────────────────────
+#
+# Teams, memberships and invites were process-local lists in
+# services/teams/access.py, so a team created without Supabase disappeared on
+# the next restart — taking its membership with it, and leaving any report
+# already shared to that team pointing at a team_id that no longer resolved.
+# Reports, comments, votes and co-pilot data all persist; this was the last
+# store that did not.
+
+
+def init_team_tables() -> None:
+    try:
+        with _get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS teams (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    owner_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS team_members (
+                    team_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    joined_at TEXT NOT NULL,
+                    PRIMARY KEY (team_id, user_id)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS team_invites (
+                    id TEXT PRIMARY KEY,
+                    team_id TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_team_invites_email ON team_invites(email)"
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Could not initialise team tables: {e}")
+
+
+def create_team(team_id: str, name: str, owner_id: str, created_at: str | None = None) -> bool:
+    now = created_at or datetime.now(timezone.utc).isoformat()
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO teams (id, name, owner_id, created_at) VALUES (?, ?, ?, ?)",
+                (team_id, name, owner_id, now),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO team_members (team_id, user_id, role, joined_at)"
+                " VALUES (?, ?, 'owner', ?)",
+                (team_id, owner_id, now),
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Could not persist team {team_id}: {e}")
+        return False
+
+
+def list_teams_for_user(user_id: str) -> list[dict]:
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT t.id, t.name, t.owner_id, t.created_at, m.role AS my_role
+                FROM teams t
+                JOIN team_members m ON m.team_id = t.id
+                WHERE m.user_id = ?
+                ORDER BY t.created_at ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Could not list teams for {user_id}: {e}")
+        return []
+
+
+def get_team_role(team_id: str, user_id: str) -> str | None:
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT role FROM team_members WHERE team_id = ? AND user_id = ?",
+                (team_id, user_id),
+            ).fetchone()
+        return row["role"] if row else None
+    except Exception as e:
+        logger.error(f"Could not read team role: {e}")
+        return None
+
+
+def list_team_members(team_id: str) -> list[dict]:
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                "SELECT team_id, user_id, role, joined_at FROM team_members WHERE team_id = ?"
+                " ORDER BY joined_at ASC",
+                (team_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Could not list members of {team_id}: {e}")
+        return []
+
+
+def add_team_member(team_id: str, user_id: str, role: str = "member") -> bool:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO team_members (team_id, user_id, role, joined_at)"
+                " VALUES (?, ?, ?, ?)",
+                (team_id, user_id, role, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Could not add member to {team_id}: {e}")
+        return False
+
+
+def remove_team_member(team_id: str, user_id: str) -> bool:
+    try:
+        with _get_connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM team_members WHERE team_id = ? AND user_id = ?", (team_id, user_id)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Could not remove member from {team_id}: {e}")
+        return False
+
+
+def create_invite(invite_id: str, team_id: str, email: str) -> bool:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO team_invites (id, team_id, email, status, created_at)"
+                " VALUES (?, ?, ?, 'pending', ?)",
+                (invite_id, team_id, email.lower().strip(), datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Could not create invite for {email}: {e}")
+        return False
+
+
+def find_pending_invite(team_id: str, email: str) -> dict | None:
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM team_invites WHERE team_id = ? AND email = ? AND status = 'pending'",
+                (team_id, email.lower().strip()),
+            ).fetchone()
+        return dict(row) if row else None
+    except Exception:
+        return None
+
+
+def accept_invites_for_email(email: str, user_id: str) -> int:
+    """Join every team this address was invited to. Returns how many."""
+    accepted = 0
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, team_id FROM team_invites WHERE email = ? AND status = 'pending'",
+                (email.lower().strip(),),
+            ).fetchall()
+            now = datetime.now(timezone.utc).isoformat()
+            for row in rows:
+                conn.execute(
+                    "INSERT OR IGNORE INTO team_members (team_id, user_id, role, joined_at)"
+                    " VALUES (?, ?, 'member', ?)",
+                    (row["team_id"], user_id, now),
+                )
+                conn.execute(
+                    "UPDATE team_invites SET status = 'accepted' WHERE id = ?", (row["id"],)
+                )
+                accepted += 1
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Could not accept invites for {email}: {e}")
+    return accepted
+
+
 init_local_db()
 init_collaboration_tables()
+init_team_tables()
