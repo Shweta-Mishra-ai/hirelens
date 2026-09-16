@@ -134,14 +134,7 @@ app = FastAPI(
 
 # ── Middleware ────────────────────────────────────────────────────────────────
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.allowed_origins_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["X-Request-ID", "X-Response-Time"],
-)
+
 
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
@@ -173,6 +166,26 @@ async def request_middleware(request: Request, call_next):
             "message": "Unexpected error. Please try again.",
             "request_id": rid,
         })
+
+# CORS is added LAST so it ends up OUTERMOST: Starlette wraps each new
+# middleware around the ones already added. It used to be registered before
+# the two above, which put the catch-all in request_middleware outside it
+# rather than inside — so a
+# 500 was returned without an Access-Control-Allow-Origin header, and the
+# browser refused to let the app read it. From the frontend, a server error
+# was indistinguishable from the API being unreachable: no status, no
+# message, just a failed fetch and a silent empty page. Everything the
+# server says, including "something went wrong", has to be readable by the
+# app that asked.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Request-ID", "X-Response-Time"],
+)
+
 
 # ── Exception Handlers ────────────────────────────────────────────────────────
 def _request_id(request: Request) -> str:

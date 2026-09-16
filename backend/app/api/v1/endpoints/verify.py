@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import NotFoundError, ForbiddenError
 from app.api.v1.endpoints.analysis import _jobs
+from app.core.shapes import as_dict, as_list, as_score, normalize_report
 from app.services.verify.github_verify import verify_github, extract_username
 from app.services.verify.education_verify import verify_education
 from app.services.verify.certification_verify import verify_certifications
@@ -48,7 +49,7 @@ def _load_report(report_id: str, user_id: str, db) -> tuple[dict, str]:
                 row = result.data
                 if row["user_id"] != user_id:
                     raise ForbiddenError()
-                report = dict(row.get("report_data") or {})
+                report = normalize_report(row.get("report_data"))
                 report["id"] = report_id
                 report["file_name"] = row.get("file_name") or report.get("file_name", "")
                 return report, "db"
@@ -65,11 +66,11 @@ def _load_report(report_id: str, user_id: str, db) -> tuple[dict, str]:
     # is treated as inaccessible rather than open-to-anyone, since "we
     # can't tell who owns this" must fail closed, not open.
     data = _jobs.get(f"report_{report_id}")
-    if data:
+    if isinstance(data, dict) and data:
         owner = data.get("_owner_user_id")
         if owner is None or owner != user_id:
             raise ForbiddenError()
-        return data, "memory"
+        return normalize_report(data), "memory"
 
     raise NotFoundError(f"Report '{report_id}' not found.")
 
@@ -127,7 +128,7 @@ def _apply_verification_to_recommendation(report: dict, trust: dict) -> dict | N
     else None. Also mutates report["credibility"] in place so the JSON blob
     and the returned report stay consistent with each other.
     """
-    cred = report.get("credibility") or {}
+    cred = as_dict(report.get("credibility"))
     current = cred.get("recommendation", "manual_review")
     if current not in RECOMMENDATION_RANK:
         return None
@@ -181,17 +182,17 @@ async def run_verification(
     """
     report, source = _load_report(report_id, current_user["id"], db)
 
-    candidate = report.get("candidate") or {}
-    skills = report.get("skills") or {}
-    claimed_skills = list(skills.get("all_claimed") or skills.get("technical") or [])
+    candidate = as_dict(report.get("candidate"))
+    skills = as_dict(report.get("skills"))
+    claimed_skills = as_list(skills.get("all_claimed")) or as_list(skills.get("technical"))
 
     username = body.github_username or extract_username(candidate.get("github") or candidate.get("github_url"))
 
     github_res, edu_res, cert_res, exp_res = await asyncio.gather(
         verify_github(username, claimed_skills),
-        verify_education(list(report.get("education") or [])),
-        verify_certifications(list(report.get("certifications") or []), candidate.get("name")),
-        verify_experience_companies(list(report.get("experience") or [])),
+        verify_education(as_list(report.get("education"))),
+        verify_certifications(as_list(report.get("certifications")), candidate.get("name")),
+        verify_experience_companies(as_list(report.get("experience"))),
         return_exceptions=True,
     )
 
@@ -210,7 +211,7 @@ async def run_verification(
     trust = compute_trust_assessment(
         ai_content_analysis=report.get("ai_content_analysis"),
         verification=verification,
-        overall_score=int((report.get("credibility") or {}).get("overall") or 0),
+        overall_score=as_score(as_dict(report.get("credibility")).get("overall")),
     )
     verification["trust_assessment"] = trust
     logger.info(f"[verify {report_id}] trust_assessment={trust['verdict']} score={trust['score']}")

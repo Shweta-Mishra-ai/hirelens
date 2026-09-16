@@ -26,6 +26,7 @@ from typing import Literal
 from fastapi.responses import StreamingResponse
 
 from app.core import local_db
+from app.core.shapes import as_dict, as_str, normalize_report, report_summary_row
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.rate_limit import check_rate_limit
@@ -219,16 +220,8 @@ def _get_report_summary(report_id: str, db) -> dict | None:
             logger.warning(f"Ranking DB lookup failed for {report_id}: {e}")
 
     data = _jobs.get(f"report_{report_id}")
-    if data:
-        cred = data.get("credibility") or {}
-        cand = data.get("candidate") or {}
-        return {
-            "id": report_id,
-            "file_name": data.get("file_name"),
-            "candidate_name": cand.get("name") or "Unknown",
-            "overall_score": cred.get("overall", 0),
-            "recommendation": cred.get("recommendation", "manual_review"),
-        }
+    if isinstance(data, dict) and data:
+        return report_summary_row(report_id, data)
     return None
 
 
@@ -351,14 +344,21 @@ def _fetch_full_report(report_id: str, db) -> dict | None:
                 .execute()
             )
             if res.data:
-                return res.data
+                row = dict(res.data)
+                row["report_data"] = normalize_report(row.get("report_data"))
+                return row
         except Exception as e:
             logger.warning(f"Duplicate-detection DB lookup failed for {report_id}: {e}")
 
     data = _jobs.get(f"report_{report_id}")
-    if data:
-        cand = data.get("candidate") or {}
-        return {"id": report_id, "candidate_name": cand.get("name") or "Unknown", "report_data": data}
+    if isinstance(data, dict) and data:
+        report = normalize_report(data)
+        candidate = as_dict(report.get("candidate"))
+        return {
+            "id": report_id,
+            "candidate_name": as_str(candidate.get("name")) or "Unknown",
+            "report_data": report,
+        }
     return None
 
 
@@ -423,8 +423,8 @@ async def bulk_notify_all(
     for r in status["ranking"]:
         report_id = r["report_id"]
         full = _fetch_full_report(report_id, db)
-        candidate = (full.get("report_data") or {}).get("candidate") if full else None
-        candidate_email = (candidate or {}).get("email")
+        candidate = as_dict(as_dict(full).get("report_data")).get("candidate") if full else None
+        candidate_email = as_dict(candidate).get("email")
         candidate_name = r.get("candidate_name") or "Candidate"
 
         if not candidate_email:
@@ -492,7 +492,7 @@ async def bulk_duplicate_check(
         full = _fetch_full_report(r["report_id"], db)
         if not full:
             continue
-        fingerprint = extract_fingerprint_text(full.get("report_data") or {})
+        fingerprint = extract_fingerprint_text(as_dict(full.get("report_data")))
         items.append({"id": r["report_id"], "name": full.get("candidate_name") or r["candidate_name"], "text": fingerprint})
 
     clusters = find_duplicate_clusters(items)

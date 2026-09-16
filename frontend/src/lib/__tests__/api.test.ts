@@ -180,3 +180,84 @@ describe("response shape coercion", () => {
     expect(analytics.distribution.recommended).toBe(0);
   });
 });
+
+describe("report shape coercion", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function mockGet(body: unknown) {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+  }
+
+  it("passes a well-formed report through", async () => {
+    mockGet({
+      candidate: { name: "Anita Rao" },
+      skills: { all_claimed: ["python"] },
+      flags: [{ severity: "medium" }],
+      credibility: { overall: 74, recommendation: "manual_review" },
+      summary: "Solid.",
+    });
+    const { reportsAPI } = await import("@/lib/api");
+    const report = await reportsAPI.get("r1", "tok");
+    expect(report.candidate.name).toBe("Anita Rao");
+    expect(report.flags).toHaveLength(1);
+    expect(report.credibility.overall).toBe(74);
+  });
+
+  it("turns a wrongly-typed list into an empty one rather than throwing on .map", async () => {
+    mockGet({ flags: "critical", experience: "seven years", interview_questions: { a: 1 } });
+    const { reportsAPI } = await import("@/lib/api");
+    const report = await reportsAPI.get("r1", "tok");
+    expect(report.flags).toEqual([]);
+    expect(report.experience).toEqual([]);
+    expect(report.interview_questions).toEqual([]);
+    expect(() => report.flags.map((f) => f)).not.toThrow();
+  });
+
+  it("does not explode a string into one entry per character", async () => {
+    mockGet({ certifications: "AWS" });
+    const { reportsAPI } = await import("@/lib/api");
+    const report = await reportsAPI.get("r1", "tok");
+    expect(report.certifications).toEqual([]);
+  });
+
+  it("turns a wrongly-typed object into an empty one", async () => {
+    mockGet({ candidate: "not an object", skills: ["python"], credibility: 5 });
+    const { reportsAPI } = await import("@/lib/api");
+    const report = await reportsAPI.get("r1", "tok");
+    expect(report.candidate).toEqual({});
+    expect(report.skills).toEqual({});
+    expect(report.credibility.overall).toBe(0);
+  });
+
+  it("replaces a non-numeric score with zero", async () => {
+    mockGet({ credibility: { overall: "seventy", recommendation: "manual_review" } });
+    const { reportsAPI } = await import("@/lib/api");
+    const report = await reportsAPI.get("r1", "tok");
+    expect(report.credibility.overall).toBe(0);
+    expect(report.credibility.recommendation).toBe("manual_review");
+  });
+
+  it("survives a body that is not a report at all", async () => {
+    mockGet(null);
+    const { reportsAPI } = await import("@/lib/api");
+    const report = await reportsAPI.get("r1", "tok");
+    expect(report.candidate).toEqual({});
+    expect(report.flags).toEqual([]);
+    expect(report.summary).toBe("");
+  });
+
+  it("keeps fields it does not know about", async () => {
+    mockGet({ candidate: "bad", some_future_field: { a: 1 }, id: "r1" });
+    const { reportsAPI } = await import("@/lib/api");
+    const report = await reportsAPI.get("r1", "tok") as unknown as Record<string, unknown>;
+    expect(report.some_future_field).toEqual({ a: 1 });
+    expect(report.id).toBe("r1");
+  });
+});

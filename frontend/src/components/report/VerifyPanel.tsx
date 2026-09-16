@@ -22,7 +22,13 @@ import { Input } from "@/components/ui/Field";
 import { Alert, EmptyState } from "@/components/ui/Feedback";
 import { absoluteTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import type { VerificationResult } from "@/types";
+import type {
+  CertificationVerification,
+  EducationVerification,
+  ExperienceVerification,
+  VerificationResult,
+} from "@/types";
+import { asList } from "@/lib/list";
 
 type Tone = "positive" | "caution" | "critical" | "neutral";
 
@@ -268,14 +274,14 @@ export function VerifyPanel({
                     this resume. Weigh it accordingly.
                   </p>
                 )}
-                {verification.trust_assessment.reasoning.length > 0 && (
+                {asList<string>(verification.trust_assessment?.reasoning).length > 0 && (
                   <details className="group">
                     <summary className="cursor-pointer text-xs font-medium text-brand-400 marker:content-none">
-                      Show the {verification.trust_assessment.reasoning.length} signals
+                      Show the {asList<string>(verification.trust_assessment?.reasoning).length} signals
                       considered
                     </summary>
                     <ul className="mt-2 space-y-1.5">
-                      {verification.trust_assessment.reasoning.map((r, i) => (
+                      {asList<string>(verification.trust_assessment?.reasoning).map((r, i) => (
                         <li key={i} className="text-xs leading-relaxed text-content-faint">
                           <span className="mr-1.5">·</span>
                           {r}
@@ -322,7 +328,7 @@ export function VerifyPanel({
                             Evidenced in public repos
                           </div>
                           <div className="flex flex-wrap gap-1.5">
-                            {verification.github.verified_skills.map((s) => (
+                            {asList<string>(verification.github?.verified_skills).map((s) => (
                               <Badge key={s} tone="positive">{s}</Badge>
                             ))}
                           </div>
@@ -334,7 +340,7 @@ export function VerifyPanel({
                             Not seen in public repos
                           </div>
                           <div className="flex flex-wrap gap-1.5">
-                            {verification.github.unverified_skills.map((s) => (
+                            {asList<string>(verification.github?.unverified_skills).map((s) => (
                               <Badge key={s} tone="neutral">{s}</Badge>
                             ))}
                           </div>
@@ -353,15 +359,15 @@ export function VerifyPanel({
             <Group
               icon={GraduationCap}
               title="Education"
-              count={verification.education.length}
+              count={asList(verification.education).length}
             >
-              {verification.education.length === 0 ? (
+              {asList(verification.education).length === 0 ? (
                 <p className="py-3 text-xs text-content-faint">
                   No institutions were listed on this resume.
                 </p>
               ) : (
                 <ul className="divide-y divide-line-subtle">
-                  {verification.education.map((e, i) => (
+                  {asList<EducationVerification>(verification.education).map((e, i) => (
                     <CheckRow
                       key={i}
                       primary={e.institution ?? "Unnamed institution"}
@@ -377,15 +383,15 @@ export function VerifyPanel({
             <Group
               icon={Award}
               title="Certifications"
-              count={verification.certifications.length}
+              count={asList(verification.certifications).length}
             >
-              {verification.certifications.length === 0 ? (
+              {asList(verification.certifications).length === 0 ? (
                 <p className="py-3 text-xs text-content-faint">
                   No certifications were listed on this resume.
                 </p>
               ) : (
                 <ul className="divide-y divide-line-subtle">
-                  {verification.certifications.map((c, i) => (
+                  {asList<CertificationVerification>(verification.certifications).map((c, i) => (
                     <CheckRow
                       key={i}
                       primary={c.name}
@@ -398,14 +404,14 @@ export function VerifyPanel({
               )}
             </Group>
 
-            <Group icon={Building2} title="Employers" count={verification.experience.length}>
-              {verification.experience.length === 0 ? (
+            <Group icon={Building2} title="Employers" count={asList(verification.experience).length}>
+              {asList(verification.experience).length === 0 ? (
                 <p className="py-3 text-xs text-content-faint">
                   No employers were listed on this resume.
                 </p>
               ) : (
                 <ul className="divide-y divide-line-subtle">
-                  {verification.experience.map((x, i) => (
+                  {asList<ExperienceVerification>(verification.experience).map((x, i) => (
                     <CheckRow
                       key={i}
                       primary={x.company ?? "Unnamed company"}

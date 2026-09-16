@@ -139,6 +139,10 @@ function ReportContent() {
         if (cancelled) return;
         setReport(r);
         setDecision(r.recruiter_decision);
+        // The last run is stored on the report itself, so reopening a
+        // candidate shows what verification already found rather than an
+        // empty tab inviting you to run it again.
+        if (r.verification) setVerification(r.verification);
       } catch (e) {
         if (cancelled) return;
         if (e instanceof APIError && e.status === 401) {
@@ -155,15 +159,6 @@ function ReportContent() {
       cancelled = true;
     };
   }, [params.id, token, logout, router]);
-
-  // A 404 here just means verification hasn't been run — not an error state.
-  useEffect(() => {
-    if (!token || !params.id) return;
-    verifyAPI
-      .get(params.id, token)
-      .then(setVerification)
-      .catch(() => {});
-  }, [params.id, token]);
 
   /* ── Decision ─────────────────────────────────────────────────────────── */
 

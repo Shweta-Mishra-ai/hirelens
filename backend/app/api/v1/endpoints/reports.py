@@ -18,6 +18,14 @@ from app.core.exceptions import NotFoundError, ForbiddenError, HireLensException
 from app.core.rate_limit import check_rate_limit
 from app.core.config import settings
 from app.core import local_db
+from app.core.shapes import (
+    as_dict,
+    as_score,
+    as_list,
+    as_str,
+    normalize_report,
+    report_summary_row,
+)
 from app.api.v1.endpoints.analysis import _jobs  # in-memory fallback store
 from app.services.teams.access import user_can_access_report
 
@@ -67,6 +75,21 @@ SORT_MAP = {
     "score_asc":  ("overall_score", False),
     "name_asc":   ("candidate_name", False),
 }
+
+
+def _sort_key(column: str):
+    """
+    A comparison key that cannot raise, whatever the rows hold.
+
+    The local branch used to sort on `r.get(column) or ""`. For the score
+    columns that turns a legitimate 0 into a string, and Python refuses to
+    compare a string with an int — so a single candidate scoring zero, which
+    is what a failed or genuinely poor analysis produces, made "Score: high
+    to low" return 500 for the whole list. Each column now yields one type.
+    """
+    if column == "overall_score":
+        return lambda row: as_score(row.get(column))
+    return lambda row: as_str(row.get(column)).lower()
 
 
 def _local_reports_for_user(user_id: str) -> list[dict]:
@@ -119,21 +142,25 @@ def _mem_reports_for_user(user_id: str) -> list[dict]:
         # taken. Fail closed: no owner stamp means nobody sees it here.
         if v.get("_owner_user_id") != user_id:
             continue
-        cred = v.get("credibility") or {}
-        cand = v.get("candidate") or {}
-        out.append({
-            "id": key.replace("report_", "", 1),
+        # A blob whose fields are the wrong type used to raise here, and
+        # this loop runs over every report the user owns — so one bad
+        # report returned 500 for the whole list and the dashboard showed
+        # no candidates at all. See app/core/shapes.py.
+        row = report_summary_row(
+            key.replace("report_", "", 1),
+            v,
             # `_owner_file_name` is the legacy key — report blobs written by
             # earlier versions only carry that one. See analysis.py's
             # _stamp_report_metadata().
-            "file_name": v.get("file_name") or v.get("_owner_file_name") or "",
-            "candidate_name": cand.get("name") or "Unknown",
-            "overall_score": cred.get("overall", 0),
-            "recommendation": cred.get("recommendation", "manual_review"),
-            "created_at": v.get("created_at") or "",
+            as_str(v.get("_owner_file_name")),
+        )
+        skills = as_dict(v.get("skills"))
+        out.append({
+            **row,
+            "created_at": as_str(v.get("created_at")),
             "recruiter_decision": v.get("recruiter_decision"),
             "_skills_text": " ".join(
-                (v.get("skills") or {}).get("all_claimed") or []
+                str(x) for x in as_list(skills.get("all_claimed"))
             ).lower(),
         })
     return out
@@ -166,7 +193,7 @@ async def list_reports(
             ]
         for r in items:
             r.pop("_skills_text", None)
-        items.sort(key=lambda r: (r.get(sort_col) or ""), reverse=sort_desc)
+        items.sort(key=_sort_key(sort_col), reverse=sort_desc)
 
         total = len(items)
         offset = (page - 1) * limit
@@ -314,7 +341,7 @@ async def get_talent_analytics(
         dist[rec] = dist.get(rec, 0) + 1
 
         rdata = i.get("report_data") or i
-        sk = (rdata.get("skills") or {}).get("all_claimed") or []
+        sk = as_list(as_dict(rdata.get("skills")).get("all_claimed"))
         for s in sk:
             if isinstance(s, str) and s.strip():
                 clean_s = s.strip().title()
@@ -372,7 +399,7 @@ async def export_all_reports_csv(
             ]
         for r in items:
             r.pop("_skills_text", None)
-        items.sort(key=lambda r: (r.get(sort_col) or ""), reverse=sort_desc)
+        items.sort(key=_sort_key(sort_col), reverse=sort_desc)
         items = items[:CAP]
     else:
         try:
@@ -439,7 +466,7 @@ async def get_report(
                     raise ForbiddenError()
 
                 # Merge report_data with top-level fields
-                report = dict(row.get("report_data") or {})
+                report = normalize_report(row.get("report_data"))
                 report["id"] = report_id
                 report["created_at"] = row.get("created_at")
                 report["file_name"] = row.get("file_name") or report.get("file_name", "")
@@ -457,10 +484,10 @@ async def get_report(
     # can read it here, not "everybody can". See _mem_reports_for_user()
     # above for the fuller explanation of why this was previously fail-open.
     data = _jobs.get(f"report_{report_id}")
-    if data:
+    if isinstance(data, dict) and data:
         if data.get("_owner_user_id") != current_user["id"]:
             raise ForbiddenError()
-        return data
+        return normalize_report(data)
 
     # ── Fallback: durable local store ─────────────────────────────────────────
     # Reached after a restart, when the in-memory copy is gone. Ownership is
@@ -468,6 +495,7 @@ async def get_report(
     # indistinguishable from here.
     persisted = local_db.get_report(report_id, current_user["id"])
     if persisted:
+        persisted = normalize_report(persisted)
         # Warm this process's cache so repeat reads skip the disk.
         _jobs[f"report_{report_id}"] = persisted
         return persisted
@@ -564,7 +592,7 @@ async def get_notify_draft(
     from app.services.email.sender import build_decision_email
 
     report = await get_report(report_id, current_user, db)  # reuses access checks + fallback
-    candidate = report.get("candidate") or {}
+    candidate = as_dict(report.get("candidate"))
     candidate_email = candidate.get("email")
     candidate_name = candidate.get("name") or "Candidate"
 
@@ -615,7 +643,7 @@ async def notify_candidate(
     check_rate_limit(redis, f"notify:{current_user['id']}", settings.NOTIFY_RATE_LIMIT_PER_MINUTE)
 
     report = await get_report(report_id, current_user, db)
-    candidate = report.get("candidate") or {}
+    candidate = as_dict(report.get("candidate"))
     candidate_email = candidate.get("email")
 
     if not candidate_email:

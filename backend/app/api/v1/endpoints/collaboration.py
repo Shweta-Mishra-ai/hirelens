@@ -16,6 +16,7 @@ from typing import Literal
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import HireLensException, NotFoundError, ForbiddenError, DBRequiredError
 from app.api.v1.endpoints.analysis import _jobs
+from app.core.shapes import as_dict, as_str
 from app.core import local_db
 from app.services.teams.access import user_can_access_report, is_team_member
 
@@ -73,12 +74,12 @@ def _fetch_report_row(db, report_id: str) -> dict:
     # Local path. `team_id` is None because team sharing needs Supabase —
     # see share_report below, which says so explicitly rather than failing.
     mem = _jobs.get(f"report_{report_id}")
-    if mem is not None and mem.get("_owner_user_id"):
+    if isinstance(mem, dict) and mem.get("_owner_user_id"):
         return {
             "id": report_id,
             "user_id": mem["_owner_user_id"],
             "team_id": None,
-            "candidate_name": (mem.get("candidate") or {}).get("name") or "Unknown",
+            "candidate_name": as_str(as_dict(mem.get("candidate")).get("name")) or "Unknown",
         }
 
     for row in local_db.list_reports_any_owner(report_id):

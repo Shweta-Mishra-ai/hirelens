@@ -169,6 +169,12 @@ export interface Report {
   summary: string;
   one_liner?: string;
   recruiter_decision: Decision | null;
+  /**
+   * The last verification run, stored on the report by
+   * POST /api/v1/verify/{id}/run. It comes back with the report, which is
+   * why the Verify tab does not fetch it separately.
+   */
+  verification?: VerificationResult;
 }
 
 /**

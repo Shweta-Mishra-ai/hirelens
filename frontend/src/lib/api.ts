@@ -208,6 +208,47 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * Coerce a stored report into the shape every panel on the report page
+ * assumes before any of them touches it.
+ *
+ * The panels reach straight into the blob — `report.flags.map(...)`,
+ * `report.candidate.name` — which is fine for a report this build wrote and
+ * not fine for one written by an older build, saved partially, or holding a
+ * field whose type changed. A `flags` that arrived as a string threw
+ * "flags.map is not a function" during render, which the route boundary
+ * caught by replacing the entire page, navigation included. One odd field
+ * should cost you that panel, not the app.
+ */
+function asReport(value: unknown): Report {
+  const raw = asRecord(value);
+  const credibility = asRecord(raw.credibility);
+  return {
+    ...(raw as object),
+    candidate: asRecord(raw.candidate),
+    skills: asRecord(raw.skills),
+    credibility: {
+      ...credibility,
+      overall: asCount(credibility.overall),
+    },
+    ai_content_analysis: raw.ai_content_analysis === undefined
+      ? undefined
+      : asRecord(raw.ai_content_analysis),
+    career_trajectory: raw.career_trajectory === undefined
+      ? undefined
+      : asRecord(raw.career_trajectory),
+    experience: asArray(raw.experience),
+    education: asArray(raw.education),
+    projects: asArray(raw.projects),
+    certifications: asArray(raw.certifications),
+    timeline_gaps: asArray(raw.timeline_gaps),
+    flags: asArray(raw.flags),
+    positive_signals: asArray(raw.positive_signals),
+    interview_questions: asArray(raw.interview_questions),
+    summary: typeof raw.summary === "string" ? raw.summary : "",
+  } as unknown as Report;
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export const authAPI = {
   login: (email: string, password: string) =>
@@ -376,8 +417,11 @@ export const verifyAPI = {
       token,
     }),
 
-  get: (reportId: string, token: string) =>
-    req<VerificationResult>(`/api/v1/verify/${reportId}`, { token }),
+  // There is no GET here on purpose: the last run is stored on the report
+  // and comes back with it. This used to call `/api/v1/verify/{id}`, a route
+  // the API has never had — so every report open fired a request that
+  // 404'd, and a verification you had already run showed as never run when
+  // you came back to the candidate.
 };
 
 // ── Teams (Team Collaboration) ──────────────────────────────────────────────
@@ -481,7 +525,7 @@ export const reportsAPI = {
   },
 
   get: (id: string, token: string) =>
-    req<Report>(`/api/v1/reports/${id}`, { token }),
+    req<unknown>(`/api/v1/reports/${id}`, { token }).then(asReport),
 
   decision: (
     id: string,

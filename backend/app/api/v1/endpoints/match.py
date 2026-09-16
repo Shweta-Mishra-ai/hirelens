@@ -21,6 +21,7 @@ from functools import partial
 from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
+from app.core.shapes import as_dict
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import (
@@ -234,8 +235,8 @@ def _get_report_full(report_id: str, db) -> dict | None:
 
     data = _jobs.get(f"report_{report_id}")
     if data:
-        cred = data.get("credibility") or {}
-        cand = data.get("candidate") or {}
+        cred = as_dict(data.get("credibility"))
+        cand = as_dict(data.get("candidate"))
         return {
             "id": report_id,
             "file_name": data.get("file_name"),
@@ -274,7 +275,7 @@ def _build_match_status(batch: dict, db) -> dict:
         if job["status"] == "complete" and job["report_id"]:
             full = _get_report_full(job["report_id"], db)
             if full:
-                rd = full.get("report_data") or {}
+                rd = as_dict(full.get("report_data"))
                 jd = rd.get("jd_match") or {}
                 ranking.append({
                     "report_id": job["report_id"],

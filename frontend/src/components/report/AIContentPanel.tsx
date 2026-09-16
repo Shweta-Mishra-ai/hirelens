@@ -3,6 +3,7 @@ import { Cpu, UserCheck, HelpCircle } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { EvidenceQuote } from "./Evidence";
 import type { AIContentAnalysis } from "@/types";
+import { asList } from "@/lib/list";
 
 const LIKELIHOOD = {
   low: {
@@ -56,9 +57,9 @@ export function AIContentPanel({ analysis }: { analysis: AIContentAnalysis }) {
             <h4 className="mb-2 text-2xs font-medium uppercase tracking-wider text-caution">
               AI-pattern indicators
             </h4>
-            {analysis.indicators.length ? (
+            {asList<string>(analysis.indicators).length ? (
               <ul className="space-y-2">
-                {analysis.indicators.map((s, i) => (
+                {asList<string>(analysis.indicators).map((s, i) => (
                   <li key={i} className="font-mono text-xs leading-relaxed text-content-muted">
                     <span className="mr-1.5 text-content-faint">·</span>
                     {s}
@@ -74,9 +75,9 @@ export function AIContentPanel({ analysis }: { analysis: AIContentAnalysis }) {
             <h4 className="mb-2 text-2xs font-medium uppercase tracking-wider text-positive">
               Signs of individual authorship
             </h4>
-            {analysis.human_indicators.length ? (
+            {asList<string>(analysis.human_indicators).length ? (
               <ul className="space-y-2">
-                {analysis.human_indicators.map((s, i) => (
+                {asList<string>(analysis.human_indicators).map((s, i) => (
                   <li key={i} className="font-mono text-xs leading-relaxed text-content-muted">
                     <span className="mr-1.5 text-content-faint">·</span>
                     {s}

@@ -126,7 +126,7 @@ async def get_copilot_data(
                 .execute()
             )
             if res and res.data:
-                data = (res.data.get("report_data") or {}).get("copilot_data")
+                data = as_dict(res.data.get("report_data")).get("copilot_data")
                 if data:
                     return {"report_id": report_id, "copilot": data}
         except Exception as e:
@@ -175,7 +175,7 @@ async def save_copilot_data(
                 .execute()
             )
             if res and res.data:
-                report_data = dict(res.data.get("report_data") or {})
+                report_data = dict(as_dict(res.data.get("report_data")))
                 report_data["copilot_data"] = payload
                 db.table("reports").update({"report_data": report_data}).eq("id", report_id).execute()
                 saved = True

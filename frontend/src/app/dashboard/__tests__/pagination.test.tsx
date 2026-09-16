@@ -49,9 +49,10 @@ function makeReports(prefix: string, count: number): ReportSummary[] {
     candidate_name: `${prefix} Candidate ${i}`,
     file_name: `${prefix}-${i}.pdf`,
     overall_score: 70,
-    recommendation: "hire",
+    recommendation: "recommended",
     created_at: "2026-01-01T00:00:00+00:00",
-  })) as ReportSummary[];
+    recruiter_decision: null,
+  }));
 }
 
 /** The page argument the API was called with on the Nth call. */
