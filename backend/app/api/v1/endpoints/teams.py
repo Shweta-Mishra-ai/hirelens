@@ -243,6 +243,76 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
     }
 
 
+@router.get("/{team_id}/invites")
+async def list_invites(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+    """
+    Invites sent for this team that nobody has accepted yet.
+
+    The roster only ever showed people who had already joined, so an invite
+    sent to a mistyped address — or one the person simply never acted on —
+    was invisible to the owner. They had no way to tell "they haven't joined
+    yet" from "I sent it to the wrong address".
+    """
+    if not get_user_role(db, team_id, current_user["id"]):
+        raise ForbiddenError("You are not a member of this team.")
+
+    rows: list[dict] = []
+    if db:
+        try:
+            res = (
+                db.table("team_invites")
+                .select("id,email,created_at")
+                .eq("team_id", team_id)
+                .eq("status", "pending")
+                .execute()
+            )
+            rows = res.data or []
+        except Exception as e:
+            logger.warning(f"DB invite listing failed for team {team_id}: {e}")
+
+    if not rows:
+        rows = local_db.list_pending_invites(team_id)
+
+    return {"invites": rows}
+
+
+@router.delete("/{team_id}/invites/{invite_id}")
+async def revoke_invite(
+    team_id: str,
+    invite_id: str,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Withdraw a pending invite — the way to correct a mistyped address."""
+    if not can_manage_team(db, team_id, current_user["id"]):
+        raise ForbiddenError("Only team owners or admins can withdraw invites.")
+
+    revoked = False
+    if db:
+        try:
+            res = (
+                db.table("team_invites")
+                .update({"status": "revoked"})
+                .eq("id", invite_id)
+                .eq("team_id", team_id)
+                .execute()
+            )
+            revoked = bool(res.data)
+        except Exception as e:
+            logger.warning(f"DB invite revoke failed for {invite_id}: {e}")
+
+    if local_db.revoke_invite(invite_id, team_id):
+        revoked = True
+
+    _mem_team_invites[:] = [
+        i for i in _mem_team_invites if not (i.get("id") == invite_id and i.get("team_id") == team_id)
+    ]
+
+    if not revoked:
+        raise NotFoundError("That invite no longer exists, or has already been accepted.")
+    return {"status": "revoked"}
+
+
 @router.delete("/{team_id}/members/{user_id}")
 async def remove_member(team_id: str, user_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     if not can_manage_team(db, team_id, current_user["id"]):

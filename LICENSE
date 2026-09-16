@@ -1,0 +1,51 @@
+HireLens — Proprietary Software Licence
+Copyright (c) 2026 Shweta Mishra. All rights reserved.
+
+This software and its source code, documentation and associated materials
+(the "Software") are the confidential and proprietary property of the
+copyright holder.
+
+NO LICENCE IS GRANTED BY DEFAULT.
+
+Except where a separate written agreement signed by the copyright holder says
+otherwise, no person or organisation may:
+
+  1. use, run or operate the Software, in whole or in part;
+  2. copy, reproduce, publish or distribute the Software;
+  3. modify the Software or create derivative works from it;
+  4. sublicense, rent, lease, sell or otherwise transfer the Software;
+  5. reverse engineer, decompile or disassemble any part of the Software,
+     except to the extent that this restriction is prohibited by applicable
+     law; or
+  6. remove or obscure any copyright, trademark or other proprietary notice.
+
+Viewing this repository, where access has been granted, does not grant any of
+the rights above.
+
+Commercial licences, evaluation access and partnership enquiries:
+    <add your contact address here>
+
+THIRD-PARTY COMPONENTS
+The Software incorporates open-source components, each governed by its own
+licence. Those licences apply to those components only and grant no rights in
+the Software itself. See THIRD-PARTY-NOTICES.md.
+
+DISCLAIMER OF WARRANTY
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+LIMITATION OF LIABILITY
+IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+NOT A HIRING DECISION SERVICE
+The Software produces credibility signals and verification results intended to
+support a human recruiter's judgement. They are not proof of misconduct and
+are not a basis for an automated hiring decision. Any person or organisation
+operating the Software is solely responsible for its use, and for compliance
+with all applicable employment, anti-discrimination and data-protection law in
+their jurisdiction — including, where applicable, the EU GDPR, India's DPDP
+Act 2023, the EU AI Act, and New York City Local Law 144.

@@ -198,15 +198,69 @@ async def upload_resume(
     }
 
 
+def _recover_finished_job(job_id: str, user_id: str, db) -> dict | None:
+    """
+    Find the report an analysis job produced, when the job itself is gone.
+
+    Progress lives in `_jobs`, a process-local dict. The report does not — it
+    is written to Supabase (or the local store) the moment analysis finishes.
+    So a restart between those two facts leaves a recruiter polling for a job
+    this process has never heard of, while their finished report sits on the
+    dashboard.
+
+    On a free tier that is not an edge case: the container is replaced on
+    every deploy and every wake from sleep, and an analysis takes up to two
+    minutes. The endpoint used to answer 404 and the UI told them to upload
+    again — a second LLM call, a second charge, and a duplicate report for a
+    CV that had already been analysed.
+    """
+    if db:
+        try:
+            res = (
+                db.table("reports")
+                .select("id,file_name")
+                .eq("job_id", job_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            rows = res.data or []
+            if rows:
+                return {"id": rows[0].get("id"), "file_name": rows[0].get("file_name")}
+        except Exception as e:
+            logger.warning(f"Could not look up the report for job {job_id}: {e}")
+
+    return local_db.find_report_by_job(job_id, user_id)
+
+
 @router.get("/{job_id}/status")
 async def get_status(
     job_id: str,
     current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
 ):
     """Poll analysis job status. Returns progress, stage, and report_id when complete."""
     job = _jobs.get(job_id)
     if not job:
-        raise NotFoundError(f"Job '{job_id}' not found. It may have expired (jobs kept 1 hour).")
+        recovered = _recover_finished_job(job_id, current_user["id"], db)
+        if recovered:
+            logger.info(
+                f"Job {job_id} was lost with the process, but its report "
+                f"{recovered['id']} survived — reporting it as complete"
+            )
+            return {
+                "id": job_id,
+                "status": "complete",
+                "stage": "complete",
+                "progress": 100,
+                "file_name": recovered.get("file_name") or "",
+                "report_id": recovered["id"],
+                "error": None,
+            }
+        raise NotFoundError(
+            f"Job '{job_id}' not found. It may have expired — jobs are kept for an hour, "
+            "and a finished report would be on your dashboard."
+        )
     if job["user_id"] != current_user["id"]:
         raise ForbiddenError()
 
@@ -249,7 +303,9 @@ def _stamp_report_metadata(result: dict, *, user_id: str, filename: str, report_
     result["created_at"] = now
     return result
 
-def _persist_report_locally(result: dict, *, report_id: str, user_id: str, filename: str) -> None:
+def _persist_report_locally(
+    result: dict, *, report_id: str, user_id: str, filename: str, job_id: str | None = None
+) -> None:
     """
     Write the report to the local SQLite store.
 
@@ -273,6 +329,7 @@ def _persist_report_locally(result: dict, *, report_id: str, user_id: str, filen
         recommendation=credibility.get("recommendation") or "manual_review",
         report_data=result,
         created_at=result.get("created_at"),
+        job_id=job_id,
     )
     if not saved:
         logger.warning(
@@ -442,14 +499,18 @@ async def _run_analysis(
                 # read/list/delete any in-memory report). See reports.py's
                 # _mem_reports_for_user() and get_report() for the read side.
                 _stamp_report_metadata(result, user_id=user_id, filename=filename, report_id=report_id)
-                _persist_report_locally(result, report_id=report_id, user_id=user_id, filename=filename)
+                _persist_report_locally(
+                result, report_id=report_id, user_id=user_id, filename=filename, job_id=job_id
+            )
                 _jobs[f"report_{report_id}"] = result
         else:
             # No DB configured — persist to the local store, and keep a copy
             # in memory as a read-through cache for this process.
             logger.info(f"[{job_id}] No Supabase — storing report {report_id} locally")
             _stamp_report_metadata(result, user_id=user_id, filename=filename, report_id=report_id)
-            _persist_report_locally(result, report_id=report_id, user_id=user_id, filename=filename)
+            _persist_report_locally(
+                result, report_id=report_id, user_id=user_id, filename=filename, job_id=job_id
+            )
             _jobs[f"report_{report_id}"] = result
 
         upd(status="complete", stage="complete", progress=100, report_id=report_id)

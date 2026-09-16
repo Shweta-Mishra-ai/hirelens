@@ -16,6 +16,7 @@ public record. Nothing is decided for you.
 [![Next.js](https://img.shields.io/badge/Next.js-14.2-000?style=flat-square&logo=next.js)](https://nextjs.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com)
+[![Licence](https://img.shields.io/badge/licence-proprietary-6366F1?style=flat-square)](LICENSE)
 
 [Architecture](docs/ARCHITECTURE.md) ·
 [Deployment](docs/DEPLOYMENT.md) ·
@@ -294,7 +295,14 @@ Zustand · Vitest + Testing Library
 
 ## Licence
 
-Not yet chosen — there is no `LICENSE` file in this repository, which means
-default copyright applies and nobody else may use, copy or modify the code.
-If you want that to change, add one (MIT and Apache-2.0 are the usual choices
-for a project like this) and link it here.
+**Proprietary.** Copyright © 2026 Shweta Mishra, all rights reserved — see
+[LICENSE](LICENSE). This is not open-source software: no licence to use, copy,
+modify or distribute it is granted by default, and viewing this repository
+does not grant one.
+
+Every open-source dependency permits commercial, closed-source distribution —
+no GPL, AGPL or SSPL anywhere in the tree. The audit and the obligations that
+do apply are in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+Commercial licensing and evaluation enquiries: add your contact address to
+`LICENSE`.

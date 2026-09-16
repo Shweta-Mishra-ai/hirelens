@@ -13,7 +13,7 @@ import { Alert, EmptyState, Skeleton } from "@/components/ui/Feedback";
 import { relativeTime, initials, pluralize } from "@/lib/format";
 import { PersonAvatar, personLabel } from "@/components/ui/Person";
 import { cn } from "@/lib/cn";
-import type { Team, TeamMember } from "@/types";
+import type { Team, TeamInvite, TeamMember } from "@/types";
 
 const ROLE_TONE = {
   owner: "brand",
@@ -69,6 +69,12 @@ function TeamsContent() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [members, setMembers] = useState<TeamMember[]>([]);
+  // Invites that have been sent and not accepted. The roster only ever
+  // listed people who had already joined, so an invite sent to a mistyped
+  // address was invisible — there was no way to tell "hasn't joined yet"
+  // from "went to the wrong address".
+  const [invites, setInvites] = useState<TeamInvite[]>([]);
+  const [revoking, setRevoking] = useState<string | null>(null);
   const [membersLoading, setMembersLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -113,6 +119,7 @@ function TeamsContent() {
   const loadMembers = useCallback(async () => {
     if (!token || !selectedId) {
       setMembers([]);
+      setInvites([]);
       return;
     }
     setMembersLoading(true);
@@ -124,7 +131,29 @@ function TeamsContent() {
     } finally {
       setMembersLoading(false);
     }
+    // Pending invites are supplementary: a failure here must not blank the
+    // roster that just loaded.
+    try {
+      const res = await teamsAPI.invites(selectedId, token);
+      setInvites(res.invites);
+    } catch {
+      setInvites([]);
+    }
   }, [token, selectedId]);
+
+  async function handleRevoke(inviteId: string) {
+    if (!token || !selectedId) return;
+    setRevoking(inviteId);
+    setError(null);
+    try {
+      await teamsAPI.revokeInvite(selectedId, inviteId, token);
+      setInvites((current) => current.filter((i) => i.id !== inviteId));
+    } catch (e) {
+      setError(e instanceof APIError ? e.message : "Could not withdraw that invite.");
+    } finally {
+      setRevoking(null);
+    }
+  }
 
   useEffect(() => {
     void loadMembers();
@@ -317,6 +346,37 @@ function TeamsContent() {
                       </li>
                     ))}
                   </ul>
+                )}
+
+                {invites.length > 0 && (
+                  <div className="mt-4 border-t border-line-subtle pt-3">
+                    <p className="mb-2 text-2xs font-medium uppercase tracking-wider text-content-faint">
+                      Invited · not joined yet
+                    </p>
+                    <ul className="divide-y divide-line-subtle">
+                      {invites.map((i) => (
+                        <li key={i.id} className="flex items-center gap-3 py-2.5">
+                          <PersonAvatar name={i.email} size="sm" />
+                          <span className="min-w-0 flex-1 truncate text-sm text-content-muted">
+                            {i.email}
+                          </span>
+                          <Badge tone="neutral">Pending</Badge>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            loading={revoking === i.id}
+                            onClick={() => handleRevoke(i.id)}
+                          >
+                            Withdraw
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="mt-2 text-xs leading-relaxed text-content-faint">
+                      They join the moment they sign in with that exact address.
+                      Wrong address? Withdraw it and send another.
+                    </p>
+                  </div>
                 )}
               </CardBody>
             </Card>

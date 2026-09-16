@@ -7,6 +7,7 @@
  * - 204 No Content handled correctly
  */
 import type {
+  TeamInvite,
   Report,
   ReportListResponse,
   PoolAnalytics,
@@ -437,6 +438,16 @@ export const teamsAPI = {
   invite: (teamId: string, email: string, token: string) =>
     req<{ status: string; email?: string; email_sent?: boolean; invite_url?: string }>(`/api/v1/teams/${teamId}/invite`, {
       method: "POST", body: JSON.stringify({ email }), token,
+    }),
+
+  invites: (teamId: string, token: string) =>
+    req<{ invites: TeamInvite[] }>(`/api/v1/teams/${teamId}/invites`, { token }).then(
+      (res): { invites: TeamInvite[] } => ({ invites: asArray(res?.invites) }),
+    ),
+
+  revokeInvite: (teamId: string, inviteId: string, token: string) =>
+    req<{ status: string }>(`/api/v1/teams/${teamId}/invites/${inviteId}`, {
+      method: "DELETE", token,
     }),
 
   removeMember: (teamId: string, userId: string, token: string) =>

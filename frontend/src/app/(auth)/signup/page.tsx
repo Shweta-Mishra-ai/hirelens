@@ -1,11 +1,13 @@
 "use client";
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { MailCheck } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { authAPI, APIError } from "@/lib/api";
 import { useGoogleAuth } from "@/hooks/useGoogleAuth";
+import { InviteBanner } from "@/components/InviteBanner";
+import { readInviteParams, withInvite } from "@/lib/invite";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Feedback";
@@ -33,14 +35,16 @@ function signupError(err: unknown): string {
   return err.message;
 }
 
-export default function SignupPage() {
+function SignupForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const invite = readInviteParams(searchParams);
   const { token, hasHydrated, setAuth } = useAuthStore();
   const google = useGoogleAuth();
 
   const [fullName, setFullName] = useState("");
   const [company, setCompany] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(invite.email ?? "");
   const [password, setPassword] = useState("");
 
   const [loading, setLoading] = useState(false);
@@ -91,7 +95,15 @@ export default function SignupPage() {
       if (err instanceof APIError && err.status === 409) {
         // A duplicate email is a fact about one field, so it belongs on
         // that field rather than in a generic banner.
-        setFieldErrors({ email: "An account with this email already exists. Sign in instead." });
+        setFieldErrors({
+          email: invite.email
+            ? "You already have an account. Sign in and you'll join the team."
+            : "An account with this email already exists. Sign in instead.",
+        });
+        // An invite link points at signup, so the person who already has an
+        // account lands here and cannot get past it. Carry the invite over
+        // to sign-in, which is what actually accepts it.
+        if (invite.email) router.replace(withInvite("/login", invite));
       } else if (err instanceof APIError && err.status === 422) {
         // The API client turns FastAPI's validation payload into
         // "Email: ..." / "Password: ..." — route it to the right field.
@@ -140,6 +152,7 @@ export default function SignupPage() {
       subtitle="Start reviewing candidate files with the evidence attached."
       footer={<AuthFooterLink prompt="Already have an account?" href="/login" label="Sign in" />}
     >
+      {invite.email && <InviteBanner email={invite.email} mode="signup" />}
       {error && (
         <Alert tone="error" className="mb-5" onDismiss={() => setError(null)}>
           {error}
@@ -218,5 +231,20 @@ export default function SignupPage() {
         prompts to investigate, not hiring decisions.
       </p>
     </AuthLayout>
+  );
+}
+
+
+/**
+ * useSearchParams() reads the invite parameters, and Next refuses to
+ * prerender a page that calls it unless the call sits under a Suspense
+ * boundary. The fallback is never really seen — the params are in the URL
+ * the browser already has — but without this the build fails.
+ */
+export default function SignupPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignupForm />
+    </Suspense>
   );
 }

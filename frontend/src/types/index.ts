@@ -416,3 +416,10 @@ export interface VerificationResult {
     reason: string;
   } | null;
 }
+
+/** A team invite that has been sent but not yet accepted. */
+export interface TeamInvite {
+  id: string;
+  email: string;
+  created_at?: string;
+}

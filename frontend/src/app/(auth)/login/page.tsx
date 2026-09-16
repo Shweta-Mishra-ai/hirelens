@@ -1,6 +1,6 @@
 "use client";
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useState, useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthStore } from "@/store/auth";
 import { authAPI, APIError } from "@/lib/api";
 import { useGoogleAuth } from "@/hooks/useGoogleAuth";
@@ -9,6 +9,8 @@ import { Input } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Feedback";
 import { Card } from "@/components/ui/Card";
 import { AuthLayout, AuthFooterLink, GoogleButton, OrDivider } from "../AuthLayout";
+import { InviteBanner } from "@/components/InviteBanner";
+import { readInviteParams } from "@/lib/invite";
 
 /**
  * Turn a sign-in failure into something the person can act on.
@@ -61,12 +63,16 @@ function signInError(err: unknown): { message: string; hint?: string } {
   return { message: err.message };
 }
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Signing in is what accepts a pending invite, so the link has to work
+  // here too — not only on signup, where it happens to point.
+  const invite = readInviteParams(searchParams);
   const { token, hasHydrated, setAuth } = useAuthStore();
   const google = useGoogleAuth();
 
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(invite.email ?? "");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<{ message: string; hint?: string } | null>(null);
@@ -119,6 +125,7 @@ export default function LoginPage() {
       subtitle="Pick up where you left off with your candidate files."
       footer={<AuthFooterLink prompt="New to HireLens?" href="/signup" label="Create an account" />}
     >
+      {invite.email && <InviteBanner email={invite.email} mode="login" />}
       {error && (
         <Alert tone="error" title={error.message} className="mb-5" onDismiss={() => setError(null)}>
           {error.hint}
@@ -219,5 +226,20 @@ export default function LoginPage() {
         </div>
       )}
     </AuthLayout>
+  );
+}
+
+
+/**
+ * useSearchParams() reads the invite parameters, and Next refuses to
+ * prerender a page that calls it unless the call sits under a Suspense
+ * boundary. The fallback is never really seen — the params are in the URL
+ * the browser already has — but without this the build fails.
+ */
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
   );
 }

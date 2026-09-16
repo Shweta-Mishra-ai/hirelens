@@ -82,9 +82,20 @@ def init_local_db():
                     recruiter_decision TEXT,
                     report_data TEXT,
                     created_at TEXT NOT NULL,
+                    job_id TEXT,
                     FOREIGN KEY(user_id) REFERENCES users(id)
                 )
             """)
+
+            # Existing databases predate job_id. Without it, a report whose
+            # analysis job fell out of memory cannot be matched back to the
+            # upload that produced it — see find_report_by_job below.
+            existing = {row[1] for row in cursor.execute("PRAGMA table_info(reports)")}
+            if "job_id" not in existing:
+                cursor.execute("ALTER TABLE reports ADD COLUMN job_id TEXT")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reports_job_id ON reports(job_id)"
+            )
 
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reports_user_id ON reports(user_id)"
@@ -237,6 +248,7 @@ def save_report(
     recommendation: str,
     report_data: dict,
     created_at: str | None = None,
+    job_id: str | None = None,
 ) -> bool:
     """
     Persist (or replace) a report. Returns True on success.
@@ -251,10 +263,10 @@ def save_report(
                 """
                 INSERT OR REPLACE INTO reports
                     (id, user_id, file_name, candidate_name, overall_score,
-                     recommendation, recruiter_decision, report_data, created_at)
+                     recommendation, recruiter_decision, report_data, created_at, job_id)
                 VALUES (?, ?, ?, ?, ?, ?,
                         COALESCE((SELECT recruiter_decision FROM reports WHERE id = ?), NULL),
-                        ?, ?)
+                        ?, ?, ?)
                 """,
                 (
                     report_id,
@@ -266,6 +278,7 @@ def save_report(
                     report_id,  # preserve any decision already recorded
                     json.dumps(report_data, default=str),
                     created_at or datetime.now(timezone.utc).isoformat(),
+                    job_id,
                 ),
             )
             conn.commit()
@@ -273,6 +286,31 @@ def save_report(
     except Exception as e:
         logger.error(f"Could not persist report {report_id}: {e}")
         return False
+
+
+def find_report_by_job(job_id: str, user_id: str) -> dict | None:
+    """
+    The report an analysis job produced, looked up by the job id.
+
+    Analysis progress lives in a process-local dict, so a restart — which on
+    a free tier happens on every deploy and every wake from sleep — loses it
+    while the finished report sits safely in storage. Polling then answered
+    404 and the recruiter was told to upload again, paying for a second
+    analysis of a CV that had already been analysed. This is how the status
+    endpoint finds it instead.
+    """
+    if not job_id:
+        return None
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, file_name FROM reports WHERE job_id = ? AND user_id = ?",
+                (job_id, user_id),
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"Could not look up the report for job {job_id}: {e}")
+        return None
 
 
 def get_report(report_id: str, user_id: str) -> dict | None:
@@ -780,6 +818,44 @@ def find_pending_invite(team_id: str, email: str) -> dict | None:
         return dict(row) if row else None
     except Exception:
         return None
+
+
+def list_pending_invites(team_id: str) -> list[dict]:
+    """
+    Who has been invited to this team and not joined yet.
+
+    Without this the owner had no idea an invite existed: the roster showed
+    only people who had already joined, so an invite that was mistyped, or
+    that the person never acted on, was invisible — and re-inviting the same
+    address just answered "already invited" with nothing to look at.
+    """
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, email, created_at FROM team_invites "
+                "WHERE team_id = ? AND status = 'pending' ORDER BY created_at",
+                (team_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Could not list invites for team {team_id}: {e}")
+        return []
+
+
+def revoke_invite(invite_id: str, team_id: str) -> bool:
+    """Withdraw a pending invite. Scoped to the team so an id alone is not enough."""
+    try:
+        with _get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE team_invites SET status = 'revoked' "
+                "WHERE id = ? AND team_id = ? AND status = 'pending'",
+                (invite_id, team_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Could not revoke invite {invite_id}: {e}")
+        return False
 
 
 def accept_invites_for_email(email: str, user_id: str) -> int:

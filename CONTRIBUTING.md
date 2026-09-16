@@ -3,6 +3,11 @@
 Thanks for looking. This document is short on ceremony and specific about the
 two or three things that actually matter here.
 
+> **A note on licensing.** HireLens is proprietary — see [LICENSE](LICENSE).
+> Contributing does not grant you a licence to use the software, and by
+> submitting a change you assign its copyright to the project owner. If you
+> are not sure whether that is what you want, ask before you start.
+
 ---
 
 ## Setup
