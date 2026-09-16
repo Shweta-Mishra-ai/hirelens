@@ -3,6 +3,7 @@ HireLens — Real Email Sender Service
 Supports sending real HTML emails via Resend API, SMTP (Gmail/SES/SendGrid), or Supabase Auth.
 """
 
+import html
 import smtplib
 import logging
 import httpx
@@ -64,11 +65,25 @@ async def send_raw_email(to_email: str, subject: str, html_content: str, text_fa
     return False
 
 
+def _esc(value) -> str:
+    """Escape anything interpolated into an email body.
+
+    Team names, inviter names and candidate names are all user-supplied, and
+    an email is HTML. Without this, a team named with a stray tag can restyle
+    or extend the message — and a message that arrives from this product's own
+    sending domain is exactly the one a recipient trusts.
+    """
+    return html.escape(str(value or ""), quote=True)
+
+
 async def send_team_invite_email(to_email: str, team_name: str, inviter_name: str, invite_url: str) -> bool:
     """
     Sends a real team invitation email to to_email.
     Returns True if an email was successfully sent.
     """
+    safe_team = _esc(team_name)
+    safe_inviter = _esc(inviter_name)
+    safe_url = _esc(invite_url)
     subject = f"You're invited to join team '{team_name}' on HireLens"
     html_content = f"""
     <!DOCTYPE html>
@@ -78,22 +93,69 @@ async def send_team_invite_email(to_email: str, team_name: str, inviter_name: st
         <div style="font-size: 24px; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">HireLens</div>
         <h2 style="font-size: 20px; color: #F8FAFC; margin-top: 0;">Team Invitation</h2>
         <p style="font-size: 14px; color: #CBD5E1; line-height: 1.6;">
-          <strong style="color: #818CF8;">{inviter_name}</strong> invited you to collaborate in the workspace <strong style="color: #F8FAFC;">"{team_name}"</strong> on HireLens.
+          <strong style="color: #818CF8;">{safe_inviter}</strong> invited you to collaborate in the workspace <strong style="color: #F8FAFC;">"{safe_team}"</strong> on HireLens.
         </p>
         <div style="margin: 28px 0; text-align: center;">
-          <a href="{invite_url}" style="display: inline-block; padding: 12px 28px; background: linear-gradient(135deg, #6366F1, #4F46E5); color: #FFFFFF; font-weight: 700; font-size: 14px; text-decoration: none; border-radius: 10px;">
+          <a href="{safe_url}" style="display: inline-block; padding: 12px 28px; background: linear-gradient(135deg, #6366F1, #4F46E5); color: #FFFFFF; font-weight: 700; font-size: 14px; text-decoration: none; border-radius: 10px;">
             Accept & Join Team
           </a>
         </div>
         <p style="font-size: 12px; color: #94A3B8; line-height: 1.5;">
           Or copy and paste this link in your browser:<br>
-          <a href="{invite_url}" style="color: #818CF8; word-break: break-all;">{invite_url}</a>
+          <a href="{safe_url}" style="color: #818CF8; word-break: break-all;">{safe_url}</a>
         </p>
       </div>
     </body>
     </html>
     """
     text_fallback = f"You are invited to join team '{team_name}' on HireLens. Click: {invite_url}"
+    return await send_raw_email(to_email, subject, html_content, text_fallback)
+
+
+async def send_password_reset_email(to_email: str, reset_url: str, ttl_minutes: int) -> bool:
+    """
+    Send a password reset link.
+
+    Used on deployments without Supabase, which has no provider of its own to
+    send one. Returns True only if a provider actually accepted the message —
+    the caller needs to know, because a reset the user never receives is an
+    account they cannot get back into.
+    """
+    safe_url = _esc(reset_url)
+    subject = "Reset your HireLens password"
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <body style="background-color: #0B0F17; color: #F8FAFC; font-family: sans-serif; padding: 30px;">
+      <div style="max-width: 540px; margin: 0 auto; background: #1E293B; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 32px;">
+        <div style="font-size: 24px; font-weight: 800; color: #F8FAFC; margin-bottom: 8px;">HireLens</div>
+        <h2 style="font-size: 20px; color: #F8FAFC; margin-top: 0;">Reset your password</h2>
+        <p style="font-size: 14px; color: #CBD5E1; line-height: 1.6;">
+          Someone asked to reset the password for this address. Choose a new one
+          using the link below — it works once, and expires in {ttl_minutes} minutes.
+        </p>
+        <div style="margin: 28px 0; text-align: center;">
+          <a href="{safe_url}" style="display: inline-block; padding: 12px 28px; background: linear-gradient(135deg, #6366F1, #4F46E5); color: #FFFFFF; font-weight: 700; font-size: 14px; text-decoration: none; border-radius: 10px;">
+            Choose a new password
+          </a>
+        </div>
+        <p style="font-size: 12px; color: #94A3B8; line-height: 1.5;">
+          Or copy and paste this link in your browser:<br>
+          <a href="{safe_url}" style="color: #818CF8; word-break: break-all;">{safe_url}</a>
+        </p>
+        <p style="font-size: 12px; color: #94A3B8; line-height: 1.5; margin-top: 20px;">
+          If you did not ask for this, you can ignore this email — your password
+          has not changed.
+        </p>
+      </div>
+    </body>
+    </html>
+    """
+    text_fallback = (
+        f"Reset your HireLens password using this link (valid once, expires in "
+        f"{ttl_minutes} minutes): {reset_url}\n\n"
+        f"If you did not ask for this, ignore this email — your password has not changed."
+    )
     return await send_raw_email(to_email, subject, html_content, text_fallback)
 
 

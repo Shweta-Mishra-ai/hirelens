@@ -63,6 +63,38 @@ Supabase then checks new passwords against HaveIBeenPwned using a k-anonymity
 prefix — the password itself never leaves Supabase. Confirm it took with
 `get_advisors` or the **Advisors → Security** page; the warning disappears.
 
+### Allow the password reset page to be redirected to
+
+**Required.** Without it, password reset is a dead end.
+
+When someone asks to reset their password, the API tells Supabase to send them
+to `https://<your-frontend>/reset-password`. Supabase only honours that if the
+URL is on its allowlist — otherwise it quietly sends the recovery token to the
+project's Site URL instead, where nothing reads it, and the person ends up
+staring at the dashboard with no way to continue.
+
+1. Supabase dashboard → **Authentication** → **URL Configuration**
+2. Set **Site URL** to your frontend origin, e.g. `https://hirelens-theta.vercel.app`
+3. Under **Redirect URLs**, add:
+   - `https://<your-frontend>/reset-password`
+   - `https://<your-frontend>/**` if you also deploy previews
+
+The same page governs where a Google sign-in and an email confirmation land,
+so it is worth getting right once.
+
+#### About the emails themselves
+
+Supabase's built-in SMTP is rate-limited to a handful of messages per hour and
+is documented as being for development only. For real users, set a custom SMTP
+provider under **Authentication → Emails → SMTP Settings**, or the reset emails
+your customers ask for will silently stop arriving on a busy day.
+
+Deployments running **without** Supabase send this email themselves, through
+`RESEND_API_KEY` or the `SMTP_*` variables. With neither configured the token
+is still created but nothing carries it, so the request is logged at ERROR
+level rather than passing quietly — check the Render logs for
+"no email provider accepted the message" if resets are not arriving.
+
 ### Google sign-in
 
 **Authentication → Providers → Google.** You need a Google Cloud OAuth client

@@ -89,9 +89,9 @@ class AnalysisUnavailable(HireLensException):
 
 class RateLimitExceeded(HireLensException):
     http_status = 429; code = "rate_limit_exceeded"
-    def __init__(self, retry_after: int = 60):
+    def __init__(self, retry_after: int = 60, message: str | None = None):
         self.retry_after = retry_after
-        super().__init__(f"Rate limit exceeded. Retry after {retry_after}s.")
+        super().__init__(message or f"Rate limit exceeded. Retry after {retry_after}s.")
 
 class TooManyFiles(HireLensException):
     http_status = 413; code = "too_many_files"

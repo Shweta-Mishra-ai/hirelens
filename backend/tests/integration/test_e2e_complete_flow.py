@@ -79,12 +79,20 @@ def test_e2e_health_check_and_diagnostics():
 
 
 def test_e2e_auth_signup_login_flow():
-    login_res = client.post(
-        "/api/v1/auth/login",
-        json={"email": "e2e_recruiter@example.com", "password": "Password123!"},
+    """Signs up here rather than relying on an earlier test having done it —
+    a test that only passes when its neighbour ran first fails the moment
+    anyone runs a subset, which says nothing about the code."""
+    credentials = {"email": "e2e_login_flow@example.com", "password": "Password123!"}
+
+    signup_res = client.post(
+        "/api/v1/auth/signup",
+        json={**credentials, "full_name": "E2E Login", "company": "E2E Enterprise HR"},
     )
-    assert login_res.status_code == 200
-    assert login_res.json()["user"]["email"] == "e2e_recruiter@example.com"
+    assert signup_res.status_code in (200, 409), signup_res.text
+
+    login_res = client.post("/api/v1/auth/login", json=credentials)
+    assert login_res.status_code == 200, login_res.text
+    assert login_res.json()["user"]["email"] == credentials["email"]
 
 
 @patch("app.services.ai.engine.engine.run", new_callable=AsyncMock)

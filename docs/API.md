@@ -58,9 +58,43 @@ the `X-Request-ID` header and is what to quote in a bug report.
 | `POST` | `/auth/login` | 10 attempts per 15 minutes per IP |
 | `POST` | `/auth/oauth-verify` | `{ access_token }` from the Supabase Google round trip. No fallback: an unverifiable token is refused, never exchanged |
 | `GET` | `/auth/me` | The caller's id and email |
-| `POST` | `/auth/forgot-password` | Always 200, whether or not the address exists |
-| `POST` | `/auth/reset-password` | |
+| `POST` | `/auth/forgot-password` | `{ email }`. Always 200 with the same body, whether or not the address exists — a different answer would let anyone enumerate the customer list. 5 per 15 min per IP, and 3 per 15 min per address |
+| `POST` | `/auth/reset-password` | `{ access_token, new_password }`. 401 for a link that is expired or already spent, 422 for a password the policy refuses |
 | `GET` | `/auth/stats` | Capacity headroom |
+
+### Resetting a password
+
+```
+POST /auth/forgot-password  →  email containing a single-use link
+                                 ↓
+      /reset-password?token=…  or  /reset-password#access_token=…
+                                 ↓
+POST /auth/reset-password   →  the new password is live
+```
+
+The link's token lives in the **fragment** when Supabase sent the email, and in
+the query string when the local store did. A fragment never reaches a server,
+which is the point — the token cannot end up in an access log or a `Referer`
+header — and it is why the page reads `window.location.hash` rather than its
+search params.
+
+A token is spent the first time it is used, and asking for a new link
+invalidates the previous one. Locally issued tokens are stored only as a
+SHA-256 digest and expire in 30 minutes; Supabase manages expiry for its own.
+
+Errors from the identity provider are translated rather than passed through, so
+the distinctions a user can act on survive:
+
+| What happened | Status | What they are told |
+|---|---|---|
+| Wrong password | 401 | "Invalid email or password." — identical whether or not the account exists |
+| Too many attempts | 429 | "Too many attempts. Please wait a minute and try again." — never reported as a wrong password |
+| Email not confirmed | 401 | Points them at the confirmation link |
+| Password in a known breach | 422 | Says so, rather than "choose something stronger" — which would send them to a longer variant of the same password |
+| Password fails the policy | 422 | Names the rules it broke |
+| Address already registered | 409 | "Log in instead" |
+| Reset link expired or spent | 401 | "Request a new one" |
+| Identity provider unreachable | 503 | An outage, explicitly not a credentials failure |
 
 ---
 

@@ -80,7 +80,9 @@ function LoginForm() {
   const [forgotOpen, setForgotOpen] = useState(false);
   const [forgotEmail, setForgotEmail] = useState("");
   const [forgotLoading, setForgotLoading] = useState(false);
-  const [forgotMsg, setForgotMsg] = useState<string | null>(null);
+  const [forgotMsg, setForgotMsg] = useState<{ tone: "success" | "error"; text: string } | null>(
+    null,
+  );
 
   useEffect(() => {
     if (hasHydrated && token) router.replace("/dashboard");
@@ -102,6 +104,14 @@ function LoginForm() {
     }
   }
 
+  function openForgot() {
+    // Carry over whatever they already typed — asking for it twice on the
+    // screen where they have just mistyped it is its own small cruelty.
+    setForgotEmail(email.trim());
+    setForgotMsg(null);
+    setForgotOpen(true);
+  }
+
   async function handleForgot(e: React.FormEvent) {
     e.preventDefault();
     if (!forgotEmail.trim()) return;
@@ -109,11 +119,17 @@ function LoginForm() {
     setForgotMsg(null);
     try {
       const res = await authAPI.forgotPassword(forgotEmail.trim());
-      setForgotMsg(res.message);
+      setForgotMsg({ tone: "success", text: res.message });
     } catch (err) {
-      setForgotMsg(
-        err instanceof APIError ? err.message : "Could not send the reset email. Try again later.",
-      );
+      // A failure here is never "no such account" — the API answers the same
+      // either way on purpose — so it is always something to try again.
+      setForgotMsg({
+        tone: "error",
+        text:
+          err instanceof APIError
+            ? err.message
+            : "Could not send the reset email. Check your connection and try again.",
+      });
     } finally {
       setForgotLoading(false);
     }
@@ -170,10 +186,7 @@ function LoginForm() {
           hint={
             <button
               type="button"
-              onClick={() => {
-                setForgotEmail(email);
-                setForgotOpen(true);
-              }}
+              onClick={openForgot}
               className="text-xs text-brand-400 underline-offset-4 hover:underline"
             >
               Forgot password?
@@ -212,7 +225,7 @@ function LoginForm() {
                 onChange={(e) => setForgotEmail(e.target.value)}
                 placeholder="you@company.com"
               />
-              {forgotMsg && <Alert tone="info">{forgotMsg}</Alert>}
+              {forgotMsg && <Alert tone={forgotMsg.tone}>{forgotMsg.text}</Alert>}
               <div className="flex gap-2.5">
                 <Button type="button" fullWidth onClick={() => setForgotOpen(false)}>
                   Close

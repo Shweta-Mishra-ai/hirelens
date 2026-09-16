@@ -11,7 +11,9 @@ the identity of whoever signs up during the outage.
 """
 
 import logging
+import secrets
 import uuid
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, EmailStr, field_validator
 
@@ -27,9 +29,13 @@ from app.core.exceptions import (
     ConflictError,
     HireLensException,
     CapacityLimitExceeded,
+    RateLimitExceeded,
 )
+from app.core.config import settings
 from app.core.rate_limit import check_rate_limit, get_client_ip
 from app.core import local_db
+from app.services.auth.errors import classify as classify_auth_error
+from app.services.email.sender import send_password_reset_email
 from app.services.teams.access import accept_pending_invites_for_email
 
 logger = logging.getLogger("hirelens")
@@ -95,22 +101,6 @@ class LoginRequest(BaseModel):
         if not v:
             raise ValueError("Password is required.")
         return v
-
-
-def _provider_answered(exc: Exception) -> bool:
-    """
-    True when Supabase itself rejected the request, false when it could not
-    be reached.
-
-    The two need different handling. A rejection is the answer — the password
-    is wrong, the address is taken — and must stand. An outage is not an
-    answer, and the local store is the only thing left to ask.
-    """
-    status = getattr(exc, "status", None)
-    if status is None:
-        response = getattr(exc, "response", None)
-        status = getattr(response, "status_code", None)
-    return isinstance(status, int) and 400 <= status < 500
 
 
 @router.post("/signup")
@@ -207,12 +197,17 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
                 },
             }
 
-        except AuthError:
+        except HireLensException:
             raise
         except Exception as e:
-            err_str = str(e).lower()
-            if "already registered" in err_str or "already exists" in err_str or "duplicate" in err_str:
-                raise ConflictError("An account with this email already exists. Please log in instead.")
+            # A decision by Supabase stands, whatever it was. That includes the
+            # ones a user can act on — a password its policy rejects, an
+            # address already registered, too many attempts — which would
+            # otherwise all be reported as "the service is unavailable" and
+            # send someone away to wait for a problem that is theirs to fix.
+            kind, error = classify_auth_error(e, action="signup")
+            if kind == "rejected" and error is not None:
+                raise error
 
             # No local fallback here, deliberately.
             #
@@ -308,18 +303,17 @@ async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=
                 },
             }
 
-        except AuthError:
+        except HireLensException:
             raise
         except Exception as e:
-            err_str = str(e).lower()
-            if "email not confirmed" in err_str:
-                raise AuthError("Please confirm your email address before logging in.")
-            if _provider_answered(e):
-                # Supabase rejected these credentials. Falling through to the
-                # local store here would let an old password left behind in
-                # the SQLite file beat the real one — the identity provider
-                # says no and the app says yes.
-                raise AuthError("Invalid email or password.")
+            kind, error = classify_auth_error(e, action="login")
+            if kind == "rejected" and error is not None:
+                # Supabase decided. Falling through to the local store here
+                # would let an old password left behind in the SQLite file beat
+                # the real one — the identity provider says no and the app says
+                # yes. Note this covers "too many attempts" as its own answer,
+                # rather than reporting a correct password as wrong.
+                raise error
             # Supabase was unreachable rather than unwilling. An account that
             # predates it may still be in the local store, and locking
             # everyone out during an outage is worse than checking.
@@ -425,27 +419,115 @@ class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
 
+# How long a locally-issued reset link stays valid. Short, because a reset
+# token is a bearer credential sitting in an inbox: anyone who reads that inbox
+# can take the account. Supabase manages its own expiry for the hosted flow.
+LOCAL_RESET_TTL_SECONDS = 30 * 60
+
+
+def _reset_url(token: str | None = None) -> str:
+    """Where the reset email points.
+
+    Supabase appends its recovery token to this as a URL fragment, so the page
+    has to read the fragment rather than the query string. The local flow puts
+    its own token in the query string instead, since it mints it here.
+    """
+    base = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password"
+    return f"{base}?token={quote(token, safe='')}" if token else base
+
+
+async def _issue_local_reset(email: str) -> None:
+    """Mint and email a reset link from the local store.
+
+    Every failure is logged and swallowed. The response to a forgot-password
+    request is identical whatever happens, so that it cannot be used to find
+    out which addresses have accounts.
+    """
+    local_db.purge_expired_password_resets()
+    user = local_db.get_user_by_email(email)
+    if not user:
+        return
+
+    token = secrets.token_urlsafe(32)
+    if not local_db.create_password_reset(user["id"], token, LOCAL_RESET_TTL_SECONDS):
+        return
+
+    sent = await send_password_reset_email(
+        to_email=email,
+        reset_url=_reset_url(token),
+        ttl_minutes=LOCAL_RESET_TTL_SECONDS // 60,
+    )
+    if not sent:
+        # Worth an ERROR: the token is live and the person is waiting for an
+        # email that no provider accepted, so they are locked out with no sign
+        # that anything went wrong.
+        logger.error(
+            f"Password reset token issued for {email} but no email provider "
+            f"accepted the message — configure RESEND_API_KEY or SMTP_*."
+        )
+
+
 @router.post("/forgot-password")
-async def forgot_password(body: ForgotPasswordRequest, request: Request, db=Depends(get_db), redis=Depends(get_redis)):
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    request: Request,
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+):
     """
-    Send password reset email via Supabase Auth.
+    Start a password reset.
+
+    The answer is the same whether or not an account exists. Confirming which
+    addresses are registered would turn this endpoint into a way to enumerate
+    the customer list, and the person who genuinely owns the address learns
+    nothing extra from a different message.
     """
-    check_rate_limit(redis, f"forgot-password:{get_client_ip(request)}", limit=5, window_seconds=900)
+    check_rate_limit(
+        redis, f"forgot-password:{get_client_ip(request)}", limit=5, window_seconds=900
+    )
+    email_str = str(body.email).lower().strip()
+    # A second key, so one address cannot be flooded with reset emails from
+    # many IPs — the IP limit above does not cover that.
+    check_rate_limit(redis, f"forgot-password-addr:{email_str}", limit=3, window_seconds=900)
+
     if db:
         try:
-            db.auth.reset_password_for_email(str(body.email))
+            # redirect_to is what makes the link land on the reset page. Left
+            # out, Supabase sends the recovery token to the project's Site URL,
+            # where nothing reads it and the user gets no way to continue.
+            db.auth.reset_password_for_email(
+                email_str, {"redirect_to": _reset_url()}
+            )
         except Exception as e:
-            logger.warning(f"Password reset request error for {body.email}: {e}")
+            kind, error = classify_auth_error(e, action="reset")
+            if kind == "rejected" and isinstance(error, RateLimitExceeded):
+                # The one rejection worth surfacing: it is about the request,
+                # not about whether the account exists.
+                raise error
+            logger.warning(f"Password reset request failed for {email_str}: {e}")
+    else:
+        await _issue_local_reset(email_str)
 
     return {
         "status": "ok",
-        "message": f"If an account with {body.email} exists, password reset instructions have been sent.",
+        "message": (
+            "If an account exists for that address, a password reset link is on "
+            "its way. Check your inbox, and your spam folder."
+        ),
     }
 
 
 class ResetPasswordRequest(BaseModel):
     access_token: str
     new_password: str
+
+    @field_validator("access_token")
+    @classmethod
+    def validate_token(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("This reset link is missing its token. Request a new one.")
+        return v
 
     @field_validator("new_password")
     @classmethod
@@ -455,19 +537,66 @@ class ResetPasswordRequest(BaseModel):
         return v
 
 
+def _reset_via_supabase(db, token: str, new_password: str) -> bool:
+    """
+    Set a new password from a recovery token.
+
+    The token is verified first with get_user(jwt), and the password is then
+    set through the admin API for exactly that user id.
+
+    Doing it the other way round — set_session() on the shared client, then
+    update_user() — would work for one caller and break for two: `db` is a
+    process-wide singleton, so one request's recovery session would still be
+    attached to it when the next request arrived.
+    """
+    verified = db.auth.get_user(token)
+    user = getattr(verified, "user", None)
+    if not user or not getattr(user, "id", None):
+        raise AuthError(
+            "This password reset link has expired or has already been used. "
+            "Request a new one and try again."
+        )
+
+    db.auth.admin.update_user_by_id(str(user.id), {"password": new_password})
+    return True
+
+
 @router.post("/reset-password")
 async def reset_password(body: ResetPasswordRequest, db=Depends(get_db)):
-    """
-    Reset password using access token from reset email.
-    """
+    """Finish a password reset, using the token from the emailed link."""
     if db:
         try:
-            db.auth.update_user(body.access_token, {"password": body.new_password})
-            return {"status": "ok", "message": "Password updated successfully. You can now log in with your new password."}
+            _reset_via_supabase(db, body.access_token, body.new_password)
+            return {
+                "status": "ok",
+                "message": "Password updated. You can sign in with it now.",
+            }
+        except AuthError:
+            raise
+        except HireLensException:
+            raise
         except Exception as e:
-            logger.error(f"Password update failed: {e}")
+            kind, error = classify_auth_error(e, action="reset")
+            if kind == "rejected" and error is not None:
+                raise error
+            logger.error(f"Password reset failed against Supabase: {e}")
+            raise AccountStoreUnavailable()
 
-    raise AuthError("Password reset failed. Token may be expired or invalid.")
+    user_id = local_db.consume_password_reset(body.access_token, body.new_password)
+    if not user_id:
+        raise AuthError(
+            "This password reset link has expired or has already been used. "
+            "Request a new one and try again."
+        )
+
+    # The in-process copy would otherwise keep answering with the old hash for
+    # the life of this container, so a correct new password would be refused.
+    user = local_db.get_user_by_id(user_id)
+    if user and user.get("email") in _mem_users:
+        _mem_users[user["email"]]["password_hash"] = hash_password(body.new_password)
+
+    logger.info(f"Password reset completed for user {user_id}")
+    return {"status": "ok", "message": "Password updated. You can sign in with it now."}
 
 
 @router.get("/stats")

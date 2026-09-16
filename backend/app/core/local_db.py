@@ -21,11 +21,12 @@ Two things changed here from the original implementation:
 
 import os
 import sqlite3
+import hashlib
 import json
 import uuid
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.core.security import hash_password, verify_password, needs_rehash
 
@@ -880,6 +881,130 @@ def accept_invites_for_email(email: str, user_id: str) -> int:
 
 
 
+# ── Password resets (local store only) ───────────────────────────────────────
+#
+# Supabase owns this flow when it is configured. Without it there is no
+# provider to send a recovery link, and an account whose password is forgotten
+# would be lost for good — so the local store issues its own single-use token.
+#
+# Only the SHA-256 of the token is stored. A reset token is a bearer
+# credential: anyone holding one can take over the account, so a leaked
+# database file must not hand over working tokens. The token itself exists
+# only in the email.
+
+
+def init_password_reset_table() -> None:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS password_resets (
+                    token_hash  TEXT PRIMARY KEY,
+                    user_id     TEXT NOT NULL,
+                    expires_at  TEXT NOT NULL,
+                    used_at     TEXT,
+                    created_at  TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets (user_id)"
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to initialize password_resets table: {e}")
+
+
+def _hash_reset_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_password_reset(user_id: str, token: str, ttl_seconds: int) -> bool:
+    """Issue a reset token, replacing any the user already has.
+
+    Outstanding tokens are invalidated first: asking for a second link has to
+    mean the first one stops working, or an old email forwarded to someone
+    else stays usable."""
+    now = datetime.now(timezone.utc)
+    try:
+        with _get_connection() as conn:
+            conn.execute("DELETE FROM password_resets WHERE user_id = ?", (user_id,))
+            conn.execute(
+                "INSERT INTO password_resets (token_hash, user_id, expires_at, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (
+                    _hash_reset_token(token),
+                    user_id,
+                    (now + timedelta(seconds=ttl_seconds)).isoformat(),
+                    now.isoformat(),
+                ),
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Could not create password reset for {user_id}: {e}")
+        return False
+
+
+def consume_password_reset(token: str, new_password: str) -> str | None:
+    """
+    Spend a reset token and set the new password. Returns the user id, or
+    None when the token is unknown, expired or already used.
+
+    The whole thing runs in one transaction, so a token cannot be redeemed
+    twice by two requests arriving together.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        with _get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT user_id, expires_at, used_at FROM password_resets WHERE token_hash = ?",
+                (_hash_reset_token(token),),
+            ).fetchone()
+
+            if not row or row["used_at"]:
+                conn.rollback()
+                return None
+            try:
+                expires_at = datetime.fromisoformat(row["expires_at"])
+            except ValueError:
+                conn.rollback()
+                return None
+            if expires_at <= now:
+                conn.rollback()
+                return None
+
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (hash_password(new_password), row["user_id"]),
+            )
+            conn.execute(
+                "UPDATE password_resets SET used_at = ? WHERE token_hash = ?",
+                (now.isoformat(), _hash_reset_token(token)),
+            )
+            conn.commit()
+            return row["user_id"]
+    except Exception as e:
+        logger.error(f"Could not consume password reset token: {e}")
+        return None
+
+
+def purge_expired_password_resets() -> int:
+    """Drop spent and expired tokens. Called opportunistically."""
+    try:
+        with _get_connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM password_resets WHERE expires_at <= ? OR used_at IS NOT NULL",
+                (datetime.now(timezone.utc).isoformat(),),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+    except Exception:
+        return 0
+
+
 init_local_db()
 init_collaboration_tables()
 init_team_tables()
+init_password_reset_table()

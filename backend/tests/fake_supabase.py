@@ -269,10 +269,24 @@ class AuthApiError(Exception):
     Supabase answered with, which is how the app tells "your password is
     wrong" apart from "Supabase is unreachable"."""
 
-    def __init__(self, message: str, status: int = 400):
+    def __init__(self, message: str, status: int = 400, code: str | None = None):
         super().__init__(message)
         self.message = message
         self.status = status
+        # Supabase sends a machine-readable code alongside the prose, and the
+        # app matches on it in preference to the message text.
+        self.code = code
+
+
+class AuthSessionMissingError(Exception):
+    """Mirrors supabase_auth.errors.AuthSessionMissingError — raised locally,
+    before any network call, when the client has no signed-in user."""
+
+    def __init__(self, message: str = "Auth session missing!"):
+        super().__init__(message)
+        self.message = message
+        self.status = 400
+        self.code = "session_not_found"
 
 
 class AuthRetryableError(Exception):
@@ -307,6 +321,8 @@ class FakeAuth:
         self.sessions: dict[str, FakeUser] = {}
         self.raises: Exception | None = None
         self.admin = FakeAuthAdmin(self)
+        # Every reset email this fake was asked to send.
+        self.reset_emails: list[dict] = []
 
     def _maybe_raise(self):
         if self.raises is not None:
@@ -346,6 +362,20 @@ class FakeAuth:
             raise AuthApiError("invalid claim: missing sub claim", status=401)
         return FakeAuthResult(user)
 
+    # ── Password reset ───────────────────────────────────────────────────
+    def reset_password_for_email(self, email: str, options: dict | None = None):
+        self._maybe_raise()
+        self.reset_emails.append({"email": email, "options": options or {}})
+        return None
+
+    def update_user(self, attributes, options=None):
+        """The real client updates the CURRENT session's user, and the shared
+        service-role client has no session — so this raises, exactly as
+        supabase-py does. Tests rely on that: it is what makes passing a
+        recovery token here a mistake rather than a working shortcut."""
+        self._maybe_raise()
+        raise AuthSessionMissingError()
+
 
 class FakeAuthAdmin:
     def __init__(self, auth: FakeAuth):
@@ -358,3 +388,11 @@ class FakeAuthAdmin:
     def invite_user_by_email(self, email: str):
         self.invited.append(email)
         return FakeAuthResult(None)
+
+    def update_user_by_id(self, uid: str, attributes: dict):
+        for email, (password, user) in list(self.auth.users.items()):
+            if user.id == uid:
+                new_password = attributes.get("password", password)
+                self.auth.users[email] = (new_password, user)
+                return FakeAuthResult(user)
+        raise AuthApiError("User not found", status=404, code="user_not_found")
