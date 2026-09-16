@@ -172,7 +172,8 @@ export interface Report {
   /**
    * The last verification run, stored on the report by
    * POST /api/v1/verify/{id}/run. It comes back with the report, which is
-   * why the Verify tab does not fetch it separately.
+   * why the Verify tab reads it from here rather than making a second call
+   * to GET /api/v1/verify/{id} — that endpoint works, it is just redundant.
    */
   verification?: VerificationResult;
 }

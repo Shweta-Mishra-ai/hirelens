@@ -417,11 +417,11 @@ export const verifyAPI = {
       token,
     }),
 
-  // There is no GET here on purpose: the last run is stored on the report
-  // and comes back with it. This used to call `/api/v1/verify/{id}`, a route
-  // the API has never had — so every report open fired a request that
-  // 404'd, and a verification you had already run showed as never run when
-  // you came back to the candidate.
+  // No GET here on purpose. `GET /api/v1/verify/{id}` does exist and works —
+  // it answers 404 with "No verification has been run for this report yet"
+  // until one has — but the last run is also stored on the report and comes
+  // back with it, so the extra round trip on every report open bought
+  // nothing. The page reads report.verification instead.
 };
 
 // ── Teams (Team Collaboration) ──────────────────────────────────────────────
