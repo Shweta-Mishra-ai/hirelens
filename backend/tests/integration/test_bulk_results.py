@@ -227,6 +227,15 @@ class TestNotifyAll:
         assert anita["subject"] == "Final round at Acme"
         assert bharat["subject"] != "Final round at Acme"
 
+    def test_the_email_is_signed_with_the_recruiter_s_name(self, owner, batch, mailer):
+        """The JWT carries only an id and an email, so this used to sign
+        every candidate email with the recruiter's raw email address. The
+        name has been in the users table the whole time."""
+        client.post("/api/v1/bulk/b1/notify-all", headers=owner["headers"], json={"decision": "advance"})
+        body = mailer[0]["body"]
+        assert "Bulk Owner" in body
+        assert "bulk_owner@example.com" not in body
+
     def test_notifying_does_not_record_a_hiring_decision(self, owner, batch, mailer):
         """Sending an email and recording a decision stay independent."""
         client.post("/api/v1/bulk/b1/notify-all", headers=owner["headers"], json={"decision": "reject"})

@@ -568,7 +568,9 @@ async def get_notify_draft(
     candidate_email = candidate.get("email")
     candidate_name = candidate.get("name") or "Candidate"
 
-    sender_name = current_user.get("full_name") or current_user.get("email") or "The Hiring Team"
+    sender_name = local_db.get_display_name(
+        current_user["id"], current_user.get("email") or "The Hiring Team"
+    )
     team_name = "HireLens"
     if db:
         try:

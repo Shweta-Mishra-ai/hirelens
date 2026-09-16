@@ -76,6 +76,15 @@ class _Query:
         self.filters.append(lambda row, c=column, v=value: row.get(c) == v)
         return self
 
+    def in_(self, column: str, values):
+        wanted = list(values)
+        self.filters.append(lambda row, c=column, v=wanted: row.get(c) in v)
+        return self
+
+    def neq(self, column: str, value):
+        self.filters.append(lambda row, c=column, v=value: row.get(c) != v)
+        return self
+
     def or_(self, expression: str):
         """Supports the `col.ilike.%x%` form this codebase builds."""
         clauses = []

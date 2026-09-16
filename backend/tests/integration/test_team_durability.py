@@ -199,6 +199,62 @@ class TestRemovalSurvivesRestart:
         ).status_code == 403
 
 
+class TestDeletionSurvivesRestart:
+    """Deleting a team used to touch only the in-process caches, so the team
+    and its whole roster were still on disk and came back on the next
+    restart — and membership that outlives the team keeps every ex-member
+    passing the access check for any report stamped with its id."""
+
+    def test_a_deleted_team_does_not_come_back(self, owner):
+        team_id = _create_team(owner, "Temporary Team")
+        assert client.delete(f"/api/v1/teams/{team_id}", headers=owner["headers"]).status_code == 200
+
+        _restart()
+
+        teams = client.get("/api/v1/teams", headers=owner["headers"]).json()["teams"]
+        assert team_id not in [t["id"] for t in teams]
+        assert local_db.get_team_role(team_id, owner["id"]) is None
+
+    def test_deleting_a_team_revokes_its_members(self, owner):
+        team_id = _create_team(owner, "Doomed Team")
+        member = _user("doomed_member")
+        client.post(
+            f"/api/v1/teams/{team_id}/invite", headers=owner["headers"], json={"email": member["email"]}
+        )
+        # Invites are accepted at signup, so re-signing in picks it up.
+        joined = client.post(
+            "/api/v1/auth/login", json={"email": member["email"], "password": "Password123!"}
+        )
+        member_headers = {"Authorization": f"Bearer {joined.json()['access_token']}"}
+
+        client.delete(f"/api/v1/teams/{team_id}", headers=owner["headers"])
+        _restart()
+
+        assert local_db.get_team_role(team_id, member["id"]) is None
+        assert client.get(
+            f"/api/v1/teams/{team_id}/members", headers=member_headers
+        ).status_code == 403
+
+    def test_only_the_owner_can_delete(self, owner):
+        team_id = _create_team(owner, "Guarded Team")
+        stranger = _user("team_stranger")
+        assert client.delete(f"/api/v1/teams/{team_id}", headers=stranger["headers"]).status_code == 403
+
+        _restart()
+
+        assert local_db.get_team_role(team_id, owner["id"]) == "owner"
+
+    def test_the_local_delete_helper_is_owner_scoped(self):
+        tid = str(uuid.uuid4())
+        local_db.create_team(tid, "Owned Team", "user-a")
+        local_db.add_team_member(tid, "user-b", "member")
+        assert local_db.delete_team(tid, "user-b") is False
+        assert local_db.get_team_role(tid, "user-a") == "owner"
+        assert local_db.delete_team(tid, "user-a") is True
+        assert local_db.get_team_role(tid, "user-a") is None
+        assert local_db.get_team_role(tid, "user-b") is None
+
+
 def test_local_db_team_helpers_are_owner_scoped():
     tid = str(uuid.uuid4())
     local_db.create_team(tid, "Direct Team", "user-a")

@@ -205,7 +205,9 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
         team_name = _mem_teams[team_id].get("name", team_name)
 
     invite_url = f"{settings.FRONTEND_URL}/signup?invite_email={body.email}&team_id={team_id}"
-    inviter_name = current_user.get("full_name") or current_user.get("email") or "A recruiter"
+    inviter_name = local_db.get_display_name(
+        current_user["id"], current_user.get("email") or "A recruiter"
+    )
 
     # Send real email via Resend / SMTP
     email_sent = await send_team_invite_email(
@@ -280,10 +282,19 @@ async def delete_team(team_id: str, current_user: dict = Depends(get_current_use
 
     if db:
         try:
+            # Membership and outstanding invites go with the team. Leaving
+            # the rows behind would keep every ex-member passing
+            # is_team_member() for this id — and any report still stamped
+            # with it readable to them.
+            db.table("team_members").delete().eq("team_id", team_id).execute()
+            db.table("team_invites").delete().eq("team_id", team_id).execute()
             db.table("teams").delete().eq("id", team_id).execute()
         except Exception as e:
             logger.warning(f"DB delete team failed: {e}")
 
+    # Durable rows too — without this the team was still on disk and came
+    # back, roster intact, on the next restart.
+    local_db.delete_team(team_id, current_user["id"])
     _mem_teams.pop(team_id, None)
     # Same in-place-mutation fix as remove_member() above — see that
     # comment for the full explanation of why `global` + reassignment

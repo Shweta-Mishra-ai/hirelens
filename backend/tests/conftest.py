@@ -96,6 +96,8 @@ def fresh_local_db():
         from app.core import local_db
 
         local_db.init_local_db()
+        local_db.init_collaboration_tables()
+        local_db.init_team_tables()
         try:
             yield local_db
         finally:

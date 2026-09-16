@@ -13,6 +13,8 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
+import pytest
+
 from app.services.teams.access import (
     get_user_role, is_team_member, can_manage_team,
     user_can_access_report, accept_pending_invites_for_email,
@@ -211,6 +213,15 @@ class TestUserCanAccessReport:
 
 
 class TestAcceptPendingInvites:
+    """These run against a private SQLite file. accept_pending_invites_for_email
+    consults the durable store as well as the client it is handed, so without
+    isolation the count here depends on which other tests happened to invite
+    the same address earlier in the session."""
+
+    @pytest.fixture(autouse=True)
+    def isolated(self, fresh_local_db):
+        yield
+
     def setup_method(self):
         self.db = FakeSupabase()
         self.db.seed("team_invites", [

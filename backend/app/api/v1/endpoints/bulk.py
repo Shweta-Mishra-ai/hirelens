@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 from fastapi.responses import StreamingResponse
 
+from app.core import local_db
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.rate_limit import check_rate_limit
@@ -414,7 +415,9 @@ async def bulk_notify_all(
         raise ForbiddenError()
 
     status = _build_status_and_ranking(batch, db)
-    sender_name = current_user.get("full_name") or current_user.get("email") or "The Hiring Team"
+    sender_name = local_db.get_display_name(
+        current_user["id"], current_user.get("email") or "The Hiring Team"
+    )
 
     results = []
     for r in status["ranking"]:

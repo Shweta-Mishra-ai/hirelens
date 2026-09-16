@@ -728,6 +728,33 @@ def remove_team_member(team_id: str, user_id: str) -> bool:
         return False
 
 
+def delete_team(team_id: str, owner_id: str) -> bool:
+    """
+    Remove a team, everyone in it, and any invite still outstanding.
+
+    Deleting a team used to touch only this process's caches, so on the
+    SQLite path the team and its whole roster were still on disk and came
+    back on the next restart. Membership outliving the team also matters
+    for access: a report stamped with that team_id stays readable to anyone
+    whose membership row survives.
+    """
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT owner_id FROM teams WHERE id = ?", (team_id,)
+            ).fetchone()
+            if not row or row["owner_id"] != owner_id:
+                return False
+            conn.execute("DELETE FROM team_members WHERE team_id = ?", (team_id,))
+            conn.execute("DELETE FROM team_invites WHERE team_id = ?", (team_id,))
+            conn.execute("DELETE FROM teams WHERE id = ?", (team_id,))
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Could not delete team {team_id}: {e}")
+        return False
+
+
 def create_invite(invite_id: str, team_id: str, email: str) -> bool:
     try:
         with _get_connection() as conn:
@@ -779,6 +806,24 @@ def accept_invites_for_email(email: str, user_id: str) -> int:
     except Exception as e:
         logger.error(f"Could not accept invites for {email}: {e}")
     return accepted
+
+
+
+def get_display_name(user_id: str, fallback: str = "") -> str:
+    """
+    One person's name for the top of an email, with a fallback.
+
+    The JWT carries only the user id and email, so every caller that wanted
+    a name was reading `current_user.get("full_name")` — a key that is never
+    present. Candidate decision emails were therefore signed with the
+    recruiter's raw email address, and team invites said an email address
+    had invited you, in both cases with the name sitting unread in the users
+    table.
+    """
+    if not user_id:
+        return fallback
+    profile = get_display_names([user_id]).get(str(user_id)) or {}
+    return (profile.get("full_name") or "").strip() or fallback
 
 
 init_local_db()
