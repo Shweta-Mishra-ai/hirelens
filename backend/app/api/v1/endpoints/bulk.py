@@ -152,6 +152,7 @@ async def bulk_upload(
             "mime": effective_mime, "filename": filename,
         })
 
+
     total_mb = total_bytes / (1024 * 1024)
 
     if not valid_items:

@@ -21,7 +21,7 @@ from functools import partial
 from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
-from app.core.shapes import as_dict
+from app.core.shapes import as_dict, as_list, as_score, as_str, normalize_report
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import (
@@ -152,7 +152,6 @@ async def match_upload(
             "mime": effective_mime, "filename": filename,
         })
 
-    total_mb = total_bytes / (1024 * 1024)
 
     if not valid_items:
         raise EmptyBatch()
@@ -229,12 +228,15 @@ def _get_report_full(report_id: str, db) -> dict | None:
                 .execute()
             )
             if res.data:
-                return res.data
+                row = dict(res.data)
+                row["report_data"] = normalize_report(row.get("report_data"))
+                return row
         except Exception as e:
             logger.warning(f"Match ranking DB lookup failed for {report_id}: {e}")
 
     data = _jobs.get(f"report_{report_id}")
-    if data:
+    if isinstance(data, dict) and data:
+        data = normalize_report(data)
         cred = as_dict(data.get("credibility"))
         cand = as_dict(data.get("candidate"))
         return {
@@ -275,19 +277,25 @@ def _build_match_status(batch: dict, db) -> dict:
         if job["status"] == "complete" and job["report_id"]:
             full = _get_report_full(job["report_id"], db)
             if full:
+                # Every field here comes out of a stored blob, so none of it
+                # can be trusted to have the type it should. int("seventy")
+                # raises, and `list("python")` quietly becomes six
+                # single-letter skills on the candidate's card — the same
+                # string-explosion the engine was fixed for. See
+                # app/core/shapes.py.
                 rd = as_dict(full.get("report_data"))
-                jd = rd.get("jd_match") or {}
+                jd = as_dict(rd.get("jd_match"))
                 ranking.append({
                     "report_id": job["report_id"],
-                    "file_name": full.get("file_name") or job["file_name"],
-                    "candidate_name": full.get("candidate_name") or "Unknown",
-                    "overall_score": int(full.get("overall_score") or 0),
-                    "recommendation": full.get("recommendation") or "manual_review",
-                    "match_percent": int(jd.get("match_percent") or 0),
-                    "matching_skills": list(jd.get("matching_skills") or []),
-                    "missing_skills": list(jd.get("missing_skills") or []),
-                    "verdict": jd.get("verdict") or "unknown",
-                    "rationale": jd.get("rationale") or "",
+                    "file_name": as_str(full.get("file_name")) or job["file_name"],
+                    "candidate_name": as_str(full.get("candidate_name")) or "Unknown",
+                    "overall_score": as_score(full.get("overall_score")),
+                    "recommendation": as_str(full.get("recommendation")) or "manual_review",
+                    "match_percent": as_score(jd.get("match_percent")),
+                    "matching_skills": as_list(jd.get("matching_skills")),
+                    "missing_skills": as_list(jd.get("missing_skills")),
+                    "verdict": as_str(jd.get("verdict")) or "unknown",
+                    "rationale": as_str(jd.get("rationale")),
                 })
 
     ranking.sort(key=lambda r: r["match_percent"], reverse=True)

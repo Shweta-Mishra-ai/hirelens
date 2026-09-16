@@ -230,6 +230,7 @@ class FakeSupabase:
         self.reject_json_path = False
         # Reject writes naming a column the real table does not have.
         self.strict = strict
+        self._auth: "FakeAuth | None" = None
 
     def check_columns(self, table: str, payload: dict) -> None:
         if not self.strict:
@@ -246,6 +247,12 @@ class FakeSupabase:
     def table(self, name: str) -> _Query:
         return _Query(self, name)
 
+    @property
+    def auth(self) -> "FakeAuth":
+        if self._auth is None:
+            self._auth = FakeAuth(self)
+        return self._auth
+
     def fail(self, table: str, op: str = "select", times: int = 10**6):
         self.failures[(table, op)] = times
 
@@ -255,3 +262,99 @@ class FakeSupabase:
         if remaining > 0:
             self.failures[key] = remaining - 1
             raise RuntimeError(f"simulated {op} failure on {table}")
+
+
+class AuthApiError(Exception):
+    """Mirrors supabase_auth.errors.AuthApiError: it carries the HTTP status
+    Supabase answered with, which is how the app tells "your password is
+    wrong" apart from "Supabase is unreachable"."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+class AuthRetryableError(Exception):
+    """Mirrors the error raised when the request never reached Supabase."""
+
+    def __init__(self, message: str = "connection failed", status: int = 0):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+class FakeUser:
+    def __init__(self, id, email, user_metadata=None):
+        self.id = id
+        self.email = email
+        self.user_metadata = user_metadata or {}
+
+
+class FakeAuthResult:
+    def __init__(self, user):
+        self.user = user
+
+
+class FakeAuth:
+    """Just enough of supabase.auth for the signup / login / OAuth paths."""
+
+    def __init__(self, client: "FakeSupabase"):
+        self.client = client
+        # email -> (password, FakeUser). Populated by tests.
+        self.users: dict[str, tuple[str, FakeUser]] = {}
+        # access token -> FakeUser, for the Google sign-in round trip.
+        self.sessions: dict[str, FakeUser] = {}
+        self.raises: Exception | None = None
+        self.admin = FakeAuthAdmin(self)
+
+    def _maybe_raise(self):
+        if self.raises is not None:
+            raise self.raises
+
+    def sign_up(self, credentials: dict):
+        self._maybe_raise()
+        email = credentials["email"]
+        if email in self.users:
+            raise AuthApiError("User already registered", status=422)
+        user = FakeUser(
+            id=f"sb-{len(self.users) + 1}",
+            email=email,
+            user_metadata=(credentials.get("options") or {}).get("data") or {},
+        )
+        self.users[email] = (credentials["password"], user)
+        # The database trigger mirrors auth.users into public.profiles.
+        self.client.tables.setdefault("profiles", []).append({
+            "id": user.id,
+            "email": email,
+            "full_name": user.user_metadata.get("full_name"),
+            "company": user.user_metadata.get("company"),
+        })
+        return FakeAuthResult(user)
+
+    def sign_in_with_password(self, credentials: dict):
+        self._maybe_raise()
+        entry = self.users.get(credentials["email"])
+        if not entry or entry[0] != credentials["password"]:
+            raise AuthApiError("Invalid login credentials", status=400)
+        return FakeAuthResult(entry[1])
+
+    def get_user(self, access_token: str):
+        self._maybe_raise()
+        user = self.sessions.get(access_token)
+        if not user:
+            raise AuthApiError("invalid claim: missing sub claim", status=401)
+        return FakeAuthResult(user)
+
+
+class FakeAuthAdmin:
+    def __init__(self, auth: FakeAuth):
+        self.auth = auth
+        self.invited: list[str] = []
+
+    def list_users(self):
+        return [u for _, u in self.auth.users.values()]
+
+    def invite_user_by_email(self, email: str):
+        self.invited.append(email)
+        return FakeAuthResult(None)

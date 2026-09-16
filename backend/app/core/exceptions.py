@@ -15,6 +15,22 @@ class ForbiddenError(HireLensException):
 class NotFoundError(HireLensException):
     http_status = 404; code = "not_found"; message = "Resource not found."
 
+class AccountStoreUnavailable(HireLensException):
+    http_status = 503; code = "account_store_unavailable"
+    message = (
+        "We couldn't create your account right now. This is on our side — "
+        "please try again in a moment."
+    )
+
+
+class CopilotUnavailable(HireLensException):
+    http_status = 503; code = "copilot_unavailable"
+    message = (
+        "We couldn't reach the database to open this candidate's interview "
+        "notes. Please try again in a moment — nothing has been lost."
+    )
+
+
 class ConflictError(HireLensException):
     """
     The request is well-formed and authenticated, but conflicts with existing

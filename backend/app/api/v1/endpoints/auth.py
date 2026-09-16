@@ -19,6 +19,7 @@ from app.core.security import (
     verify_password,
 )
 from app.core.exceptions import (
+    AccountStoreUnavailable,
     AuthError,
     ConflictError,
     HireLensException,
@@ -91,6 +92,22 @@ class LoginRequest(BaseModel):
         if not v:
             raise ValueError("Password is required.")
         return v
+
+
+def _provider_answered(exc: Exception) -> bool:
+    """
+    True when Supabase itself rejected the request, false when it could not
+    be reached.
+
+    The two need different handling. A rejection is the answer — the password
+    is wrong, the address is taken — and must stand. An outage is not an
+    answer, and the local store is the only thing left to ask.
+    """
+    status = getattr(exc, "status", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+    return isinstance(status, int) and 400 <= status < 500
 
 
 @router.post("/signup")
@@ -194,7 +211,22 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
             err_str = str(e).lower()
             if "already registered" in err_str or "already exists" in err_str or "duplicate" in err_str:
                 raise ConflictError("An account with this email already exists. Please log in instead.")
-            logger.warning(f"Supabase signup failed for {email_str}: {e} — using local auth store fallback")
+
+            # No local fallback here, deliberately.
+            #
+            # When Supabase is configured it IS the identity store, and
+            # reports.user_id is a foreign key into auth.users. An account
+            # created locally because a Supabase call happened to fail gets a
+            # user id that does not exist there — so every report that account
+            # analyses fails to persist and lands in the local SQLite file
+            # instead, which on an ephemeral disk is gone at the next restart.
+            # The account itself goes with it, and the person is left unable
+            # to log in with a password they know is right.
+            #
+            # A signup we cannot complete is a signup that failed. Say so, and
+            # let them try again.
+            logger.error(f"Supabase signup failed for {email_str}: {e}")
+            raise AccountStoreUnavailable()
 
     # Persistent local SQLite and in-memory fallback (when DB is unconfigured or Supabase connection fails)
     existing_u = local_db.get_user_by_email(email_str) or _mem_users.get(email_str)
@@ -251,28 +283,30 @@ async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=
             })
 
             user = result.user
-            if user:
-                token = create_access_token({
-                    "sub": str(user.id),
+            if not user:
+                # Supabase answered, and the answer was no.
+                raise AuthError("Invalid email or password.")
+            token = create_access_token({
+                "sub": str(user.id),
+                "email": str(user.email),
+            })
+
+            try:
+                accept_pending_invites_for_email(db, str(user.id), str(user.email))
+            except Exception as e:
+                logger.warning(f"Invite auto-accept failed during login for {user.email}: {e}")
+
+            meta = user.user_metadata or {}
+            return {
+                "access_token": token,
+                "token_type": "bearer",
+                "user": {
+                    "id": str(user.id),
                     "email": str(user.email),
-                })
-
-                try:
-                    accept_pending_invites_for_email(db, str(user.id), str(user.email))
-                except Exception as e:
-                    logger.warning(f"Invite auto-accept failed during login for {user.email}: {e}")
-
-                meta = user.user_metadata or {}
-                return {
-                    "access_token": token,
-                    "token_type": "bearer",
-                    "user": {
-                        "id": str(user.id),
-                        "email": str(user.email),
-                        "full_name": meta.get("full_name", ""),
-                        "company": meta.get("company", ""),
-                    },
-                }
+                    "full_name": meta.get("full_name", ""),
+                    "company": meta.get("company", ""),
+                },
+            }
 
         except AuthError:
             raise
@@ -280,7 +314,16 @@ async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=
             err_str = str(e).lower()
             if "email not confirmed" in err_str:
                 raise AuthError("Please confirm your email address before logging in.")
-            logger.warning(f"Supabase login error for {email_str}: {e} — checking local auth store fallback")
+            if _provider_answered(e):
+                # Supabase rejected these credentials. Falling through to the
+                # local store here would let an old password left behind in
+                # the SQLite file beat the real one — the identity provider
+                # says no and the app says yes.
+                raise AuthError("Invalid email or password.")
+            # Supabase was unreachable rather than unwilling. An account that
+            # predates it may still be in the local store, and locking
+            # everyone out during an outage is worse than checking.
+            logger.warning(f"Supabase unreachable during login for {email_str}: {e} — checking the local store")
 
     # Persistent local SQLite fallback lookup
     local_user = local_db.verify_user_password(email_str, body.password)

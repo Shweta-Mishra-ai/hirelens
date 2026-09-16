@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import NotFoundError, HireLensException
+from app.core.shapes import as_dict
+from app.core.exceptions import CopilotUnavailable, NotFoundError, HireLensException
 from app.api.v1.endpoints.analysis import _jobs
 from app.core import local_db
 from app.services.teams.access import user_can_access_report
@@ -75,6 +76,8 @@ def _assert_can_access(report_id: str, user_id: str, db) -> None:
     assessments, so this was a cross-tenant leak of the most sensitive data
     in the product.
     """
+    lookup_failed = False
+
     if db:
         try:
             res = (
@@ -92,16 +95,24 @@ def _assert_can_access(report_id: str, user_id: str, db) -> None:
             raise
         except Exception as e:
             logger.warning(f"Co-pilot access check via DB failed for {report_id}: {e}")
+            lookup_failed = True
 
     # Local path: the in-process copy first, then the durable store.
     mem_report = _jobs.get(f"report_{report_id}")
-    if mem_report is not None:
+    if isinstance(mem_report, dict) and mem_report:
         if mem_report.get("_owner_user_id") != user_id:
             raise NotFoundError(f"Report '{report_id}' not found.")
         return
 
     if local_db.get_report(report_id, user_id) is not None:
         return
+
+    if lookup_failed:
+        # The report lives in Supabase and Supabase did not answer. Telling a
+        # recruiter their candidate does not exist would be a lie, and it is
+        # the kind of lie they act on — the same reason the reports list
+        # raises instead of returning an empty page during an outage.
+        raise CopilotUnavailable()
 
     raise NotFoundError(f"Report '{report_id}' not found.")
 
