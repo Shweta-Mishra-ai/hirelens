@@ -135,13 +135,27 @@ def _apply_verification_to_recommendation(report: dict, trust: dict) -> dict | N
     if trust.get("verdict") != "low_confidence" or not trust.get("evidence_available"):
         return None
 
-    current_rank = RECOMMENDATION_RANK[current]
-    if current_rank == 0:
+    # Always measure the drop from the AI's ORIGINAL read, never from a
+    # value this function already lowered. Verification is documented as
+    # safe to re-run, and it is the recruiter-facing button on the Verify
+    # tab — but downgrading relative to the current value meant each click
+    # took the candidate one level further down on exactly the same
+    # evidence: recommended → manual_review → high_risk, with nothing new
+    # learned in between. Anchoring to ai_recommendation makes a re-run
+    # land on the same verdict as the first run.
+    baseline = cred.get("ai_recommendation") or current
+    if baseline not in RECOMMENDATION_RANK:
+        baseline = current
+
+    baseline_rank = RECOMMENDATION_RANK[baseline]
+    if baseline_rank == 0:
         return None  # already high_risk, nothing lower to downgrade to
 
-    new_recommendation = RANK_TO_RECOMMENDATION[current_rank - 1]
+    new_recommendation = RANK_TO_RECOMMENDATION[baseline_rank - 1]
+    if new_recommendation == current and cred.get("recommendation_adjusted_by_verification"):
+        return None  # already sitting at the downgraded verdict
 
-    cred["ai_recommendation"] = cred.get("ai_recommendation", current)  # preserve original, first downgrade only
+    cred["ai_recommendation"] = baseline
     cred["recommendation"] = new_recommendation
     cred["recommendation_adjusted_by_verification"] = True
     cred["recommendation_adjustment_reason"] = (
