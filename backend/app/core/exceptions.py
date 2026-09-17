@@ -124,6 +124,22 @@ class DBRequiredError(HireLensException):
     http_status = 503; code = "database_required"
     message = "This feature requires a configured database. Ask your admin to set SUPABASE_URL/SUPABASE_SERVICE_KEY."
 
+class StorageWriteFailed(HireLensException):
+    """
+    A write that the caller was told had succeeded did not reach any durable
+    store.
+
+    Raised instead of returning success, because the alternative is the worst
+    kind of failure: the UI shows the team, the invite, the decision — and it
+    is gone at the next restart, with nobody having seen an error and nothing
+    to retry.
+    """
+    http_status = 503; code = "storage_write_failed"
+    message = (
+        "That could not be saved. Nothing has been changed — please try again."
+    )
+
+
 class ValidationError(HireLensException):
     http_status = 422; code = "validation_error"
     message = "Invalid request data."

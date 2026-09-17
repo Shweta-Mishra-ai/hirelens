@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import { RecoveryLinkCatcher } from "@/components/RecoveryLinkCatcher";
 
 /**
  * Typography: one sans for everything, one mono for evidence quotes and
@@ -46,7 +47,13 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${sans.variable} ${mono.variable}`}>
-      <body>{children}</body>
+      <body>
+        {/* A password recovery link can land on any page, depending on a
+            Supabase setting this app does not control. Mounted here so it is
+            caught wherever it arrives. */}
+        <RecoveryLinkCatcher />
+        {children}
+      </body>
     </html>
   );
 }

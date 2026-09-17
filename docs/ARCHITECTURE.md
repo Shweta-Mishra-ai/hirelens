@@ -126,6 +126,43 @@ Every URL the candidate can influence — certificate links, guessed employer
 domains, ATS resume URLs — goes through an SSRF guard that re-validates on
 **every redirect hop**, not just the first.
 
+### What each check is allowed to claim
+
+A false "verified" is the most damaging thing this product can output. It tells
+a recruiter a claim has been independently corroborated when it has not, and it
+gets acted on. Reporting nothing is always preferable, so each check states the
+narrowest true thing and no more.
+
+| Check | What a positive result means | What it does **not** mean |
+|---|---|---|
+| GitHub skill | The skill appears as a language, topic or whole-token term in a real public repo | That the candidate is good at it, or that an unverified skill is absent |
+| Education | The institution named on the resume is in an open registry | That the candidate attended it, or graduated |
+| Certification | The candidate's full name appears in the readable text of a working verification link | That the credential is current, or that the page belongs to this candidate |
+| Employer | A live website answers at a domain guessed from the company name | That the candidate worked there |
+
+Three rules stop a match being read more generously than it deserves:
+
+**A name has to match as a whole name.** Substring matching quietly ruins all
+four checks. It verifies "Java" from a JavaScript repo, "R" from Rust, React and
+Terraform, and a certification for anyone called "Li" from any page containing
+the word "link". Skills match on whole tokens against a family index with an
+ambiguous-short-name list; candidate names match every part, on word boundaries,
+against the page's **visible text** — never its markup, where the name is often
+echoed back from the URL that was just requested.
+
+**A broadened search cannot confirm anything.** Registry lookups retry with
+progressively looser terms, and the registry itself does substring matching, so
+the last-resort single-word query for "Stanford Technical College" returns
+"Technical University of Munich" — real, and irrelevant. A hit only counts as
+confirmation when the query described the whole institution *and* every word of
+that name appears in the result. Anything else is reported as
+`possible_match`: shown to the recruiter, counted by the trust score as
+neither evidence nor doubt.
+
+**A page that says no is a no.** Credential sites answer "not found" with HTTP
+200 and echo the name that was searched for. Those pages are detected and never
+read as a confirmation.
+
 ---
 
 ## Where state lives

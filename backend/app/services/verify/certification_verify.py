@@ -33,6 +33,69 @@ def _extract_url(text: str) -> str | None:
     return m.group(0).rstrip(".") if m else None
 
 
+# Markup, scripts and styles, stripped before the page is searched for a name.
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+# Pages that answer "no such credential" still return 200 and still contain
+# whatever was in the URL. Seeing one of these means the link did not confirm
+# anything, whatever else is on the page.
+_NEGATIVE_MARKERS = (
+    "not found",
+    "no certificate",
+    "no credential",
+    "no record",
+    "no such",
+    "no longer valid",
+    "invalid credential",
+    "invalid certificate",
+    "has been revoked",
+    "no results",
+    "does not exist",
+    "expired credential",
+    "could not be verified",
+    "unable to verify",
+)
+
+
+def _visible_text(html_source: str) -> str:
+    """
+    The words a person would read, without the markup around them.
+
+    Searching the raw response instead would match a name inside a URL, a
+    meta tag, a JSON blob or a script variable — including the URL that was
+    just requested, which on many credential sites contains the name being
+    looked for. That is a check that confirms itself.
+    """
+    without_code = _SCRIPT_STYLE_RE.sub(" ", html_source or "")
+    without_tags = _TAG_RE.sub(" ", without_code)
+    return _WHITESPACE_RE.sub(" ", without_tags).strip().lower()
+
+
+def _name_parts(candidate_name: str) -> list[str]:
+    parts = [p for p in re.split(r"[^A-Za-z]+", candidate_name or "") if len(p) >= 2]
+    return [p.lower() for p in parts]
+
+
+def _name_on_page(candidate_name: str, page_text: str) -> bool:
+    """
+    Whether this candidate's name really appears on the page.
+
+    Every part of the name has to be there, each as a whole word. A plain
+    substring test on a short or common name matches almost any page —
+    "Li" inside "Link" and "Client", "An" inside "Announcement" — and turns a
+    credential page that was never about this candidate into a confirmation.
+    """
+    parts = _name_parts(candidate_name)
+    # A single short token is not enough to identify anyone.
+    if len(parts) < 2 and not (parts and len(parts[0]) >= 6):
+        return False
+    return all(
+        re.search(rf"(?<![a-z]){re.escape(part)}(?![a-z])", page_text) for part in parts
+    )
+
+
 async def _safe_fetch(client: httpx.AsyncClient, url: str) -> httpx.Response | None:
     """GET with manual redirect handling — re-validates SSRF safety on every
     hop, since a URL that's safe can still redirect to an internal address."""
@@ -90,14 +153,38 @@ async def verify_certifications(certifications: list, candidate_name: str | None
                 results.append({"name": name, "url": url, "status": "link_unreachable", "note": f"Returned {r.status_code}."})
                 continue
 
-            page_text = r.text.lower()
-            name_found = bool(candidate_name) and candidate_name.strip().lower() in page_text
+            page_text = _visible_text(r.text)
+            says_not_found = any(marker in page_text for marker in _NEGATIVE_MARKERS)
+            name_found = _name_on_page(candidate_name, page_text)
 
-            results.append({
-                "name": name,
-                "url": url,
-                "status": "verified_via_link" if name_found else "link_reachable_name_not_confirmed",
-                "note": None if name_found else "The link works, but the candidate's name wasn't found on the page.",
-            })
+            if says_not_found:
+                results.append({
+                    "name": name,
+                    "url": url,
+                    "status": "link_reachable_name_not_confirmed",
+                    "note": "The page loaded but reports no such credential. Worth asking about.",
+                })
+            elif name_found:
+                results.append({
+                    "name": name,
+                    "url": url,
+                    "status": "verified_via_link",
+                    "note": None,
+                })
+            elif not _name_parts(candidate_name):
+                results.append({
+                    "name": name,
+                    "url": url,
+                    "status": "link_reachable_name_not_confirmed",
+                    "note": "The link works, but no candidate name was extracted from the "
+                            "resume to check it against.",
+                })
+            else:
+                results.append({
+                    "name": name,
+                    "url": url,
+                    "status": "link_reachable_name_not_confirmed",
+                    "note": "The link works, but the candidate's name wasn't found on the page.",
+                })
 
     return results

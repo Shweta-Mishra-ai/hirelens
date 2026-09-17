@@ -218,7 +218,11 @@ class TestCompanyVerification:
         out = await company_verify.verify_experience_companies([{"company": "Acme Labs"}])
         assert out[0]["status"] == "domain_found"
         assert out[0]["domain_checked"] == "acme.com"
-        assert out[0]["note"] is None
+        # A note is attached on the positive case too. A live website shows the
+        # employer is real; it is not evidence the candidate worked there, and
+        # a green row with no caveat beside an employment claim reads as
+        # though it is.
+        assert "does not confirm the candidate worked there" in out[0]["note"]
 
     @pytest.mark.asyncio
     async def test_a_missing_domain_is_a_weak_signal_not_a_red_flag(self, monkeypatch):

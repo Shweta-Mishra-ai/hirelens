@@ -13,7 +13,9 @@ from pydantic import BaseModel, EmailStr, field_validator
 from app.core import local_db
 from app.services import directory
 from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import HireLensException, NotFoundError, ForbiddenError
+from app.core.exceptions import (
+    HireLensException, NotFoundError, ForbiddenError, StorageWriteFailed,
+)
 from app.services.teams.access import (
     get_user_role, can_manage_team, normalize_email as directory_normalize_email,
     _mem_teams, _mem_team_members, _mem_team_invites,
@@ -91,9 +93,16 @@ async def create_team(body: CreateTeamRequest, current_user: dict = Depends(get_
             logger.warning(f"DB Team creation failed ({e}) — using in-memory fallback")
 
     # Local fallback — persisted, then mirrored into this process's cache.
+    #
+    # The durable write is checked. This is the only store on this deployment,
+    # so ignoring a failure would hand back a team id for a team that exists
+    # only in this process — working until the next restart, then gone, with
+    # no error ever shown and every report shared to it left dangling.
     team = {"id": team_id, "name": body.name, "owner_id": user_id, "created_at": created_at,
             "my_role": "owner"}
-    local_db.create_team(team_id, body.name, user_id, created_at)
+    if not local_db.create_team(team_id, body.name, user_id, created_at):
+        logger.error(f"Team create failed to persist | id={team_id} owner={user_id}")
+        raise StorageWriteFailed("That team could not be saved. Please try again.")
     _mem_teams[team_id] = team
     _mem_team_members.append({"team_id": team_id, "user_id": user_id, "role": "owner", "joined_at": created_at})
     logger.info(f"Team created | id={team_id} owner={user_id} name={body.name}")
@@ -249,7 +258,14 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
     # Persist the invite, then mirror it into this process's cache. Without
     # the durable row an invite sent before a restart could never be
     # accepted — the invitee would sign up and silently join nothing.
-    local_db.create_invite(invite_id, team_id, invite_email)
+    if not local_db.create_invite(invite_id, team_id, invite_email) and not db:
+        # Without Supabase this row is the invite. An unchecked failure here
+        # tells the inviter the invitation was sent, and leaves the invitee
+        # able to sign up and join nothing.
+        logger.error(f"Invite failed to persist | team={team_id} email={invite_email}")
+        raise StorageWriteFailed(
+            "That invitation could not be saved, so it has not been sent. Please try again."
+        )
     _mem_team_invites.append({
         "id": invite_id,
         "team_id": team_id,
@@ -364,7 +380,17 @@ async def remove_member(team_id: str, user_id: str, current_user: dict = Depends
     # the name means every module holding a reference to this list — this
     # one and access.py — sees the same change, because it's still the
     # same object.
-    local_db.remove_team_member(team_id, user_id)
+    # A failed delete here is not "nothing to remove" — it means this person
+    # still has access while the response says otherwise. Revocation reports
+    # what actually happened.
+    try:
+        local_db.remove_team_member(team_id, user_id)
+    except local_db.LocalStoreError:
+        logger.error(f"Member removal failed to persist | team={team_id} user={user_id}")
+        raise StorageWriteFailed(
+            "That member could not be removed. Their access is unchanged — please try again."
+        )
+
     _mem_team_members[:] = [
         m for m in _mem_team_members
         if not (m["team_id"] == team_id and m["user_id"] == user_id)
@@ -391,7 +417,13 @@ async def delete_team(team_id: str, current_user: dict = Depends(get_current_use
 
     # Durable rows too — without this the team was still on disk and came
     # back, roster intact, on the next restart.
-    local_db.delete_team(team_id, current_user["id"])
+    try:
+        local_db.delete_team(team_id, current_user["id"])
+    except local_db.LocalStoreError:
+        logger.error(f"Team deletion failed to persist | team={team_id}")
+        raise StorageWriteFailed(
+            "That team could not be deleted. Nothing has changed — please try again."
+        )
     _mem_teams.pop(team_id, None)
     # Same in-place-mutation fix as remove_member() above — see that
     # comment for the full explanation of why `global` + reassignment

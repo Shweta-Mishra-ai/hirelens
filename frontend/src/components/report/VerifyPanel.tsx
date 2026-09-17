@@ -67,8 +67,13 @@ const GITHUB_STATUS: Record<string, StatusMeta> = {
   error: { label: "Check failed", tone: "neutral", icon: ICONS.warn },
 };
 
+// "In registry", not "Verified". This check confirms the institution exists
+// in an open registry under the name on the resume — it says nothing about
+// whether the candidate attended it, and a badge reading "Verified" next to a
+// degree claim is read as though it does.
 const EDU_STATUS: Record<string, StatusMeta> = {
-  verified: { label: "Verified", tone: "positive", icon: ICONS.ok },
+  verified: { label: "In registry", tone: "positive", icon: ICONS.ok },
+  possible_match: { label: "Similar name only", tone: "caution", icon: ICONS.wait },
   not_found: { label: "Not in registry", tone: "neutral", icon: ICONS.unknown },
   skipped: { label: "Skipped", tone: "neutral", icon: ICONS.dash },
   error: { label: "Check failed", tone: "neutral", icon: ICONS.warn },

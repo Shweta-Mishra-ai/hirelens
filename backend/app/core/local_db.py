@@ -57,6 +57,18 @@ def _get_connection():
     return conn
 
 
+class LocalStoreError(Exception):
+    """The local store could not carry out a write.
+
+    Raised only by the helpers whose failure a caller must not mistake for
+    "there was nothing to do". A delete that removes no rows because none
+    matched is a fine outcome and returns False; a delete that failed because
+    the database could not be written is not, and telling someone their data
+    or someone else's access is gone when it is not is the failure this exists
+    to prevent.
+    """
+
+
 def init_local_db():
     """Initializes tables and seeds default demo recruiter if not present."""
     try:
@@ -389,7 +401,7 @@ def delete_report(report_id: str, user_id: str) -> bool:
             return cur.rowcount > 0
     except Exception as e:
         logger.error(f"Could not delete report {report_id}: {e}")
-        return False
+        raise LocalStoreError(str(e)) from e
 
 
 def count_reports(user_id: str | None = None) -> int:
@@ -759,7 +771,7 @@ def remove_team_member(team_id: str, user_id: str) -> bool:
             return cur.rowcount > 0
     except Exception as e:
         logger.error(f"Could not remove member from {team_id}: {e}")
-        return False
+        raise LocalStoreError(str(e)) from e
 
 
 def delete_team(team_id: str, owner_id: str) -> bool:
@@ -786,7 +798,7 @@ def delete_team(team_id: str, owner_id: str) -> bool:
             return True
     except Exception as e:
         logger.error(f"Could not delete team {team_id}: {e}")
-        return False
+        raise LocalStoreError(str(e)) from e
 
 
 def create_invite(invite_id: str, team_id: str, email: str) -> bool:

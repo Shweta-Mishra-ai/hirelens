@@ -121,7 +121,11 @@ export const useAuthStore = create<AuthStore>()(
       },
 
       logout: () => {
-        supabase.auth.signOut();
+        // Best effort. This client holds no session of its own (see
+        // lib/supabase.ts), so there is usually nothing to revoke — but a
+        // rejected promise here must never stop the local session being
+        // cleared, which is the part that actually signs the user out.
+        void supabase.auth.signOut().catch(() => {});
         set({
           user: null,
           token: null,

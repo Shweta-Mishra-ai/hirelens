@@ -17,7 +17,10 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
 from app.core.dependencies import get_current_user, get_db, get_redis
-from app.core.exceptions import NotFoundError, ForbiddenError, HireLensException, ValidationError
+from app.core.exceptions import (
+    NotFoundError, ForbiddenError, HireLensException, ValidationError,
+    StorageWriteFailed,
+)
 from app.core.rate_limit import check_rate_limit
 from app.core.config import settings
 from app.core import local_db
@@ -715,6 +718,15 @@ async def delete_report(
 
     # And from the durable local store, or the report would reappear on the
     # next restart when the in-memory cache is repopulated from disk.
-    local_db.delete_report(report_id, current_user["id"])
+    try:
+        local_db.delete_report(report_id, current_user["id"])
+    except local_db.LocalStoreError:
+        # "Deleted" has to mean deleted. Reporting success here leaves the
+        # report on the dashboard at the next restart, after the recruiter
+        # believed they had removed a candidate's file.
+        logger.error(f"Report deletion failed to persist | report={report_id}")
+        raise StorageWriteFailed(
+            "That report could not be deleted. It is unchanged — please try again."
+        )
 
     logger.info(f"Report deleted | id={report_id} user={current_user['id']}")

@@ -108,7 +108,13 @@ async def verify_experience_companies(experience: list[dict]) -> list[dict]:
                 "domain_checked": domain,
                 "status": "domain_found" if found else "domain_not_found",
                 "note": (
-                    None if found else
+                    # Said out loud on the positive case too. A live website at
+                    # a guessed domain shows the employer is real; it is not
+                    # evidence the candidate worked there, and a green row with
+                    # no caveat beside an employment claim reads as though it is.
+                    "A live website answers at this domain, so the employer appears real. "
+                    "This does not confirm the candidate worked there."
+                    if found else
                     "No website found at the guessed domain — false negatives are common here "
                     "(unregistered businesses, non-.com domains, rebrands). This is a weak signal only."
                 ),
