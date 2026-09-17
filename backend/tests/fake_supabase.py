@@ -218,6 +218,9 @@ SCHEMA: dict[str, set[str]] = {
     "team_invites": {"id", "team_id", "email", "invited_by", "status", "created_at"},
     "report_comments": {"id", "report_id", "user_id", "comment", "created_at"},
     "report_votes": {"report_id", "user_id", "vote", "created_at"},
+    "saved_jds": {
+        "id", "user_id", "name", "jd_text", "created_at", "updated_at", "last_used_at",
+    },
 }
 
 

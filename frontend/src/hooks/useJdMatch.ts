@@ -57,7 +57,8 @@ export function useJdMatch() {
       }
       const hasText = !!jd.text && jd.text.trim().length >= 30;
       const hasFile = !!jd.file;
-      if (!hasText && !hasFile) {
+      const hasSaved = !!jd.savedId;
+      if (!hasText && !hasFile && !hasSaved) {
         safeSetState({
           phase: "error",
           message: "Paste a job description (at least a few sentences) or upload a JD file.",

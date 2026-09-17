@@ -98,6 +98,31 @@ the distinctions a user can act on survive:
 
 ---
 
+## Saved job descriptions
+
+A role's description is written once and used against every shortlist for it,
+often over weeks. Saving it means the same text ranks every batch, rather than
+whatever was pasted that morning.
+
+| | Endpoint | Notes |
+|---|---|---|
+| `GET` | `/job-descriptions` | Names and sizes only — the text is fetched when one is chosen |
+| `POST` | `/job-descriptions` | `{ name, jd_text }`. Saving under a name already in use replaces that description rather than creating a second one with the same label. Max 50 per recruiter |
+| `GET` | `/job-descriptions/{id}` | The full text. Scoped to its owner: someone else's id is a 404 |
+| `DELETE` | `/job-descriptions/{id}` | |
+
+`POST /match/upload` accepts `saved_jd_id` alongside `files`, and reads the
+text server-side. An id that does not resolve is a **404, never a fall-through**
+to whatever else was sent — ranking a shortlist against the wrong description
+produces a confident, wrong answer about every candidate on it.
+
+There is deliberately **no URL fetcher**. Job boards render through JavaScript
+and sit behind bot protection, so fetching one usually yields a cookie banner
+or a sign-in wall — and that text then becomes the thing every candidate is
+measured against, silently.
+
+---
+
 ## Analysis
 
 ```http

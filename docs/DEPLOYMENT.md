@@ -26,6 +26,7 @@ error.
 | 2 | `backend/sql/002_team_collaboration.sql` | `teams`, `team_members`, `team_invites`, `report_comments`, `report_votes`, `reports.team_id` |
 | 3 | `backend/sql/003_candidate_notifications.sql` | the `candidate_notified_*` columns |
 | 4 | `backend/sql/004_normalize_invite_emails.sql` | one spelling for an invited address, so an invite always matches the person who was invited |
+| 5 | `backend/sql/005_saved_job_descriptions.sql` | `saved_jds`, so a role's description is written once and reused |
 
 **002 must come after 001** — it adds a column to `reports` and foreign-keys
 four tables to it.

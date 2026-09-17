@@ -15,7 +15,7 @@ from app.core.exceptions import (
     HireLensException, RateLimitExceeded,
     FileTooLarge, UnsupportedFileType, AuthError,
 )
-from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match, verify, ats, teams, collaboration, copilot
+from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match, verify, ats, teams, collaboration, copilot, jds
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hirelens")
@@ -350,6 +350,7 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["Analysis"])
 app.include_router(bulk.router, prefix="/api/v1/bulk", tags=["Bulk Upload"])
 app.include_router(match.router, prefix="/api/v1/match", tags=["JD Match"])
+app.include_router(jds.router, prefix="/api/v1/job-descriptions", tags=["Saved JDs"])
 app.include_router(verify.router, prefix="/api/v1/verify", tags=["Verification"])
 app.include_router(ats.router, prefix="/api/v1/ats", tags=["ATS Import"])
 app.include_router(teams.router, prefix="/api/v1/teams", tags=["Teams"])

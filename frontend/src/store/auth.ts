@@ -4,9 +4,13 @@
  * The session, persisted across reloads.
  *
  * Sign-up handles the confirmation-required answer as its own outcome rather
- * than an error, an expired token is detected before a request is sent with
- * it, and `isLoading` is reset on every path out — including the failing ones,
- * which is what keeps a failed sign-in from leaving a spinner on screen.
+ * than an error, and `isLoading` is reset on every path out — including the
+ * failing ones, which is what keeps a failed sign-in from leaving a spinner on
+ * screen.
+ *
+ * Nothing here decides that a session has ended. That judgement lives in
+ * lib/session.ts, which checks with the identity endpoint before a 401 is
+ * allowed to sign anyone out.
  */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";

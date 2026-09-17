@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   X,
@@ -11,14 +11,17 @@ import {
   Check,
   Minus,
   Trophy,
+  Trash2,
 } from "lucide-react";
 import { useJdMatch } from "@/hooks/useJdMatch";
+import { useAuthStore } from "@/store/auth";
+import { jdsAPI, APIError, type SavedJd } from "@/lib/api";
 import { AppShell, PageHeader, RequireAuth } from "@/components/AppShell";
 import { FileDropzone, type FileRejection } from "@/components/FileDropzone";
 import { Card, CardHeader, CardBody } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
-import { Textarea } from "@/components/ui/Field";
+import { Input, Textarea } from "@/components/ui/Field";
 import { Alert, EmptyState } from "@/components/ui/Feedback";
 import { ScorePill } from "@/components/ui/Score";
 import { cn } from "@/lib/cn";
@@ -187,13 +190,88 @@ function CandidateRow({
 
 function MatchContent() {
   const { state, upload, exportCsv, exporting, reset } = useJdMatch();
+  const token = useAuthStore((s) => s.token);
 
   const [pending, setPending] = useState<File[]>([]);
   const [rejections, setRejections] = useState<FileRejection[]>([]);
-  const [jdMode, setJdMode] = useState<"paste" | "upload">("paste");
+  const [jdMode, setJdMode] = useState<"paste" | "upload" | "saved">("paste");
   const [jdText, setJdText] = useState("");
   const [jdFile, setJdFile] = useState<File | null>(null);
   const [jdError, setJdError] = useState<string | null>(null);
+
+  // Saved job descriptions. A role's description is written once and used
+  // against every shortlist for it, often over weeks — retyping it each time
+  // is where the wrong version gets pasted, and a ranking is only as good as
+  // the description it ranked against.
+  const [savedJds, setSavedJds] = useState<SavedJd[]>([]);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [savingName, setSavingName] = useState("");
+  const [savingBusy, setSavingBusy] = useState(false);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+
+  const refreshSavedJds = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await jdsAPI.list(token);
+      setSavedJds(res.job_descriptions ?? []);
+    } catch {
+      // A picker that cannot load is an inconvenience, not a failure — paste
+      // and upload still work, so this must not take the page down.
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void refreshSavedJds();
+  }, [refreshSavedJds]);
+
+  async function openSavedJd(id: string) {
+    if (!token) return;
+    setJdError(null);
+    setSavedNotice(null);
+    try {
+      const res = await jdsAPI.get(id, token);
+      setSavedId(id);
+      // Shown in the box as well as sent by id, so the recruiter can see
+      // exactly what this run will be ranked against before starting it.
+      setJdText(res.job_description.jd_text);
+      setSavingName(res.job_description.name);
+    } catch (e) {
+      setJdError(
+        e instanceof APIError ? e.message : "Could not open that saved job description.",
+      );
+    }
+  }
+
+  async function saveCurrentJd() {
+    if (!token || savingBusy) return;
+    const name = savingName.trim();
+    const text = jdText.trim();
+    if (!name || text.length < JD_MIN_CHARS) return;
+    setSavingBusy(true);
+    setJdError(null);
+    setSavedNotice(null);
+    try {
+      const res = await jdsAPI.save(name, text, token);
+      setSavedId(res.job_description.id);
+      setSavedNotice(`Saved as "${res.job_description.name}".`);
+      await refreshSavedJds();
+    } catch (e) {
+      setJdError(e instanceof APIError ? e.message : "Could not save that job description.");
+    } finally {
+      setSavingBusy(false);
+    }
+  }
+
+  async function deleteSavedJd(id: string) {
+    if (!token) return;
+    try {
+      await jdsAPI.remove(id, token);
+      if (savedId === id) setSavedId(null);
+      await refreshSavedJds();
+    } catch (e) {
+      setJdError(e instanceof APIError ? e.message : "Could not delete that job description.");
+    }
+  }
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const addFiles = useCallback((accepted: File[], rejected: FileRejection[]) => {
@@ -222,12 +300,24 @@ function MatchContent() {
     setJdFile(file);
   }
 
-  const jdReady = jdMode === "paste" ? jdText.trim().length >= JD_MIN_CHARS : Boolean(jdFile);
+  const jdReady =
+    jdMode === "upload"
+      ? Boolean(jdFile)
+      : jdMode === "saved"
+        ? Boolean(savedId)
+        : jdText.trim().length >= JD_MIN_CHARS;
   const canRun = jdReady && pending.length > 0;
 
   function run() {
     if (!canRun) return;
-    upload(pending, jdMode === "paste" ? { text: jdText.trim() } : { file: jdFile! });
+    upload(
+      pending,
+      jdMode === "upload"
+        ? { file: jdFile! }
+        : jdMode === "saved"
+          ? { savedId: savedId! }
+          : { text: jdText.trim() },
+    );
   }
 
   function startOver() {
@@ -236,6 +326,8 @@ function MatchContent() {
     setRejections([]);
     setJdText("");
     setJdFile(null);
+    setSavedId(null);
+    setSavedNotice(null);
     setExpanded(null);
   }
 
@@ -299,7 +391,7 @@ function MatchContent() {
                   aria-label="Job description input method"
                   className="flex rounded-md border border-line-strong bg-canvas-inset p-0.5"
                 >
-                  {(["paste", "upload"] as const).map((m) => (
+                  {(["paste", "upload", "saved"] as const).map((m) => (
                     <button
                       key={m}
                       role="tab"
@@ -320,12 +412,81 @@ function MatchContent() {
               }
             />
             <CardBody className="flex-1">
-              {jdMode === "paste" ? (
+              {jdMode === "saved" ? (
+                <div>
+                  {savedJds.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-line-strong bg-canvas-inset px-4 py-8 text-center text-sm text-content-muted">
+                      Nothing saved yet. Paste a job description, give it a name, and
+                      it will be here for the next shortlist.
+                    </p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {savedJds.map((jd) => (
+                        <li
+                          key={jd.id}
+                          className={cn(
+                            "flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors",
+                            savedId === jd.id
+                              ? "border-brand-500 bg-brand-500/5"
+                              : "border-line hover:border-line-strong",
+                          )}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void openSavedJd(jd.id)}
+                            className="min-w-0 flex-1 text-left"
+                            aria-pressed={savedId === jd.id}
+                          >
+                            <span className="block truncate text-sm font-medium text-content">
+                              {jd.name}
+                            </span>
+                            <span className="block text-xs text-content-faint">
+                              {jd.char_count.toLocaleString()} characters
+                              {jd.last_used_at ? " · used before" : ""}
+                            </span>
+                          </button>
+                          {savedId === jd.id && (
+                            <span className="shrink-0 text-xs font-medium text-brand-400">
+                              Selected
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void deleteSavedJd(jd.id)}
+                            aria-label={`Delete saved job description ${jd.name}`}
+                            className="shrink-0 rounded p-1 text-content-faint transition-colors hover:text-critical"
+                          >
+                            <Trash2 className="size-4" aria-hidden />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {savedId && (
+                    <div className="mt-4 rounded-lg border border-line bg-canvas-inset p-3">
+                      <p className="mb-1.5 text-xs font-medium text-content-muted">
+                        This run will be ranked against:
+                      </p>
+                      <p className="max-h-32 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-content-faint">
+                        {jdText}
+                      </p>
+                    </div>
+                  )}
+                  {jdError && <p className="mt-2 text-xs text-critical">{jdError}</p>}
+                </div>
+              ) : jdMode === "paste" ? (
                 <>
                   <Textarea
                     rows={12}
                     value={jdText}
-                    onChange={(e) => setJdText(e.target.value)}
+                    onChange={(e) => {
+                      setJdText(e.target.value);
+                      // Editing the text means this is no longer the saved
+                      // description — running against the stored id would rank
+                      // the shortlist on text the recruiter just changed.
+                      setSavedId(null);
+                      setSavedNotice(null);
+                    }}
                     placeholder="Paste the full job description — responsibilities, must-have requirements, nice-to-haves…"
                     aria-label="Job description text"
                   />
@@ -334,6 +495,40 @@ function MatchContent() {
                       ? `${JD_MIN_CHARS - jdText.trim().length} more characters needed`
                       : `${jdText.trim().length} characters`}
                   </p>
+
+                  <div className="mt-4 border-t border-line-subtle pt-4">
+                    <label
+                      htmlFor="jd-save-name"
+                      className="text-xs font-medium text-content-muted"
+                    >
+                      Save this for next time
+                    </label>
+                    <div className="mt-1.5 flex gap-2">
+                      <Input
+                        id="jd-save-name"
+                        value={savingName}
+                        onChange={(e) => setSavingName(e.target.value)}
+                        placeholder="e.g. Senior Backend Engineer"
+                        maxLength={100}
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="shrink-0"
+                        loading={savingBusy}
+                        disabled={
+                          !savingName.trim() || jdText.trim().length < JD_MIN_CHARS
+                        }
+                        onClick={() => void saveCurrentJd()}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                    {savedNotice && (
+                      <p className="mt-2 text-xs text-positive">{savedNotice}</p>
+                    )}
+                    {jdError && <p className="mt-2 text-xs text-critical">{jdError}</p>}
+                  </div>
                 </>
               ) : (
                 <div>

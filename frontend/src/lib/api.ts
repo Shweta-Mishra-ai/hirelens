@@ -383,14 +383,52 @@ export const bulkAPI = {
 export interface JdInput {
   text?: string;
   file?: File;
+  /** Id of a description saved earlier; takes precedence over text and file. */
+  savedId?: string;
 }
+
+export interface SavedJd {
+  id: string;
+  name: string;
+  char_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  last_used_at?: string | null;
+}
+
+export const jdsAPI = {
+  list: (token: string) =>
+    req<{ job_descriptions: SavedJd[] }>("/api/v1/job-descriptions", { token }),
+
+  get: (id: string, token: string) =>
+    req<{ job_description: SavedJd & { jd_text: string } }>(
+      `/api/v1/job-descriptions/${encodeURIComponent(id)}`,
+      { token },
+    ),
+
+  save: (name: string, jdText: string, token: string) =>
+    req<{ job_description: SavedJd; status: string }>("/api/v1/job-descriptions", {
+      method: "POST",
+      body: JSON.stringify({ name, jd_text: jdText }),
+      token,
+    }),
+
+  remove: (id: string, token: string) =>
+    req<{ status: string }>(`/api/v1/job-descriptions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      token,
+    }),
+};
 
 export const matchAPI = {
   upload: (files: File[], jd: JdInput, token: string) => {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
-    if (jd.text && jd.text.trim()) form.append("jd_text", jd.text.trim());
-    if (jd.file) form.append("jd_file", jd.file);
+    // A saved description is sent by id and read server-side, so the text a
+    // batch was ranked against is the text that was actually stored.
+    if (jd.savedId) form.append("saved_jd_id", jd.savedId);
+    else if (jd.text && jd.text.trim()) form.append("jd_text", jd.text.trim());
+    if (!jd.savedId && jd.file) form.append("jd_file", jd.file);
     return req<BulkUploadResponse>("/api/v1/match/upload", {
       method: "POST",
       body: form,

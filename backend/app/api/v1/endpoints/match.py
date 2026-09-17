@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.shapes import as_dict, as_list, as_score, as_str, normalize_report
 from app.core.config import settings
+from app.core import local_db
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import (
     NotFoundError, ForbiddenError, EmptyBatch, TooManyFiles,
@@ -39,9 +40,48 @@ router = APIRouter()
 _match_semaphore = asyncio.Semaphore(settings.BULK_CONCURRENCY)
 
 
-async def _resolve_jd_text(jd_text: str | None, jd_file: UploadFile | None) -> str:
-    """Accepts either pasted JD text or an uploaded JD file (PDF/DOCX/TXT)."""
-    if jd_text and jd_text.strip():
+async def _resolve_jd_text(
+    jd_text: str | None,
+    jd_file: UploadFile | None,
+    saved_jd_id: str | None = None,
+    user_id: str | None = None,
+    db=None,
+) -> str:
+    """
+    The job description to rank against: pasted, uploaded, or one saved
+    earlier.
+
+    A saved description is read by id and scoped to its owner, so the id alone
+    never reaches someone else's text. It is checked first because it is the
+    most specific thing the caller can ask for.
+    """
+    if saved_jd_id and user_id:
+        record = None
+        if db:
+            try:
+                res = (
+                    db.table("saved_jds")
+                    .select("jd_text")
+                    .eq("id", saved_jd_id)
+                    .eq("user_id", user_id)
+                    .maybe_single()
+                    .execute()
+                )
+                record = (res.data or None) if res else None
+            except Exception as e:
+                logger.warning(f"Saved JD {saved_jd_id} unreadable in Supabase: {e}")
+        if not record:
+            record = local_db.get_jd(saved_jd_id, user_id)
+        if not record or not (record.get("jd_text") or "").strip():
+            # Deliberately not a silent fall-through to whatever else was sent.
+            # Ranking a shortlist against the wrong description produces a
+            # confident, wrong answer about every candidate on it.
+            raise NotFoundError(
+                "That saved job description could not be found. Pick another, or paste the text."
+            )
+        local_db.touch_jd(saved_jd_id, user_id)
+        text = (record["jd_text"] or "").strip()
+    elif jd_text and jd_text.strip():
         text = jd_text.strip()
     elif jd_file is not None:
         contents = await jd_file.read()
@@ -71,6 +111,7 @@ async def match_upload(
     files: list[UploadFile] = File(..., description=f"Up to {settings.BULK_MAX_FILES} PDF/DOCX resumes"),
     jd_text: str | None = Form(None, description="Job description pasted as text"),
     jd_file: UploadFile | None = File(None, description="Job description as PDF/DOCX/TXT"),
+    saved_jd_id: str | None = Form(None, description="Id of a previously saved job description"),
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
     redis=Depends(get_redis),
@@ -84,7 +125,7 @@ async def match_upload(
     batch_store.cleanup_old_batches()
 
     user_id = current_user["id"]
-    resolved_jd = await _resolve_jd_text(jd_text, jd_file)
+    resolved_jd = await _resolve_jd_text(jd_text, jd_file, saved_jd_id, user_id, db)
 
     if not files:
         raise EmptyBatch()

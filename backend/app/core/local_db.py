@@ -1016,7 +1016,158 @@ def purge_expired_password_resets() -> int:
         return 0
 
 
+# ── Saved job descriptions ───────────────────────────────────────────────────
+#
+# A job description is written once and used against every shortlist for that
+# role, often over weeks. Retyping or re-locating the file each time is where
+# the wrong version gets pasted — and a JD-match ranking is only as good as the
+# description it ranked against.
+
+
+def init_saved_jd_table() -> None:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_jds (
+                    id          TEXT PRIMARY KEY,
+                    user_id     TEXT NOT NULL,
+                    name        TEXT NOT NULL,
+                    jd_text     TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL,
+                    last_used_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_saved_jds_user ON saved_jds (user_id, updated_at DESC)"
+            )
+            # One name per recruiter, so saving over "Senior Backend Engineer"
+            # replaces it rather than leaving two entries with the same label
+            # and no way to tell them apart.
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_jds_user_name"
+                " ON saved_jds (user_id, name COLLATE NOCASE)"
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to initialize saved_jds table: {e}")
+
+
+def save_jd(jd_id: str, user_id: str, name: str, jd_text: str) -> dict | None:
+    """Create or replace a saved JD. Returns the stored row."""
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with _get_connection() as conn:
+            existing = conn.execute(
+                "SELECT id, name, created_at FROM saved_jds WHERE user_id = ? AND name = ? COLLATE NOCASE",
+                (user_id, name),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE saved_jds SET jd_text = ?, updated_at = ? WHERE id = ?",
+                    (jd_text, now, existing["id"]),
+                )
+                row_id, created = existing["id"], existing["created_at"]
+                # Keep the spelling this description was first saved under.
+                # Echoing back whatever casing was typed this time would show
+                # one name on save and a different one on the next reload.
+                name = existing["name"]
+            else:
+                conn.execute(
+                    "INSERT INTO saved_jds (id, user_id, name, jd_text, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (jd_id, user_id, name, jd_text, now, now),
+                )
+                row_id, created = jd_id, now
+            conn.commit()
+        return {
+            "id": row_id, "name": name, "jd_text": jd_text,
+            "created_at": created, "updated_at": now,
+            "char_count": len(jd_text),
+        }
+    except Exception as e:
+        logger.error(f"Could not save JD for {user_id}: {e}")
+        raise LocalStoreError(str(e)) from e
+
+
+def list_jds(user_id: str) -> list[dict]:
+    """Every saved JD for this recruiter, most recently updated first.
+
+    The text itself is left out — a list of twenty job descriptions is a lot to
+    send to render a picker that only shows names."""
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                "SELECT id, name, created_at, updated_at, last_used_at, LENGTH(jd_text) AS char_count"
+                " FROM saved_jds WHERE user_id = ? ORDER BY updated_at DESC",
+                (user_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Could not list JDs for {user_id}: {e}")
+        return []
+
+
+def get_jd(jd_id: str, user_id: str) -> dict | None:
+    """One saved JD, scoped to its owner — the id alone is never enough."""
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, name, jd_text, created_at, updated_at, last_used_at"
+                " FROM saved_jds WHERE id = ? AND user_id = ?",
+                (jd_id, user_id),
+            ).fetchone()
+        if not row:
+            return None
+        out = dict(row)
+        out["char_count"] = len(out.get("jd_text") or "")
+        return out
+    except Exception as e:
+        logger.error(f"Could not read JD {jd_id}: {e}")
+        return None
+
+
+def touch_jd(jd_id: str, user_id: str) -> None:
+    """Record that a JD was actually used, so the picker can lead with it."""
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "UPDATE saved_jds SET last_used_at = ? WHERE id = ? AND user_id = ?",
+                (datetime.now(timezone.utc).isoformat(), jd_id, user_id),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Could not record use of JD {jd_id}: {e}")
+
+
+def delete_jd(jd_id: str, user_id: str) -> bool:
+    try:
+        with _get_connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM saved_jds WHERE id = ? AND user_id = ?", (jd_id, user_id)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Could not delete JD {jd_id}: {e}")
+        raise LocalStoreError(str(e)) from e
+
+
+def count_jds(user_id: str) -> int:
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM saved_jds WHERE user_id = ?", (user_id,)
+            ).fetchone()
+        return int(row["c"]) if row else 0
+    except Exception:
+        return 0
+
+
 init_local_db()
 init_collaboration_tables()
 init_team_tables()
 init_password_reset_table()
+init_saved_jd_table()

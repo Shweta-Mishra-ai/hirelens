@@ -16,6 +16,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
+import { classifyAuthFailure, signInUrl } from "@/lib/session";
 import { reportsAPI, APIError } from "@/lib/api";
 import { consumeOAuthFragment } from "@/hooks/useGoogleAuth";
 import { VerdictChip, verdictFromRecommendation } from "@/components/VerdictStamp";
@@ -329,9 +330,12 @@ function DashboardContent() {
       setPages(Math.max(1, res.pages));
     } catch (e) {
       if (seq !== requestSeq.current) return;
-      if (e instanceof APIError && e.status === 401) {
+      // A 401 is only acted on once the identity endpoint agrees the token is
+      // dead. Signing someone out on any single 401 makes the session as
+      // fragile as the least reliable response in the app.
+      if (await classifyAuthFailure(e, token) === "expired") {
         logout();
-        router.replace("/login");
+        router.replace(signInUrl());
         return;
       }
       setError(e instanceof APIError ? e.message : "Could not load your reports.");

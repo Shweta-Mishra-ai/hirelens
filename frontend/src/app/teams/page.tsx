@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Users, Copy, Check, UserPlus, Plus, Link2 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
+import { classifyAuthFailure, signInUrl } from "@/lib/session";
 import { teamsAPI, APIError } from "@/lib/api";
 import { AppShell, PageHeader, RequireAuth } from "@/components/AppShell";
 import { Card, CardHeader, CardBody } from "@/components/ui/Card";
@@ -101,9 +102,9 @@ function TeamsContent() {
       setTeams(res.teams);
       setSelectedId((prev) => prev ?? res.teams[0]?.id ?? null);
     } catch (e) {
-      if (e instanceof APIError && e.status === 401) {
+      if (await classifyAuthFailure(e, token) === "expired") {
         logout();
-        router.replace("/login");
+        router.replace(signInUrl());
         return;
       }
       setError(e instanceof APIError ? e.message : "Could not load your teams.");

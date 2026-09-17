@@ -18,6 +18,7 @@ import {
   ScanLine,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
+import { classifyAuthFailure, signInUrl } from "@/lib/session";
 import {
   reportsAPI,
   verifyAPI,
@@ -145,9 +146,9 @@ function ReportContent() {
         if (r.verification) setVerification(r.verification);
       } catch (e) {
         if (cancelled) return;
-        if (e instanceof APIError && e.status === 401) {
+        if (await classifyAuthFailure(e, token) === "expired") {
           logout();
-          router.replace("/login");
+          router.replace(signInUrl());
           return;
         }
         setError(e instanceof APIError ? e.message : "Could not load this report.");

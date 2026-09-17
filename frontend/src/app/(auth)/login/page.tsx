@@ -72,6 +72,11 @@ function LoginForm() {
   const { token, hasHydrated, setAuth } = useAuthStore();
   const google = useGoogleAuth();
 
+  // Landing here because a session ended is different from choosing to sign
+  // in, and saying so is the difference between "the app logged me out for no
+  // reason" and "my session ran out".
+  const sessionEnded = searchParams.get("session") === "expired";
+
   const [email, setEmail] = useState(invite.email ?? "");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -142,6 +147,11 @@ function LoginForm() {
       footer={<AuthFooterLink prompt="New to HireLens?" href="/signup" label="Create an account" />}
     >
       {invite.email && <InviteBanner email={invite.email} mode="login" />}
+      {sessionEnded && !error && (
+        <Alert tone="info" title="Your session has ended" className="mb-5">
+          Sign in again to pick up where you left off — nothing has been lost.
+        </Alert>
+      )}
       {error && (
         <Alert tone="error" title={error.message} className="mb-5" onDismiss={() => setError(null)}>
           {error.hint}
