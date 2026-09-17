@@ -6,8 +6,18 @@
  * useSearchParams() — a page that only looks at the query string finds nothing
  * and tells the user their link is broken when it is perfectly good.
  */
-import { describe, it, expect } from "vitest";
-import { readResetLink, passwordStrength } from "../resetLink";
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  readResetLink,
+  passwordStrength,
+  captureResetLink,
+  recaptureResetLink,
+  __resetCaptureForTests,
+} from "../resetLink";
+
+beforeEach(() => {
+  window.history.replaceState(null, "", "/reset-password#access_token=tok-from-hash&type=recovery");
+});
 
 describe("readResetLink", () => {
   it("finds the token Supabase puts in the fragment", () => {
@@ -92,5 +102,39 @@ describe("passwordStrength", () => {
       expect(score).toBeGreaterThanOrEqual(0);
       expect(score).toBeLessThanOrEqual(4);
     }
+  });
+});
+
+describe("captureResetLink", () => {
+  beforeEach(() => {
+    __resetCaptureForTests();
+  });
+
+  it("keeps answering with the link the page arrived on", () => {
+    // The page removes the token from the URL the moment it has read it, so a
+    // credential is not left in the address bar. A second read of
+    // window.location therefore finds nothing — and anything that re-runs
+    // (a remount, an effect invoked twice) would conclude the link was empty
+    // and tell someone holding a good link that it will not work.
+    const first = captureResetLink();
+    expect(first.token).toBe("tok-from-hash");
+
+    window.history.replaceState(null, "", "/reset-password");
+    expect(captureResetLink()).toEqual(first);
+  });
+
+  it("re-reads when a new link arrives in the same tab", () => {
+    expect(captureResetLink().token).toBe("tok-from-hash");
+
+    window.location.hash = "#access_token=second-token&type=recovery";
+    expect(recaptureResetLink().token).toBe("second-token");
+  });
+
+  it("re-reading picks up an error link too", () => {
+    captureResetLink();
+    window.location.hash = "#error=access_denied&error_code=otp_expired";
+    const next = recaptureResetLink();
+    expect(next.token).toBeNull();
+    expect(next.error).toMatch(/expired/i);
   });
 });

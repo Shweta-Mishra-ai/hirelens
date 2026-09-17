@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Feedback";
 import { AuthLayout, AuthFooterLink } from "../AuthLayout";
-import { readResetLink, passwordStrength } from "@/lib/resetLink";
+import { captureResetLink, recaptureResetLink, passwordStrength } from "@/lib/resetLink";
 
 /**
  * Where a password reset link lands.
@@ -78,19 +78,36 @@ export default function ResetPasswordPage() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
-    const { token: found, error: refused } = readResetLink(
-      window.location.search,
-      window.location.hash,
-    );
-    setToken(found);
-    setLinkError(refused);
-    setReady(true);
+    // captureResetLink() answers from the first read of this page load, so it
+    // is unaffected by the scrub below or by this effect running more than
+    // once.
+    const apply = (link: { token: string | null; error: string | null }) => {
+      setToken(link.token);
+      setLinkError(link.error);
+      setReady(true);
+      if (link.token) {
+        // Drop the credential from the address bar without adding a history
+        // entry — a back press should not resurrect it.
+        window.history.replaceState(null, "", window.location.pathname);
+      }
+    };
 
-    if (found) {
-      // Drop the credential from the address bar without adding a history
-      // entry — a back press should not resurrect it.
-      window.history.replaceState(null, "", window.location.pathname);
-    }
+    apply(captureResetLink());
+
+    // A second link, opened in a tab already showing this page, only changes
+    // the fragment. Nothing remounts, so without this the page keeps showing
+    // whatever the first link said — usually "that link won't work", while the
+    // good token sits unread in the URL.
+    const onHashChange = () => {
+      const next = recaptureResetLink();
+      if (!next.token && !next.error) return;
+      setDone(false);
+      setError(null);
+      apply(next);
+    };
+
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
   const strength = passwordStrength(password);

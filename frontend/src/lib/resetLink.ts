@@ -69,6 +69,48 @@ export function readResetLink(search: string, hash: string): ResetLink {
 }
 
 /**
+ * The link this page load arrived with, captured once and kept.
+ *
+ * The token has to be read before anything can remove it from the URL — and
+ * the page removes it deliberately, the moment it has been read, so a live
+ * credential is not left in the address bar or in browser history. Reading
+ * `window.location` a second time therefore finds nothing.
+ *
+ * Caching it at module scope means a re-render, a remount, or React running an
+ * effect twice all get the same answer as the first read. Without that, the
+ * second read wins, the token is gone, and the page tells someone holding a
+ * perfectly good link that it will not work.
+ */
+let captured: ResetLink | null = null;
+
+export function captureResetLink(): ResetLink {
+  if (typeof window === "undefined") return { token: null, error: null };
+  if (captured === null) {
+    captured = readResetLink(window.location.search, window.location.hash);
+  }
+  return captured;
+}
+
+/**
+ * Re-read after the URL changed under us.
+ *
+ * A reset link opened in a tab already sitting on this page is a fragment
+ * change, not a navigation: nothing remounts, so nothing would notice. That is
+ * the ordinary case of asking for a second link after the first expired.
+ */
+export function recaptureResetLink(): ResetLink {
+  if (typeof window === "undefined") return { token: null, error: null };
+  captured = readResetLink(window.location.search, window.location.hash);
+  return captured;
+}
+
+/** Test seam — module state otherwise leaks between cases. */
+export function __resetCaptureForTests(): void {
+  captured = null;
+}
+
+
+/**
  * How strong the password is, as something to show rather than to enforce —
  * the rules that actually decide are the API's and the identity provider's.
  */
