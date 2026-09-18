@@ -271,6 +271,12 @@ class TestVerifyEducationMocked:
         assert result[0]["domain"] == "iitd.ac.in"
         assert len(calls) > 1, "should have retried with a broadened query, not given up after one miss"
 
+        # The expansion has to be a well-formed query. Asserting only that it
+        # *contains* the expanded phrase let "indian institute of
+        # technologyDelhi" pass — a real query, sent to the real registry,
+        # matching nothing, for as long as this test was green.
+        assert "indian institute of technology Delhi" in calls
+
     @pytest.mark.asyncio
     async def test_not_found_after_exhausting_all_retry_variants(self, monkeypatch):
         from app.services.verify import education_verify

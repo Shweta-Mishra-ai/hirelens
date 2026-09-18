@@ -1,11 +1,14 @@
 "use client";
 /**
  * HireLens — useAnalysis Hook
- * Fixed:
- * - Polling cleanup on unmount (memory leak fix)
- * - Error message extraction improved
- * - Network error handling
- * - Status check before setting complete
+ *
+ * Uploads one resume and polls until the report is ready.
+ *
+ * The interval is cleared on unmount and no state is set after it, so
+ * navigating away mid-analysis leaves nothing running. A transient network
+ * error keeps the poll alive; an expired session or a job the server has
+ * never heard of stops it and says which. "Complete" is only reported once
+ * the report itself has been fetched.
  */
 import { useState, useCallback, useRef, useEffect } from "react";
 import { analysisAPI, reportsAPI, APIError } from "@/lib/api";

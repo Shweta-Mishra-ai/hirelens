@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import NotFoundError, ForbiddenError
 from app.api.v1.endpoints.analysis import _jobs
+from app.core.shapes import as_dict, as_list, as_score, normalize_report
 from app.services.verify.github_verify import verify_github, extract_username
 from app.services.verify.education_verify import verify_education
 from app.services.verify.certification_verify import verify_certifications
@@ -48,7 +49,7 @@ def _load_report(report_id: str, user_id: str, db) -> tuple[dict, str]:
                 row = result.data
                 if row["user_id"] != user_id:
                     raise ForbiddenError()
-                report = dict(row.get("report_data") or {})
+                report = normalize_report(row.get("report_data"))
                 report["id"] = report_id
                 report["file_name"] = row.get("file_name") or report.get("file_name", "")
                 return report, "db"
@@ -65,11 +66,11 @@ def _load_report(report_id: str, user_id: str, db) -> tuple[dict, str]:
     # is treated as inaccessible rather than open-to-anyone, since "we
     # can't tell who owns this" must fail closed, not open.
     data = _jobs.get(f"report_{report_id}")
-    if data:
+    if isinstance(data, dict) and data:
         owner = data.get("_owner_user_id")
         if owner is None or owner != user_id:
             raise ForbiddenError()
-        return data, "memory"
+        return normalize_report(data), "memory"
 
     raise NotFoundError(f"Report '{report_id}' not found.")
 
@@ -107,12 +108,11 @@ RANK_TO_RECOMMENDATION = {v: k for k, v in RECOMMENDATION_RANK.items()}
 
 def _apply_verification_to_recommendation(report: dict, trust: dict) -> dict | None:
     """
-    The AI's initial recommendation is set BEFORE verification ever runs —
-    so strong real-world evidence uncovered by verification (e.g. the
-    candidate's claimed GitHub account doesn't exist) previously never fed
-    back into the headline recommendation shown on the dashboard/rankings,
-    even though it's exactly the kind of signal that should change a
-    recruiter's read on a candidate.
+    The AI's initial recommendation is set BEFORE verification ever runs, so
+    without this, strong real-world evidence — the candidate's claimed GitHub
+    account not existing, say — never reaches the headline recommendation on
+    the dashboard and rankings, which is exactly the signal that should change
+    a recruiter's read on a candidate.
 
     Deliberately asymmetric and conservative:
     - DOWNGRADE by one level (recommended → manual_review → high_risk) when
@@ -127,7 +127,7 @@ def _apply_verification_to_recommendation(report: dict, trust: dict) -> dict | N
     else None. Also mutates report["credibility"] in place so the JSON blob
     and the returned report stay consistent with each other.
     """
-    cred = report.get("credibility") or {}
+    cred = as_dict(report.get("credibility"))
     current = cred.get("recommendation", "manual_review")
     if current not in RECOMMENDATION_RANK:
         return None
@@ -135,13 +135,27 @@ def _apply_verification_to_recommendation(report: dict, trust: dict) -> dict | N
     if trust.get("verdict") != "low_confidence" or not trust.get("evidence_available"):
         return None
 
-    current_rank = RECOMMENDATION_RANK[current]
-    if current_rank == 0:
+    # Always measure the drop from the AI's ORIGINAL read, never from a
+    # value this function already lowered. Verification is documented as
+    # safe to re-run, and it is the recruiter-facing button on the Verify
+    # tab — but downgrading relative to the current value meant each click
+    # took the candidate one level further down on exactly the same
+    # evidence: recommended → manual_review → high_risk, with nothing new
+    # learned in between. Anchoring to ai_recommendation makes a re-run
+    # land on the same verdict as the first run.
+    baseline = cred.get("ai_recommendation") or current
+    if baseline not in RECOMMENDATION_RANK:
+        baseline = current
+
+    baseline_rank = RECOMMENDATION_RANK[baseline]
+    if baseline_rank == 0:
         return None  # already high_risk, nothing lower to downgrade to
 
-    new_recommendation = RANK_TO_RECOMMENDATION[current_rank - 1]
+    new_recommendation = RANK_TO_RECOMMENDATION[baseline_rank - 1]
+    if new_recommendation == current and cred.get("recommendation_adjusted_by_verification"):
+        return None  # already sitting at the downgraded verdict
 
-    cred["ai_recommendation"] = cred.get("ai_recommendation", current)  # preserve original, first downgrade only
+    cred["ai_recommendation"] = baseline
     cred["recommendation"] = new_recommendation
     cred["recommendation_adjusted_by_verification"] = True
     cred["recommendation_adjustment_reason"] = (
@@ -167,17 +181,17 @@ async def run_verification(
     """
     report, source = _load_report(report_id, current_user["id"], db)
 
-    candidate = report.get("candidate") or {}
-    skills = report.get("skills") or {}
-    claimed_skills = list(skills.get("all_claimed") or skills.get("technical") or [])
+    candidate = as_dict(report.get("candidate"))
+    skills = as_dict(report.get("skills"))
+    claimed_skills = as_list(skills.get("all_claimed")) or as_list(skills.get("technical"))
 
     username = body.github_username or extract_username(candidate.get("github") or candidate.get("github_url"))
 
     github_res, edu_res, cert_res, exp_res = await asyncio.gather(
         verify_github(username, claimed_skills),
-        verify_education(list(report.get("education") or [])),
-        verify_certifications(list(report.get("certifications") or []), candidate.get("name")),
-        verify_experience_companies(list(report.get("experience") or [])),
+        verify_education(as_list(report.get("education"))),
+        verify_certifications(as_list(report.get("certifications")), candidate.get("name")),
+        verify_experience_companies(as_list(report.get("experience"))),
         return_exceptions=True,
     )
 
@@ -196,7 +210,7 @@ async def run_verification(
     trust = compute_trust_assessment(
         ai_content_analysis=report.get("ai_content_analysis"),
         verification=verification,
-        overall_score=int((report.get("credibility") or {}).get("overall") or 0),
+        overall_score=as_score(as_dict(report.get("credibility")).get("overall")),
     )
     verification["trust_assessment"] = trust
     logger.info(f"[verify {report_id}] trust_assessment={trust['verdict']} score={trust['score']}")

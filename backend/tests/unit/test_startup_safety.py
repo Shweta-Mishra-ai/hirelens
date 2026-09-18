@@ -54,12 +54,19 @@ class TestSecretKeyHardFail:
             raised = True
         assert raised, "Expected app startup to fail with a short SECRET_KEY in production"
 
-    def test_default_dev_secret_key_in_production_raises_systemexit(self, monkeypatch):
+    def test_unset_secret_key_in_production_raises_systemexit(self, monkeypatch):
+        """
+        There is no shipped default any more. This used to pass the old
+        `dev-secret-key-…` constant, which was both a globally known signing
+        key for every install that forgot to set one, and the thing secret
+        scanners kept opening critical issues about. An unset key now arrives
+        here as empty, and production still refuses to start.
+        """
         from fastapi.testclient import TestClient
 
         main_module = self._import_fresh_app_with_env(
             monkeypatch,
-            SECRET_KEY="dev-secret-key-change-in-production-min-32",
+            SECRET_KEY="",
             APP_ENV="production",
             GEMINI_API_KEY="test",
         )
@@ -69,7 +76,7 @@ class TestSecretKeyHardFail:
                 pass
         except BaseException:
             raised = True
-        assert raised, "Expected app startup to fail with the default dev SECRET_KEY in production"
+        assert raised, "Expected app startup to fail with no SECRET_KEY in production"
 
     def test_wildcard_cors_in_production_raises_systemexit(self, monkeypatch):
         from fastapi.testclient import TestClient

@@ -44,15 +44,29 @@ class TestDowngradeLogic:
         assert report["credibility"]["recommendation_adjusted_by_verification"] is True
         assert "reason" not in report["credibility"] or report["credibility"].get("recommendation_adjustment_reason")
 
-    def test_does_not_downgrade_twice_overwriting_original_ai_recommendation(self):
-        """If verification is re-run and downgrades again, the ORIGINAL AI
-        call should still be the preserved ai_recommendation, not the
-        already-downgraded value from a previous run."""
+    def test_a_rerun_on_the_same_evidence_does_not_downgrade_again(self):
+        """Verification is documented as safe to re-run, and it is a button
+        the recruiter can click twice. It used to downgrade relative to the
+        CURRENT verdict, so a second click took the candidate one level
+        further down — recommended → manual_review → high_risk — without a
+        single new piece of evidence. The drop is now measured from the
+        AI's original read, so a re-run lands where the first run did."""
         report = _report("recommended")
         trust = {"verdict": "low_confidence", "evidence_available": True}
-        _apply_verification_to_recommendation(report, trust)  # recommended -> manual_review
-        _apply_verification_to_recommendation(report, trust)  # manual_review -> high_risk
+        first = _apply_verification_to_recommendation(report, trust)
+        second = _apply_verification_to_recommendation(report, trust)
+        assert first == {"recommendation": "manual_review"}
+        assert second is None
         assert report["credibility"]["ai_recommendation"] == "recommended"
+        assert report["credibility"]["recommendation"] == "manual_review"
+
+    def test_new_evidence_can_still_downgrade_a_report_the_ai_already_doubted(self):
+        """Anchoring to the AI's read must not make the rule inert: a
+        candidate the AI already sent to manual review still drops to
+        high_risk when verification contradicts them."""
+        report = _report("manual_review")
+        trust = {"verdict": "low_confidence", "evidence_available": True}
+        assert _apply_verification_to_recommendation(report, trust) == {"recommendation": "high_risk"}
         assert report["credibility"]["recommendation"] == "high_risk"
 
 

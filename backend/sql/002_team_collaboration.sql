@@ -1,4 +1,8 @@
--- HireLens — Team Collaboration Schema (run once in Supabase SQL Editor)
+-- HireLens — Team Collaboration Schema
+--
+-- Run 001_core_schema.sql first: this file adds a column to public.reports
+-- and foreign-keys four tables to it. Safe to re-run — CREATE POLICY has no
+-- IF NOT EXISTS of its own, so each policy is guarded.
 -- Adds: teams, team membership, invites, per-report comments, per-report votes,
 -- and a nullable team_id on reports so a report can be shared with a team
 -- without changing who owns it (recruiter who ran the analysis keeps ownership).
@@ -60,33 +64,68 @@ CREATE INDEX IF NOT EXISTS idx_reports_team ON public.reports(team_id) WHERE tea
 -- RLS: a report is visible to its owner OR any member of the team it's shared with.
 ALTER TABLE public.teams ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.team_members ENABLE ROW LEVEL SECURITY;
+-- team_invites gets RLS with no policy on purpose: nothing should read a
+-- pending invite with the anon or authenticated key. The backend reads it
+-- with the service-role key, which bypasses RLS.
 ALTER TABLE public.team_invites ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.report_comments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.report_votes ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Team members can view their teams" ON public.teams FOR SELECT
-  USING (owner_id = auth.uid() OR id IN (SELECT team_id FROM public.team_members WHERE user_id = auth.uid()));
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'teams' AND policyname = 'Team members can view their teams'
+  ) THEN
+    CREATE POLICY "Team members can view their teams" ON public.teams FOR SELECT
+      USING (owner_id = auth.uid() OR id IN (SELECT team_id FROM public.team_members WHERE user_id = auth.uid()));
+  END IF;
+END $$;
 
-CREATE POLICY "Team members can view membership" ON public.team_members FOR SELECT
-  USING (team_id IN (SELECT team_id FROM public.team_members WHERE user_id = auth.uid()));
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'team_members' AND policyname = 'Team members can view membership'
+  ) THEN
+    CREATE POLICY "Team members can view membership" ON public.team_members FOR SELECT
+      USING (team_id IN (SELECT team_id FROM public.team_members WHERE user_id = auth.uid()));
+  END IF;
+END $$;
 
-CREATE POLICY "Team members can view/add comments on accessible reports" ON public.report_comments FOR ALL
-  USING (
-    report_id IN (
-      SELECT id FROM public.reports
-      WHERE user_id = auth.uid()
-         OR team_id IN (SELECT team_id FROM public.team_members WHERE user_id = auth.uid())
-    )
-  );
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'report_comments' AND policyname = 'Team members can view/add comments on accessible reports'
+  ) THEN
+    CREATE POLICY "Team members can view/add comments on accessible reports" ON public.report_comments FOR ALL
+      USING (
+        report_id IN (
+          SELECT id FROM public.reports
+          WHERE user_id = auth.uid()
+             OR team_id IN (SELECT team_id FROM public.team_members WHERE user_id = auth.uid())
+        )
+      );
+  END IF;
+END $$;
 
-CREATE POLICY "Team members can view/cast votes on accessible reports" ON public.report_votes FOR ALL
-  USING (
-    report_id IN (
-      SELECT id FROM public.reports
-      WHERE user_id = auth.uid()
-         OR team_id IN (SELECT team_id FROM public.team_members WHERE user_id = auth.uid())
-    )
-  );
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'report_votes' AND policyname = 'Team members can view/cast votes on accessible reports'
+  ) THEN
+    CREATE POLICY "Team members can view/cast votes on accessible reports" ON public.report_votes FOR ALL
+      USING (
+        report_id IN (
+          SELECT id FROM public.reports
+          WHERE user_id = auth.uid()
+             OR team_id IN (SELECT team_id FROM public.team_members WHERE user_id = auth.uid())
+        )
+      );
+  END IF;
+END $$;
 
 -- Note: the app also enforces access checks in application code
 -- (app/services/teams/access.py) as defense-in-depth — don't rely on RLS alone

@@ -1,430 +1,574 @@
 "use client";
-import { useEffect, useState, useCallback, useRef } from "react";
-import { useRouter, usePathname } from "next/navigation";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { useAuthStore } from "@/store/auth";
-import { reportsAPI, authAPI, APIError } from "@/lib/api";
-import { VerdictChip, verdictFromRecommendation } from "@/components/VerdictStamp";
 import {
   Search,
-  LayoutDashboard,
-  Zap,
-  Files,
-  Target,
-  Users,
   FileText,
-  BarChart3,
-  CheckCircle2,
-  AlertTriangle,
-  TrendingUp,
   Download,
-  User as UserIcon,
+  ScanLine,
+  SearchX,
+  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
+  Layers,
+  Crosshair,
+  AlertTriangle,
 } from "lucide-react";
-
-function scoreColor(n: number) {
-  if (n >= 75) return "#10B981";
-  if (n >= 55) return "#F59E0B";
-  return "#EF4444";
-}
-
-function relTime(iso: string) {
-  const d = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(d / 60000);
-  if (m < 1) return "just now";
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
+import { useAuthStore } from "@/store/auth";
+import { classifyAuthFailure, signInUrl } from "@/lib/session";
+import { reportsAPI, APIError } from "@/lib/api";
+import { consumeOAuthFragment } from "@/hooks/useGoogleAuth";
+import { VerdictChip, verdictFromRecommendation } from "@/components/VerdictStamp";
+import { AppShell, PageHeader, RequireAuth } from "@/components/AppShell";
+import { Button } from "@/components/ui/Button";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { Input, Select } from "@/components/ui/Field";
+import { Alert, EmptyState, Skeleton } from "@/components/ui/Feedback";
+import { ScorePill } from "@/components/ui/Score";
+import { relativeTime, absoluteTime, initials, pluralize } from "@/lib/format";
+import { scoreColor } from "@/lib/design-tokens";
+import { cn } from "@/lib/cn";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import type { ReportSummary, PoolAnalytics } from "@/types";
 
 const SORT_OPTIONS = [
   { value: "newest", label: "Newest first" },
   { value: "oldest", label: "Oldest first" },
-  { value: "score_desc", label: "Score: High → Low" },
-  { value: "score_asc", label: "Score: Low → High" },
-  { value: "name_asc", label: "Name: A → Z" },
-];
+  { value: "score_desc", label: "Score: high to low" },
+  { value: "score_asc", label: "Score: low to high" },
+  { value: "name_asc", label: "Name: A to Z" },
+] as const;
 
-export default function DashboardPage() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const { user, token, logout, hasHydrated, setAuth } = useAuthStore();
-  const [reports, setReports] = useState<Report[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [checkingOAuth, setCheckingOAuth] = useState(true);
+const FILTERS = [
+  { value: "", label: "All" },
+  { value: "recommended", label: "Recommended" },
+  { value: "manual_review", label: "Needs review" },
+  { value: "high_risk", label: "High risk" },
+] as const;
 
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState("newest");
-  const [exporting, setExporting] = useState(false);
-  const [analytics, setAnalytics] = useState<{
-    total_candidates: number;
-    avg_credibility_score: number;
-    distribution: { recommended: number; manual_review: number; high_risk: number };
-    top_skills: { skill: string; count: number }[];
-    risk_categories: Record<string, number>;
-  } | null>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+/**
+ * The summary strip.
+ *
+ * This replaces four equal-weight KPI tiles. Three of those numbers were
+ * computed from the current page of results rather than the whole pool, so
+ * they changed whenever you searched — and "Recommended: 3" next to
+ * "High risk: 0" gave no sense of proportion. One bar carries the
+ * distribution; the two numbers that actually stand alone stay as numbers.
+ */
+function PoolSummary({
+  analytics,
+  activeFilter,
+  onFilter,
+}: {
+  analytics: PoolAnalytics | null;
+  activeFilter: string;
+  onFilter: (value: string) => void;
+}) {
+  if (!analytics) return <Skeleton className="h-[5.5rem]" />;
 
-  // Handle Supabase OAuth redirect (e.g. Google Sign In: /dashboard#access_token=...)
-  useEffect(() => {
-    if (typeof window !== "undefined" && window.location.hash.includes("access_token")) {
-      const hash = window.location.hash.substring(1);
-      const params = new URLSearchParams(hash);
-      const accessToken = params.get("access_token");
-      if (accessToken) {
-        authAPI.oauthVerify(accessToken)
-          .then((res) => {
-            setAuth(res.access_token, res.user);
-            window.history.replaceState(null, "", window.location.pathname);
-            setCheckingOAuth(false);
-          })
-          .catch(() => {
-            setCheckingOAuth(false);
-          });
-        return;
-      }
-    }
-    setCheckingOAuth(false);
-  }, [setAuth]);
-
-  useEffect(() => {
-    if (!checkingOAuth && hasHydrated && !token) {
-      router.replace("/login");
-    }
-  }, [checkingOAuth, hasHydrated, token, router]);
-
-  useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => setSearch(searchInput.trim()), 350);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [searchInput]);
-
-  const loadReports = useCallback(async () => {
-    if (!token) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await reportsAPI.list(token, { search: search || undefined, sort });
-      setReports(res.reports as unknown as Report[]);
-      setTotal(res.total);
-    } catch (e) {
-      if (e instanceof APIError && e.status === 401) {
-        logout(); router.replace("/login");
-      } else {
-        setError("Could not load reports.");
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [token, logout, router, search, sort]);
-
-  useEffect(() => { loadReports(); }, [loadReports]);
-
-  useEffect(() => {
-    if (!token) return;
-    reportsAPI.analytics(token).then(setAnalytics).catch(() => {});
-  }, [token]);
-
-  const handleExportAll = async () => {
-    if (!token) return;
-    setExporting(true);
-    try {
-      const blob = await reportsAPI.downloadAllCsv(token, { search: search || undefined, sort });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "hirelens_all_reports.csv";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch {
-      setError("Could not export reports. Please try again.");
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  const recommended = reports.filter(r => (r as any).recommendation === "recommended").length;
-  const highRisk    = reports.filter(r => (r as any).recommendation === "high_risk").length;
-  const avgScore    = reports.length ? Math.round(reports.reduce((s, r) => s + ((r as any).overall_score || 0), 0) / reports.length) : 0;
-
-  const NAV_LINKS = [
-    { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={14} /> },
-    { href: "/analyze", label: "Analyze", icon: <Zap size={14} /> },
-    { href: "/bulk", label: "Bulk Upload", icon: <Files size={14} /> },
-    { href: "/match", label: "JD Match", icon: <Target size={14} /> },
-    { href: "/teams", label: "Teams", icon: <Users size={14} /> },
+  const { recommended, manual_review, high_risk } = analytics.distribution;
+  const total = recommended + manual_review + high_risk;
+  const segments = [
+    { key: "recommended", label: "Recommended", n: recommended, color: "#3DD68C" },
+    { key: "manual_review", label: "Needs review", n: manual_review, color: "#E8B341" },
+    { key: "high_risk", label: "High risk", n: high_risk, color: "#F2555A" },
   ];
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0B0F17", color: "#F8FAFC" }}>
-      {/* Navbar */}
-      <nav style={{
-        height: 64, borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
-        display: "flex", alignItems: "center", paddingInline: 28, gap: 24,
-        position: "sticky", top: 0, background: "rgba(11, 15, 23, 0.85)",
-        backdropFilter: "blur(16px)", zIndex: 100
-      }}>
-        <Link href="/dashboard" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 10,
-            background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            boxShadow: "0 0 16px rgba(99,102,241,0.4)"
-          }}><Search size={16} color="#FFFFFF" strokeWidth={2.5} /></div>
-          <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
-        </Link>
-
-        {/* Tab Pills */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(30, 41, 59, 0.5)", padding: 4, borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)" }}>
-          {NAV_LINKS.map(link => {
-            const active = pathname === link.href;
-            return (
-              <Link key={link.href} href={link.href} style={{
-                padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
-                color: active ? "#F8FAFC" : "#94A3B8",
-                background: active ? "rgba(99, 102, 241, 0.2)" : "transparent",
-                border: active ? "1px solid rgba(99, 102, 241, 0.4)" : "1px solid transparent",
-                display: "flex", alignItems: "center", gap: 7, textDecoration: "none",
-                transition: "all 0.15s ease",
-              }}>
-                <span style={{ display: "inline-flex", alignItems: "center" }}>{link.icon}</span>
-                <span>{link.label}</span>
-              </Link>
-            );
-          })}
-        </div>
-
-        <div style={{ flex: 1 }} />
-
-        {/* User profile & logout */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 12px", borderRadius: 99, background: "rgba(30,41,59,0.6)", border: "1px solid rgba(255,255,255,0.08)" }}>
-            <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
-              {user?.full_name ? user.full_name[0].toUpperCase() : "U"}
-            </div>
-            <span style={{ fontSize: 12, color: "#CBD5E1", fontWeight: 500 }}>{user?.email}</span>
+    <Card className="p-5">
+      <div className="flex flex-wrap items-start gap-x-10 gap-y-5">
+        <div>
+          <div className="text-2xs font-medium uppercase tracking-wider text-content-faint">
+            Candidates analysed
           </div>
-          <button onClick={() => { logout(); router.replace("/login"); }}
-            style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(30,41,59,0.4)", color: "#94A3B8", cursor: "pointer", fontSize: 12, fontWeight: 600, transition: "all 0.15s" }}>
-            Sign Out
-          </button>
-        </div>
-      </nav>
-
-      {/* Main Content Container */}
-      <div style={{ maxWidth: 1120, margin: "0 auto", padding: "36px 24px 80px" }}>
-        
-        {/* Header Title */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32, flexWrap: "wrap", gap: 16 }}>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: "#F8FAFC", letterSpacing: -0.7 }}>Dashboard</h1>
-            <p style={{ margin: "6px 0 0", fontSize: 14, color: "#94A3B8" }}>
-              {user?.full_name ? `Welcome back, ${user.full_name}` : "Real-time candidate credibility intelligence"}
-            </p>
-          </div>
-          
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ padding: "6px 12px", borderRadius: 99, background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", color: "#10B981", fontSize: 12, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#10B981", boxShadow: "0 0 8px #10B981" }} />
-              5,000 Capacity Active
-            </span>
-            <Link href="/analyze" style={{
-              padding: "10px 20px", borderRadius: 10,
-              background: "linear-gradient(135deg, #6366F1, #4F46E5)",
-              color: "#FFFFFF", fontWeight: 700, fontSize: 13, textDecoration: "none",
-              boxShadow: "0 4px 16px rgba(99,102,241,0.35)", transition: "transform 0.15s ease"
-            }}>
-              + Analyze Resume
-            </Link>
+          <div className="mt-1 text-3xl font-semibold tabular leading-none text-content">
+            {analytics.total_candidates}
           </div>
         </div>
 
-        {/* 4 Hero Stats Cards */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 16, marginBottom: 28 }}>
-          {[
-            { n: total, label: "Total Analyzed", color: "#6366F1", icon: <FileText size={16} color="#6366F1" />, bg: "rgba(99,102,241,0.1)", border: "rgba(99,102,241,0.25)" },
-            { n: avgScore, label: "Avg Score", color: "#3B82F6", icon: <BarChart3 size={16} color="#3B82F6" />, bg: "rgba(59,130,246,0.1)", border: "rgba(59,130,246,0.25)" },
-            { n: recommended, label: "Recommended", color: "#10B981", icon: <CheckCircle2 size={16} color="#10B981" />, bg: "rgba(16,185,129,0.1)", border: "rgba(16,185,129,0.25)" },
-            { n: highRisk, label: "High Risk", color: "#EF4444", icon: <AlertTriangle size={16} color="#EF4444" />, bg: "rgba(239,68,68,0.1)", border: "rgba(239,68,68,0.25)" },
-          ].map(s => (
-            <div key={s.label} style={{
-              background: "rgba(30, 41, 59, 0.6)",
-              backdropFilter: "blur(12px)",
-              border: `1px solid ${s.border}`,
-              borderRadius: 16, padding: "20px 20px",
-              display: "flex", flexDirection: "column", gap: 8
-            }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 12, fontWeight: 600, color: "#94A3B8", textTransform: "uppercase", letterSpacing: 0.5 }}>{s.label}</span>
-                <div style={{ width: 34, height: 34, borderRadius: 10, background: s.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>{s.icon}</div>
-              </div>
-              <div style={{ fontSize: 32, fontWeight: 900, color: s.color, fontFamily: "var(--font-mono), monospace", letterSpacing: -1 }}>{s.n}</div>
-            </div>
-          ))}
+        <div>
+          <div className="text-2xs font-medium uppercase tracking-wider text-content-faint">
+            Average credibility
+          </div>
+          <div
+            className="mt-1 text-3xl font-semibold tabular leading-none"
+            style={{
+              color: analytics.total_candidates
+                ? scoreColor(analytics.avg_credibility_score)
+                : undefined,
+            }}
+          >
+            {analytics.total_candidates ? analytics.avg_credibility_score : "—"}
+          </div>
         </div>
 
-        {/* Enterprise Talent Intelligence Panel */}
-        {analytics && analytics.top_skills && analytics.top_skills.length > 0 && (
-          <div style={{
-            background: "rgba(30, 41, 59, 0.5)", backdropFilter: "blur(12px)",
-            border: "1px solid rgba(99, 102, 241, 0.2)", borderRadius: 16,
-            padding: "18px 22px", marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16
-          }}>
-            <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#818CF8", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                <TrendingUp size={14} color="#818CF8" /> Enterprise Talent Pool Intelligence
-              </div>
-              <div style={{ fontSize: 13, color: "#CBD5E1" }}>
-                Top in-demand verified skills across your candidate pipeline:
-              </div>
+        {total > 0 && (
+          <div className="min-w-[16rem] flex-1">
+            <div className="text-2xs font-medium uppercase tracking-wider text-content-faint">
+              Distribution
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {analytics.top_skills.slice(0, 6).map(s => (
-                <span key={s.skill} style={{
-                  padding: "4px 10px", borderRadius: 8, background: "rgba(99, 102, 241, 0.15)",
-                  border: "1px solid rgba(99, 102, 241, 0.3)", color: "#C7D2FE", fontSize: 12, fontWeight: 600
-                }}>
-                  {s.skill} ({s.count})
-                </span>
+            <div
+              className="mt-2.5 flex h-2 overflow-hidden rounded-full bg-canvas-inset"
+              role="img"
+              aria-label={segments.map((s) => `${s.label}: ${s.n}`).join(", ")}
+            >
+              {segments
+                .filter((s) => s.n > 0)
+                .map((s) => (
+                  <div
+                    key={s.key}
+                    style={{ width: `${(s.n / total) * 100}%`, background: s.color }}
+                  />
+                ))}
+            </div>
+            {/* Doubles as a filter — the segments are the categories you'd
+                want to narrow to anyway. */}
+            <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5">
+              {segments.map((s) => (
+                <button
+                  key={s.key}
+                  type="button"
+                  onClick={() => onFilter(activeFilter === s.key ? "" : s.key)}
+                  aria-pressed={activeFilter === s.key}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded text-xs transition-colors",
+                    "focus-visible:outline-none focus-visible:shadow-focus",
+                    activeFilter === s.key
+                      ? "text-content"
+                      : "text-content-muted hover:text-content",
+                  )}
+                >
+                  <span aria-hidden className="size-1.5 rounded-full" style={{ background: s.color }} />
+                  {s.label}
+                  <span className="tabular text-content-faint">{s.n}</span>
+                </button>
               ))}
             </div>
           </div>
         )}
-
-        {/* Search + Filter toolbar */}
-        <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 260px", position: "relative" }}>
-            <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center" }}>
-              <Search size={14} color="#64748B" />
-            </span>
-            <input
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search by candidate name or skill…"
-              style={{
-                width: "100%", boxSizing: "border-box", padding: "11px 14px 11px 40px",
-                background: "rgba(30, 41, 59, 0.7)", border: "1px solid rgba(255, 255, 255, 0.08)",
-                borderRadius: 12, color: "#F8FAFC", fontSize: 13, outline: "none",
-              }}
-            />
-          </div>
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value)}
-            style={{
-              padding: "11px 16px", background: "rgba(30, 41, 59, 0.7)", border: "1px solid rgba(255, 255, 255, 0.08)",
-              borderRadius: 12, color: "#CBD5E1", fontSize: 13, cursor: "pointer", outline: "none"
-            }}
-          >
-            {SORT_OPTIONS.map((o) => <option key={o.value} value={o.value} style={{ background: "#0F172A", color: "#F8FAFC" }}>{o.label}</option>)}
-          </select>
-          <button
-            onClick={handleExportAll}
-            disabled={exporting || reports.length === 0}
-            style={{
-              padding: "11px 20px", borderRadius: 12, border: "1px solid rgba(255, 255, 255, 0.1)",
-              background: "rgba(30, 41, 59, 0.7)", color: "#CBD5E1", fontWeight: 700, fontSize: 13,
-              cursor: exporting || reports.length === 0 ? "default" : "pointer",
-              opacity: exporting || reports.length === 0 ? 0.5 : 1, whiteSpace: "nowrap",
-              display: "flex", alignItems: "center", gap: 7
-            }}
-          >
-            <Download size={14} />
-            <span>{exporting ? "Exporting…" : "Export CSV"}</span>
-          </button>
-        </div>
-
-        {/* Candidate Reports Table Container */}
-        <div style={{
-          background: "rgba(30, 41, 59, 0.6)",
-          backdropFilter: "blur(16px)",
-          border: "1px solid rgba(255, 255, 255, 0.08)",
-          borderRadius: 20, overflow: "hidden"
-        }}>
-          <div style={{ padding: "16px 24px", borderBottom: "1px solid rgba(255, 255, 255, 0.08)", fontSize: 13, fontWeight: 700, color: "#CBD5E1", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span>{search ? `Results for "${search}"` : "Recent Candidate Intelligence Reports"}</span>
-            {!loading && <span style={{ color: "#64748B", fontWeight: 500 }}>{total} total candidate{total !== 1 ? "s" : ""}</span>}
-          </div>
-
-          {loading && (
-            <div style={{ padding: 64, textAlign: "center", color: "#94A3B8", fontSize: 14 }}>Loading candidate reports…</div>
-          )}
-          {error && (
-            <div style={{ padding: 40, textAlign: "center", color: "#EF4444", fontSize: 14 }}>{error}</div>
-          )}
-          {!loading && !error && reports.length === 0 && search && (
-            <div style={{ padding: 64, textAlign: "center" }}>
-              <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
-                <Search size={36} color="#64748B" />
-              </div>
-              <div style={{ fontSize: 16, fontWeight: 600, color: "#F8FAFC", marginBottom: 6 }}>No matches for &quot;{search}&quot;</div>
-              <div style={{ fontSize: 13, color: "#94A3B8" }}>Try searching for a different candidate name or skill.</div>
-            </div>
-          )}
-          {!loading && !error && reports.length === 0 && !search && (
-            <div style={{ padding: 64, textAlign: "center" }}>
-              <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
-                <FileText size={36} color="#64748B" />
-              </div>
-              <div style={{ fontSize: 16, fontWeight: 600, color: "#F8FAFC", marginBottom: 6 }}>No candidate reports yet</div>
-              <div style={{ fontSize: 13, color: "#94A3B8", marginBottom: 24 }}>Upload your first resume to get started</div>
-              <Link href="/analyze" style={{ padding: "10px 24px", borderRadius: 10, background: "linear-gradient(135deg, #6366F1, #4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 13, textDecoration: "none" }}>
-                Analyze First Resume
-              </Link>
-            </div>
-          )}
-
-          {!loading && reports.map((r: any, i) => {
-            const color = scoreColor(r.overall_score);
-            return (
-              <Link key={r.id} href={`/report/${r.id}`}
-                style={{
-                  display: "flex", alignItems: "center", padding: "16px 24px", gap: 16,
-                  borderBottom: i < reports.length - 1 ? "1px solid rgba(255, 255, 255, 0.05)" : "none",
-                  textDecoration: "none", transition: "all 0.15s ease", background: "transparent"
-                }}
-                onMouseOver={e => (e.currentTarget.style.background = "rgba(255, 255, 255, 0.03)")}
-                onMouseOut={e => (e.currentTarget.style.background = "transparent")}
-              >
-                <div style={{
-                  width: 38, height: 38, borderRadius: 12,
-                  background: "rgba(99, 102, 241, 0.15)", border: "1px solid rgba(99, 102, 241, 0.3)",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 14, fontWeight: 700, color: "#818CF8", flexShrink: 0
-                }}>
-                  {r.candidate_name ? r.candidate_name[0].toUpperCase() : <UserIcon size={16} />}
-                </div>
-                
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC", marginBottom: 2 }}>{r.candidate_name || "Unknown Candidate"}</div>
-                  <div style={{ fontSize: 12, color: "#94A3B8", fontFamily: "var(--font-mono), monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.file_name}</div>
-                </div>
-
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 11, color: "#94A3B8", fontWeight: 600 }}>Score</span>
-                  <span style={{ fontSize: 20, fontWeight: 900, color, fontFamily: "var(--font-mono), monospace", minWidth: 36, textAlign: "right" }}>{r.overall_score}</span>
-                </div>
-
-                <VerdictChip verdict={verdictFromRecommendation(r.recommendation)} />
-
-                {r.recruiter_decision && (
-                  <span style={{ fontSize: 11, color: "#CBD5E1", padding: "3px 10px", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6, background: "rgba(15,23,42,0.4)" }}>
-                    {r.recruiter_decision}
-                  </span>
-                )}
-
-                <span style={{ fontSize: 12, color: "#64748B", minWidth: 70, textAlign: "right" }}>{relTime(r.created_at)}</span>
-                <span style={{ color: "#64748B", fontSize: 14 }}>→</span>
-              </Link>
-            );
-          })}
-        </div>
       </div>
+    </Card>
+  );
+}
+
+function ReportRow({ report }: { report: ReportSummary }) {
+  return (
+    <Link
+      href={`/report/${report.id}`}
+      className="group grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-4 px-5 py-3.5 transition-colors hover:bg-canvas-overlay/50 focus-visible:bg-canvas-overlay focus-visible:outline-none sm:grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto]"
+    >
+      <span
+        aria-hidden
+        className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-line bg-canvas-overlay text-xs font-semibold text-content-muted"
+      >
+        {initials(report.candidate_name)}
+      </span>
+
+      <span className="min-w-0">
+        <span className="block truncate text-sm font-medium text-content">
+          {report.candidate_name || "Unknown candidate"}
+        </span>
+        <span className="block truncate font-mono text-xs text-content-faint">
+          {report.file_name || "—"}
+        </span>
+      </span>
+
+      <ScorePill score={report.overall_score} />
+
+      <span className="hidden sm:block">
+        <VerdictChip verdict={verdictFromRecommendation(report.recommendation)} />
+      </span>
+
+      <span className="hidden sm:block">
+        {report.recruiter_decision ? (
+          <Badge tone="neutral" className="capitalize">
+            {String(report.recruiter_decision).replace(/_/g, " ")}
+          </Badge>
+        ) : null}
+      </span>
+
+      <span className="hidden items-center gap-3 sm:flex">
+        <time
+          className="w-20 text-right text-xs text-content-faint"
+          dateTime={report.created_at || undefined}
+          title={absoluteTime(report.created_at)}
+        >
+          {relativeTime(report.created_at)}
+        </time>
+        <ArrowRight
+          aria-hidden
+          className="size-4 text-content-faint transition-transform group-hover:translate-x-0.5"
+        />
+      </span>
+    </Link>
+  );
+}
+
+/** Shown only when the recruiter has nothing yet — the three ways to start. */
+function GettingStarted() {
+  const paths = [
+    { href: "/analyze", icon: ScanLine, title: "Analyze one resume", body: "Upload a single PDF or DOCX and get a full credibility report." },
+    { href: "/bulk", icon: Layers, title: "Screen a batch", body: "Upload up to 50 at once and rank them by credibility." },
+    { href: "/match", icon: Crosshair, title: "Match against a role", body: "Paste a job description and see who actually fits it." },
+  ];
+  return (
+    <div className="grid gap-3 sm:grid-cols-3">
+      {paths.map(({ href, icon: Icon, title, body }) => (
+        <Link key={href} href={href} className="focus-visible:outline-none">
+          <Card interactive className="h-full p-4">
+            <Icon aria-hidden className="size-4 text-brand-400" />
+            <h3 className="mt-3 text-sm font-medium text-content">{title}</h3>
+            <p className="mt-1 text-xs leading-relaxed text-content-faint">{body}</p>
+          </Card>
+        </Link>
+      ))}
     </div>
+  );
+}
+
+function DashboardContent() {
+  const router = useRouter();
+  const { user, token, logout, setAuth } = useAuthStore();
+
+  const [reports, setReports] = useState<ReportSummary[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [analytics, setAnalytics] = useState<PoolAnalytics | null>(null);
+
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<string>("newest");
+  const [recommendation, setRecommendation] = useState("");
+  const [exporting, setExporting] = useState(false);
+  // The API has always paginated at 20, but nothing sent a page number and
+  // nothing rendered a control — so a recruiter with more than 20 candidates
+  // saw the first 20, a total that said otherwise, and no way to reach the
+  // rest.
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(1);
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestSeq = useRef(0);
+  const committedSearch = useRef("");
+
+  // Complete the Google OAuth round trip. Supabase redirects back here with
+  // the token in the URL fragment; it is exchanged for a HireLens session and
+  // stripped from the address bar so a refresh can't replay it.
+  const [checkingOAuth, setCheckingOAuth] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    consumeOAuthFragment()
+      .then((result) => {
+        if (cancelled || !result) return;
+        if (result.ok) {
+          setAuth(result.token, result.user as never);
+        } else {
+          setError(result.error);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingOAuth(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [setAuth]);
+
+  // Narrowing the result set can leave the current page out of range, which
+  // renders an empty list over rows that do exist. Every filter change goes
+  // back to page one — and does it in the same update as the filter itself,
+  // so the two land in one render and only one request goes out.
+  const applyRecommendation = useCallback((value: string) => {
+    setRecommendation(value);
+    setPage(1);
+  }, []);
+
+  const applySort = useCallback((value: string) => {
+    setSort(value);
+    setPage(1);
+  }, []);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const next = searchInput.trim();
+      // The timer also runs once on mount, and trimming can leave the query
+      // unchanged. Only a query that actually changed sends you back to the
+      // first page — otherwise browsing to page 2 would bounce you back.
+      if (next === committedSearch.current) return;
+      committedSearch.current = next;
+      setSearch(next);
+      setPage(1);
+    }, 300);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [searchInput]);
+
+  const loadReports = useCallback(async () => {
+    if (!token) return;
+    // Typing in the search box can leave several requests in flight at once,
+    // and they do not necessarily come back in order. Only the newest one is
+    // allowed to write to the screen; an older answer is dropped instead of
+    // overwriting the newer list.
+    const seq = ++requestSeq.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await reportsAPI.list(token, {
+        page,
+        search: search || undefined,
+        sort,
+        recommendation: recommendation || undefined,
+      });
+      if (seq !== requestSeq.current) return;
+      setReports(res.reports);
+      setTotal(res.total);
+      setPages(Math.max(1, res.pages));
+    } catch (e) {
+      if (seq !== requestSeq.current) return;
+      // A 401 is only acted on once the identity endpoint agrees the token is
+      // dead. Signing someone out on any single 401 makes the session as
+      // fragile as the least reliable response in the app.
+      if (await classifyAuthFailure(e, token) === "expired") {
+        logout();
+        router.replace(signInUrl());
+        return;
+      }
+      setError(e instanceof APIError ? e.message : "Could not load your reports.");
+    } finally {
+      if (seq === requestSeq.current) setLoading(false);
+    }
+  }, [token, logout, router, search, sort, recommendation, page]);
+
+  useEffect(() => {
+    if (!checkingOAuth) void loadReports();
+  }, [loadReports, checkingOAuth]);
+
+  useEffect(() => {
+    if (!token || checkingOAuth) return;
+    reportsAPI.analytics(token).then(setAnalytics).catch(() => {
+      // Analytics is supplementary — a failure must not blank the page.
+    });
+  }, [token, checkingOAuth]);
+
+  async function handleExport() {
+    if (!token) return;
+    setExporting(true);
+    try {
+      const blob = await reportsAPI.downloadAllCsv(token, {
+        search: search || undefined,
+        sort,
+        recommendation: recommendation || undefined,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `hirelens-reports-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof APIError ? e.message : "Could not export. Please try again.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  const needsAttention = useMemo(
+    () =>
+      analytics
+        ? analytics.distribution.manual_review + analytics.distribution.high_risk
+        : 0,
+    [analytics],
+  );
+
+  const firstName = user?.full_name?.split(" ")[0];
+  const isEmptyWorkspace = !loading && total === 0 && !search && !recommendation;
+
+  return (
+    <AppShell>
+      <PageHeader
+        title={firstName ? `Welcome back, ${firstName}` : "Dashboard"}
+        description="Every candidate file you've analysed, with the evidence behind each score."
+        actions={
+          <Link href="/analyze">
+            <Button variant="primary" icon={<ScanLine className="size-4" />}>
+              Analyze resume
+            </Button>
+          </Link>
+        }
+      />
+
+      {error && (
+        <Alert tone="error" className="mb-5" onDismiss={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
+
+      {isEmptyWorkspace ? (
+        <div className="space-y-6">
+          <Card>
+            <EmptyState
+              icon={<FileText className="size-5" />}
+              title="No candidate files yet"
+              description="Upload a resume and HireLens returns a credibility assessment with every claim traced back to the text that produced it."
+            />
+          </Card>
+          <GettingStarted />
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <ErrorBoundary title="The summary">
+            <PoolSummary
+              analytics={analytics}
+              activeFilter={recommendation}
+              onFilter={applyRecommendation}
+            />
+          </ErrorBoundary>
+
+          {needsAttention > 0 && (
+            <button
+              type="button"
+              onClick={() => applyRecommendation(recommendation ? "" : "manual_review")}
+              className="flex w-full items-center gap-2.5 rounded-lg border border-caution-line bg-caution-soft px-3.5 py-2.5 text-left text-sm text-caution transition-colors hover:bg-caution/[0.16] focus-visible:outline-none focus-visible:shadow-focus"
+            >
+              <AlertTriangle aria-hidden className="size-4 shrink-0" />
+              <span className="flex-1">
+                {pluralize(needsAttention, "candidate")} flagged for a closer look.
+              </span>
+              <span className="text-xs text-content-muted">
+                {recommendation ? "Show all" : "Review them"}
+              </span>
+            </button>
+          )}
+
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="min-w-[16rem] flex-1">
+              <Input
+                type="search"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                placeholder="Search candidates, filenames or skills…"
+                icon={<Search className="size-4" />}
+                aria-label="Search reports"
+              />
+            </div>
+            <div className="w-44">
+              <Select
+                value={recommendation}
+                onChange={(e) => applyRecommendation(e.target.value)}
+                options={FILTERS}
+                aria-label="Filter by verdict"
+              />
+            </div>
+            <div className="w-48">
+              <Select
+                value={sort}
+                onChange={(e) => applySort(e.target.value)}
+                options={SORT_OPTIONS}
+                aria-label="Sort reports"
+              />
+            </div>
+            <Button
+              onClick={handleExport}
+              loading={exporting}
+              disabled={reports.length === 0}
+              icon={<Download className="size-4" />}
+            >
+              Export CSV
+            </Button>
+          </div>
+
+          <Card className="overflow-hidden">
+            <CardHeader
+              title={search ? `Results for “${search}”` : "Candidate files"}
+              action={
+                !loading && (
+                  <span className="text-xs text-content-faint">{pluralize(total, "report")}</span>
+                )
+              }
+            />
+
+            {loading ? (
+              <div className="divide-y divide-line-subtle">
+                {[0, 1, 2, 3].map((i) => (
+                  <div key={i} className="flex items-center gap-4 px-5 py-3.5">
+                    <Skeleton className="size-9 rounded-lg" />
+                    <div className="flex-1 space-y-1.5">
+                      <Skeleton className="h-3.5 w-40" />
+                      <Skeleton className="h-3 w-56" />
+                    </div>
+                    <Skeleton className="h-6 w-12" />
+                  </div>
+                ))}
+              </div>
+            ) : reports.length === 0 ? (
+              <EmptyState
+                icon={<SearchX className="size-5" />}
+                title="Nothing matches those filters"
+                description="Try a different search term, or clear the verdict filter."
+                action={
+                  <Button
+                    onClick={() => {
+                      setSearchInput("");
+                      applyRecommendation("");
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                }
+              />
+            ) : (
+              <ErrorBoundary title="The candidate list" resetKeys={[search, sort, recommendation]}>
+                <div className="divide-y divide-line-subtle">
+                  {reports.map((r) => (
+                    <ReportRow key={r.id} report={r} />
+                  ))}
+                </div>
+              </ErrorBoundary>
+            )}
+
+            {pages > 1 && (
+              <div className="flex items-center justify-between gap-4 border-t border-line-subtle px-5 py-3">
+                <span className="text-xs text-content-faint">
+                  Page {page} of {pages}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    disabled={page <= 1 || loading}
+                    icon={<ChevronLeft className="size-3.5" />}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={page >= pages || loading}
+                    iconRight={<ChevronRight className="size-3.5" />}
+                    onClick={() => setPage((p) => Math.min(pages, p + 1))}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+    </AppShell>
+  );
+}
+
+export default function DashboardPage() {
+  return (
+    <RequireAuth>
+      <DashboardContent />
+    </RequireAuth>
   );
 }

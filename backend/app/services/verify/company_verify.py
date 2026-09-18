@@ -46,12 +46,10 @@ async def _safe_head(client: httpx.AsyncClient, url: str) -> httpx.Response | No
 
     The company domain here is guessed from the candidate's resume text
     (via _guess_domain), which makes it indirectly attacker-influenced the
-    same way a directly-supplied URL would be. This used to run on a
-    client constructed with follow_redirects=True (plus a redundant
-    per-call follow_redirects=True) — httpx would silently follow any
-    redirect chain, including one ending at an internal/metadata address,
-    after only checking the guessed domain itself. Mirrors the same
-    per-hop re-check pattern used elsewhere in this codebase.
+    same way a directly-supplied URL would be. With follow_redirects=True the
+    guard would only ever see the guessed domain, and httpx would follow the
+    rest of the chain unchecked — including a hop ending at an internal or
+    metadata address. Mirrors the per-hop re-check used elsewhere here.
     """
     current_url = url
     for _ in range(_MAX_REDIRECT_HOPS + 1):
@@ -110,7 +108,13 @@ async def verify_experience_companies(experience: list[dict]) -> list[dict]:
                 "domain_checked": domain,
                 "status": "domain_found" if found else "domain_not_found",
                 "note": (
-                    None if found else
+                    # Said out loud on the positive case too. A live website at
+                    # a guessed domain shows the employer is real; it is not
+                    # evidence the candidate worked there, and a green row with
+                    # no caveat beside an employment claim reads as though it is.
+                    "A live website answers at this domain, so the employer appears real. "
+                    "This does not confirm the candidate worked there."
+                    if found else
                     "No website found at the guessed domain — false negatives are common here "
                     "(unregistered businesses, non-.com domains, rebrands). This is a weak signal only."
                 ),

@@ -1,347 +1,706 @@
 "use client";
-import { useEffect, useCallback, useRef, useState } from "react";
-import { useRouter, usePathname } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useAuthStore } from "@/store/auth";
-import { useJdMatch } from "@/hooks/useJdMatch";
 import {
-  Search,
-  LayoutDashboard,
-  Zap,
-  Files,
-  Target,
-  Users,
-  FileText,
-  AlertCircle,
-  Check,
   X,
   Download,
+  Crosshair,
+  Play,
+  RotateCcw,
+  ChevronDown,
+  Check,
+  Minus,
+  Trophy,
+  Trash2,
 } from "lucide-react";
-import type { MatchVerdict } from "@/types";
+import { useJdMatch } from "@/hooks/useJdMatch";
+import { useAuthStore } from "@/store/auth";
+import { jdsAPI, APIError, type SavedJd } from "@/lib/api";
+import { AppShell, PageHeader, RequireAuth } from "@/components/AppShell";
+import { FileDropzone, type FileRejection } from "@/components/FileDropzone";
+import { Card, CardHeader, CardBody } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
+import { Badge } from "@/components/ui/Badge";
+import { Input, Textarea } from "@/components/ui/Field";
+import { Alert, EmptyState } from "@/components/ui/Feedback";
+import { ScorePill } from "@/components/ui/Score";
+import { cn } from "@/lib/cn";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { formatBytes, pluralize } from "@/lib/format";
+import type { MatchVerdict, MatchedCandidate } from "@/types";
 
 const MAX_FILES = 50;
-const MAX_MB = 10;
+const JD_MIN_CHARS = 30;
+const JD_ACCEPT = [".pdf", ".docx", ".txt"];
 const JD_MAX_MB = 5;
 
-function verdictBadge(v: MatchVerdict) {
-  const m: Record<MatchVerdict, { label: string; color: string; bg: string; border: string }> = {
-    strong_fit:   { label: "Strong Fit",  color: "#10B981", bg: "rgba(16,185,129,0.12)", border: "rgba(16,185,129,0.3)" },
-    partial_fit:  { label: "Partial Fit", color: "#F59E0B", bg: "rgba(245,158,11,0.12)", border: "rgba(245,158,11,0.3)" },
-    weak_fit:     { label: "Weak Fit",    color: "#EF4444", bg: "rgba(239,68,68,0.12)",  border: "rgba(239,68,68,0.3)" },
-    unknown:      { label: "Unscored",    color: "#94A3B8", bg: "rgba(148,163,184,0.12)",border: "rgba(148,163,184,0.3)" },
-  };
-  return m[v] || m.unknown;
-}
+const VERDICT_TONE: Record<MatchVerdict, "positive" | "caution" | "critical" | "neutral"> = {
+  strong_fit: "positive",
+  partial_fit: "caution",
+  weak_fit: "critical",
+  unknown: "neutral",
+};
+
+const VERDICT_LABEL: Record<MatchVerdict, string> = {
+  strong_fit: "Strong fit",
+  partial_fit: "Partial fit",
+  weak_fit: "Weak fit",
+  unknown: "Unscored",
+};
 
 function matchColor(pct: number) {
-  if (pct >= 75) return "#10B981";
-  if (pct >= 45) return "#F59E0B";
-  return "#EF4444";
+  if (pct >= 75) return "#3DD68C";
+  if (pct >= 45) return "#E8B341";
+  return "#F2555A";
 }
 
-export default function JdMatchPage() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const { user, token, logout, hasHydrated } = useAuthStore();
+function CandidateRow({
+  candidate,
+  rank,
+  expanded,
+  onToggle,
+}: {
+  candidate: MatchedCandidate;
+  rank: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const panelId = `match-detail-${candidate.report_id}`;
+  return (
+    <div className={cn(candidate.is_best_fit && "bg-brand-500/[0.04]")}>
+      <div className="flex items-center gap-4 px-5 py-3.5">
+        <span className="w-6 shrink-0 text-sm tabular text-content-faint">{rank}</span>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium text-content">
+              {candidate.candidate_name || "Unknown candidate"}
+            </span>
+            {candidate.is_best_fit && (
+              <Badge tone="brand" icon={<Trophy className="size-3" />}>
+                Best fit
+              </Badge>
+            )}
+          </div>
+          <div className="truncate font-mono text-xs text-content-faint">
+            {candidate.file_name}
+          </div>
+        </div>
+
+        <div className="hidden w-32 shrink-0 sm:block">
+          <div className="flex items-baseline justify-between">
+            <span className="text-2xs text-content-faint">JD match</span>
+            <span
+              className="text-sm font-medium tabular"
+              style={{ color: matchColor(candidate.match_percent) }}
+            >
+              {candidate.match_percent}%
+            </span>
+          </div>
+          <div className="mt-1 h-1 overflow-hidden rounded-full bg-canvas-inset">
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${candidate.match_percent}%`,
+                background: matchColor(candidate.match_percent),
+              }}
+            />
+          </div>
+        </div>
+
+        <Badge tone={VERDICT_TONE[candidate.verdict] ?? "neutral"}>
+          {VERDICT_LABEL[candidate.verdict] ?? "Unscored"}
+        </Badge>
+
+        <span
+          className="hidden shrink-0 lg:block"
+          title="Overall credibility score, independent of JD fit"
+        >
+          <ScorePill score={candidate.overall_score} />
+        </span>
+
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-controls={panelId}
+          className="shrink-0 rounded p-1 text-content-faint transition-colors hover:text-content focus-visible:outline-none focus-visible:shadow-focus"
+        >
+          <ChevronDown
+            aria-hidden
+            className={cn("size-4 transition-transform", expanded && "rotate-180")}
+          />
+          <span className="sr-only">
+            {expanded ? "Hide" : "Show"} match detail for {candidate.candidate_name}
+          </span>
+        </button>
+      </div>
+
+      {expanded && (
+        <div id={panelId} className="space-y-4 border-t border-line-subtle bg-canvas-inset/40 px-5 py-4">
+          {candidate.rationale && (
+            <p className="text-sm leading-relaxed text-content-muted">{candidate.rationale}</p>
+          )}
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <h4 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-positive">
+                <Check aria-hidden className="size-3.5" />
+                Evidenced against the JD
+              </h4>
+              {candidate.matching_skills.length ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {candidate.matching_skills.map((s) => (
+                    <Badge key={s} tone="positive">{s}</Badge>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-content-faint">None identified.</p>
+              )}
+            </div>
+
+            <div>
+              <h4 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-caution">
+                <Minus aria-hidden className="size-3.5" />
+                Not evidenced
+              </h4>
+              {candidate.missing_skills.length ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {candidate.missing_skills.map((s) => (
+                    <Badge key={s} tone="caution">{s}</Badge>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-content-faint">Nothing missing.</p>
+              )}
+            </div>
+          </div>
+
+          <Link
+            href={`/report/${candidate.report_id}`}
+            className="inline-block text-xs font-medium text-brand-400 underline-offset-4 hover:underline"
+          >
+            Open full credibility report →
+          </Link>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MatchContent() {
   const { state, upload, exportCsv, exporting, reset } = useJdMatch();
-  const inputRef = useRef<HTMLInputElement>(null);
-  const jdInputRef = useRef<HTMLInputElement>(null);
+  const token = useAuthStore((s) => s.token);
+
   const [pending, setPending] = useState<File[]>([]);
-  const [jdMode, setJdMode] = useState<"paste" | "upload">("paste");
+  const [rejections, setRejections] = useState<FileRejection[]>([]);
+  const [jdMode, setJdMode] = useState<"paste" | "upload" | "saved">("paste");
   const [jdText, setJdText] = useState("");
   const [jdFile, setJdFile] = useState<File | null>(null);
-  const [jdFileError, setJdFileError] = useState<string | null>(null);
-  const [pickError, setPickError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [jdError, setJdError] = useState<string | null>(null);
+
+  // Saved job descriptions. A role's description is written once and used
+  // against every shortlist for it, often over weeks — retyping it each time
+  // is where the wrong version gets pasted, and a ranking is only as good as
+  // the description it ranked against.
+  const [savedJds, setSavedJds] = useState<SavedJd[]>([]);
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [savingName, setSavingName] = useState("");
+  const [savingBusy, setSavingBusy] = useState(false);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
+
+  const refreshSavedJds = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await jdsAPI.list(token);
+      setSavedJds(res.job_descriptions ?? []);
+    } catch {
+      // A picker that cannot load is an inconvenience, not a failure — paste
+      // and upload still work, so this must not take the page down.
+    }
+  }, [token]);
 
   useEffect(() => {
-    if (hasHydrated && !token) router.replace("/login");
-  }, [hasHydrated, token, router]);
+    void refreshSavedJds();
+  }, [refreshSavedJds]);
 
-  const pickJdFile = useCallback((f: File) => {
-    setJdFileError(null);
-    const ext = f.name.split(".").pop()?.toLowerCase();
-    if (!["pdf", "docx", "txt"].includes(ext || "")) {
-      setJdFileError("Unsupported file type — use PDF, DOCX, or TXT.");
-      return;
+  async function openSavedJd(id: string) {
+    if (!token) return;
+    setJdError(null);
+    setSavedNotice(null);
+    try {
+      const res = await jdsAPI.get(id, token);
+      setSavedId(id);
+      // Shown in the box as well as sent by id, so the recruiter can see
+      // exactly what this run will be ranked against before starting it.
+      setJdText(res.job_description.jd_text);
+      setSavingName(res.job_description.name);
+    } catch (e) {
+      setJdError(
+        e instanceof APIError ? e.message : "Could not open that saved job description.",
+      );
     }
-    if (f.size > JD_MAX_MB * 1024 * 1024) {
-      setJdFileError(`File too large — max ${JD_MAX_MB}MB.`);
-      return;
+  }
+
+  async function saveCurrentJd() {
+    if (!token || savingBusy) return;
+    const name = savingName.trim();
+    const text = jdText.trim();
+    if (!name || text.length < JD_MIN_CHARS) return;
+    setSavingBusy(true);
+    setJdError(null);
+    setSavedNotice(null);
+    try {
+      const res = await jdsAPI.save(name, text, token);
+      setSavedId(res.job_description.id);
+      setSavedNotice(`Saved as "${res.job_description.name}".`);
+      await refreshSavedJds();
+    } catch (e) {
+      setJdError(e instanceof APIError ? e.message : "Could not save that job description.");
+    } finally {
+      setSavingBusy(false);
     }
-    setJdFile(f);
-  }, []);
+  }
 
-  const addFiles = useCallback((incoming: FileList | File[]) => {
-    setPickError(null);
-    const arr = Array.from(incoming);
-    const valid: File[] = [];
-
-    for (const f of arr) {
-      const ext = f.name.split(".").pop()?.toLowerCase();
-      if (!["pdf", "docx"].includes(ext || "")) continue;
-      if (f.size > MAX_MB * 1024 * 1024) continue;
-      valid.push(f);
+  async function deleteSavedJd(id: string) {
+    if (!token) return;
+    try {
+      await jdsAPI.remove(id, token);
+      if (savedId === id) setSavedId(null);
+      await refreshSavedJds();
+    } catch (e) {
+      setJdError(e instanceof APIError ? e.message : "Could not delete that job description.");
     }
+  }
+  const [expanded, setExpanded] = useState<string | null>(null);
 
+  const addFiles = useCallback((accepted: File[], rejected: FileRejection[]) => {
+    setRejections(rejected);
     setPending((prev) => {
-      const combined = [...prev, ...valid];
-      if (combined.length > MAX_FILES) {
-        setPickError(`Max ${MAX_FILES} files per batch.`);
-        return combined.slice(0, MAX_FILES);
-      }
-      return combined;
+      const seen = new Set(prev.map((f) => `${f.name}:${f.size}`));
+      return [...prev, ...accepted.filter((f) => !seen.has(`${f.name}:${f.size}`))].slice(
+        0,
+        MAX_FILES,
+      );
     });
   }, []);
 
-  const startAnalysis = () => {
-    if (pending.length === 0) return;
-    if (jdMode === "paste" && !jdText.trim()) { setPickError("Please paste a Job Description."); return; }
-    if (jdMode === "upload" && !jdFile) { setPickError("Please upload a Job Description file."); return; }
+  function pickJd(file: File | undefined) {
+    setJdError(null);
+    if (!file) return;
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    if (!["pdf", "docx", "txt"].includes(ext)) {
+      setJdError("Use a PDF, DOCX or TXT file for the job description.");
+      return;
+    }
+    if (file.size > JD_MAX_MB * 1024 * 1024) {
+      setJdError(`Job description must be under ${JD_MAX_MB}MB.`);
+      return;
+    }
+    setJdFile(file);
+  }
 
+  const jdReady =
+    jdMode === "upload"
+      ? Boolean(jdFile)
+      : jdMode === "saved"
+        ? Boolean(savedId)
+        : jdText.trim().length >= JD_MIN_CHARS;
+  const canRun = jdReady && pending.length > 0;
+
+  function run() {
+    if (!canRun) return;
     upload(
       pending,
-      {
-        text: jdMode === "paste" ? jdText : undefined,
-        file: jdMode === "upload" && jdFile ? jdFile : undefined,
-      }
+      jdMode === "upload"
+        ? { file: jdFile! }
+        : jdMode === "saved"
+          ? { savedId: savedId! }
+          : { text: jdText.trim() },
     );
-  };
+  }
 
-  const isBusy = state.phase === "uploading" || state.phase === "processing";
+  function startOver() {
+    reset();
+    setPending([]);
+    setRejections([]);
+    setJdText("");
+    setJdFile(null);
+    setSavedId(null);
+    setSavedNotice(null);
+    setExpanded(null);
+  }
+
   const batch = state.phase === "processing" || state.phase === "done" ? state.batch : null;
-
-  const NAV_LINKS = [
-    { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={14} /> },
-    { href: "/analyze", label: "Analyze", icon: <Zap size={14} /> },
-    { href: "/bulk", label: "Bulk Upload", icon: <Files size={14} /> },
-    { href: "/match", label: "JD Match", icon: <Target size={14} /> },
-    { href: "/teams", label: "Teams", icon: <Users size={14} /> },
-  ];
+  const pct = batch && batch.total ? Math.round((batch.complete / batch.total) * 100) : 0;
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0B0F17", color: "#F8FAFC" }}>
-      {/* Navbar */}
-      <nav style={{
-        height: 64, borderBottom: "1px solid rgba(255, 255, 255, 0.08)",
-        display: "flex", alignItems: "center", paddingInline: 28, gap: 24,
-        position: "sticky", top: 0, background: "rgba(11, 15, 23, 0.85)",
-        backdropFilter: "blur(16px)", zIndex: 100
-      }}>
-        <Link href="/dashboard" style={{ display: "flex", alignItems: "center", gap: 10, textDecoration: "none" }}>
-          <div style={{
-            width: 32, height: 32, borderRadius: 10,
-            background: "linear-gradient(135deg, #6366F1, #8B5CF6)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            boxShadow: "0 0 16px rgba(99,102,241,0.4)"
-          }}><Search size={16} color="#FFFFFF" strokeWidth={2.5} /></div>
-          <span style={{ fontWeight: 800, fontSize: 18, color: "#F8FAFC", letterSpacing: -0.5 }}>HireLens</span>
-        </Link>
-
-        {/* Tab Pills */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(30, 41, 59, 0.5)", padding: 4, borderRadius: 12, border: "1px solid rgba(255,255,255,0.06)" }}>
-          {NAV_LINKS.map(link => {
-            const active = pathname === link.href;
-            return (
-              <Link key={link.href} href={link.href} style={{
-                padding: "6px 14px", borderRadius: 8, fontSize: 13, fontWeight: 600,
-                color: active ? "#F8FAFC" : "#94A3B8",
-                background: active ? "rgba(99, 102, 241, 0.2)" : "transparent",
-                border: active ? "1px solid rgba(99, 102, 241, 0.4)" : "1px solid transparent",
-                display: "flex", alignItems: "center", gap: 7, textDecoration: "none",
-                transition: "all 0.15s ease",
-              }}>
-                <span style={{ display: "inline-flex", alignItems: "center" }}>{link.icon}</span>
-                <span>{link.label}</span>
-              </Link>
-            );
-          })}
-        </div>
-
-        <div style={{ flex: 1 }} />
-
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 12px", borderRadius: 99, background: "rgba(30,41,59,0.6)", border: "1px solid rgba(255,255,255,0.08)" }}>
-            <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#6366F1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>
-              {user?.full_name ? user.full_name[0].toUpperCase() : "U"}
+    <AppShell>
+      <PageHeader
+        title="Match against a job description"
+        description="Paste or upload a JD, add candidate resumes, and see how each one's evidenced experience lines up against the actual requirements."
+        actions={
+          batch && state.phase === "done" ? (
+            <div className="flex gap-2">
+              <Button
+                icon={<Download className="size-4" />}
+                loading={exporting}
+                onClick={() => exportCsv(batch.batch_id)}
+              >
+                Export CSV
+              </Button>
+              <Button icon={<RotateCcw className="size-4" />} onClick={startOver}>
+                New match
+              </Button>
             </div>
-            <span style={{ fontSize: 12, color: "#CBD5E1", fontWeight: 500 }}>{user?.email}</span>
-          </div>
-          <button onClick={() => { logout(); router.replace("/login"); }}
-            style={{ padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(30,41,59,0.4)", color: "#94A3B8", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
-            Sign Out
-          </button>
-        </div>
-      </nav>
+          ) : null
+        }
+      />
 
-      {/* Main Container */}
-      <div style={{ maxWidth: 1120, margin: "0 auto", padding: "36px 24px 80px" }}>
-        
-        <div style={{ marginBottom: 32 }}>
-          <h1 style={{ fontSize: 30, fontWeight: 800, color: "#F8FAFC", margin: "0 0 8px", letterSpacing: -0.7 }}>
-            Job Description Match & Ranking
-          </h1>
-          <p style={{ fontSize: 14, color: "#94A3B8", margin: 0 }}>
-            Compare candidate resumes directly against your Job Description (JD) to evaluate skill fit and role alignment.
-          </p>
-        </div>
+      {state.phase === "error" && (
+        <Alert tone="error" title="Match failed" className="mb-5">
+          <p>{state.message}</p>
+          <Button size="sm" className="mt-3" onClick={startOver}>
+            Start over
+          </Button>
+        </Alert>
+      )}
 
-        {state.phase === "idle" && (
-          <div className="animate-fade-up" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
-            
-            {/* Left: Job Description Input */}
-            <div style={{ background: "rgba(30, 41, 59, 0.6)", backdropFilter: "blur(16px)", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 20, padding: 28 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                <span style={{ fontSize: 16, fontWeight: 700, color: "#F8FAFC" }}>1. Job Description</span>
-                <div style={{ display: "flex", gap: 6, background: "rgba(15,23,42,0.6)", padding: 3, borderRadius: 8 }}>
-                  <button onClick={() => setJdMode("paste")} style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, background: jdMode === "paste" ? "#6366F1" : "transparent", color: jdMode === "paste" ? "#FFF" : "#94A3B8", border: "none", cursor: "pointer" }}>Paste Text</button>
-                  <button onClick={() => setJdMode("upload")} style={{ padding: "4px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, background: jdMode === "upload" ? "#6366F1" : "transparent", color: jdMode === "upload" ? "#FFF" : "#94A3B8", border: "none", cursor: "pointer" }}>Upload File</button>
+      {rejections.length > 0 && (
+        <Alert tone="warning" className="mb-5" onDismiss={() => setRejections([])}>
+          <ul className="space-y-0.5">
+            {rejections.slice(0, 5).map((r, i) => (
+              <li key={i}>
+                <span className="font-mono text-xs">{r.file.name}</span> — {r.reason}
+              </li>
+            ))}
+          </ul>
+        </Alert>
+      )}
+
+      {state.phase === "idle" && (
+        <div className="grid gap-5 lg:grid-cols-2">
+          {/* Step 1 — JD */}
+          <Card className="flex h-full flex-col">
+            <CardHeader
+              title="1 · Job description"
+              description="The requirements each candidate is measured against."
+              action={
+                <div
+                  role="tablist"
+                  aria-label="Job description input method"
+                  className="flex rounded-md border border-line-strong bg-canvas-inset p-0.5"
+                >
+                  {(["paste", "upload", "saved"] as const).map((m) => (
+                    <button
+                      key={m}
+                      role="tab"
+                      type="button"
+                      aria-selected={jdMode === m}
+                      onClick={() => setJdMode(m)}
+                      className={cn(
+                        "rounded px-2.5 py-1 text-xs font-medium capitalize transition-colors",
+                        jdMode === m
+                          ? "bg-canvas-overlay text-content"
+                          : "text-content-faint hover:text-content-muted",
+                      )}
+                    >
+                      {m}
+                    </button>
+                  ))}
                 </div>
-              </div>
+              }
+            />
+            <CardBody className="flex-1">
+              {jdMode === "saved" ? (
+                <div>
+                  {savedJds.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-line-strong bg-canvas-inset px-4 py-8 text-center text-sm text-content-muted">
+                      Nothing saved yet. Paste a job description, give it a name, and
+                      it will be here for the next shortlist.
+                    </p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {savedJds.map((jd) => (
+                        <li
+                          key={jd.id}
+                          className={cn(
+                            "flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-colors",
+                            savedId === jd.id
+                              ? "border-brand-500 bg-brand-500/5"
+                              : "border-line hover:border-line-strong",
+                          )}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void openSavedJd(jd.id)}
+                            className="min-w-0 flex-1 text-left"
+                            aria-pressed={savedId === jd.id}
+                          >
+                            <span className="block truncate text-sm font-medium text-content">
+                              {jd.name}
+                            </span>
+                            <span className="block text-xs text-content-faint">
+                              {jd.char_count.toLocaleString()} characters
+                              {jd.last_used_at ? " · used before" : ""}
+                            </span>
+                          </button>
+                          {savedId === jd.id && (
+                            <span className="shrink-0 text-xs font-medium text-brand-400">
+                              Selected
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void deleteSavedJd(jd.id)}
+                            aria-label={`Delete saved job description ${jd.name}`}
+                            className="shrink-0 rounded p-1 text-content-faint transition-colors hover:text-critical"
+                          >
+                            <Trash2 className="size-4" aria-hidden />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {savedId && (
+                    <div className="mt-4 rounded-lg border border-line bg-canvas-inset p-3">
+                      <p className="mb-1.5 text-xs font-medium text-content-muted">
+                        This run will be ranked against:
+                      </p>
+                      <p className="max-h-32 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-content-faint">
+                        {jdText}
+                      </p>
+                    </div>
+                  )}
+                  {jdError && <p className="mt-2 text-xs text-critical">{jdError}</p>}
+                </div>
+              ) : jdMode === "paste" ? (
+                <>
+                  <Textarea
+                    rows={12}
+                    value={jdText}
+                    onChange={(e) => {
+                      setJdText(e.target.value);
+                      // Editing the text means this is no longer the saved
+                      // description — running against the stored id would rank
+                      // the shortlist on text the recruiter just changed.
+                      setSavedId(null);
+                      setSavedNotice(null);
+                    }}
+                    placeholder="Paste the full job description — responsibilities, must-have requirements, nice-to-haves…"
+                    aria-label="Job description text"
+                  />
+                  <p className="mt-2 text-xs text-content-faint">
+                    {jdText.trim().length < JD_MIN_CHARS
+                      ? `${JD_MIN_CHARS - jdText.trim().length} more characters needed`
+                      : `${jdText.trim().length} characters`}
+                  </p>
 
-              {jdMode === "paste" ? (
-                <textarea
-                  value={jdText}
-                  onChange={(e) => setJdText(e.target.value)}
-                  placeholder="Paste job description text here (requirements, responsibilities, required skills)…"
-                  style={{ width: "100%", height: 260, boxSizing: "border-box", padding: 14, background: "rgba(15, 23, 42, 0.7)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12, color: "#F8FAFC", fontSize: 13, outline: "none", resize: "vertical" }}
-                />
-              ) : (
-                <div onClick={() => jdInputRef.current?.click()} style={{ border: "2px dashed rgba(99,102,241,0.4)", borderRadius: 16, padding: "48px 24px", textAlign: "center", cursor: "pointer", background: "rgba(15, 23, 42, 0.5)" }}>
-                  <input ref={jdInputRef} type="file" accept=".pdf,.docx,.txt" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) pickJdFile(f); }} />
-                  <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
-                    <FileText size={28} color="#818CF8" />
+                  <div className="mt-4 border-t border-line-subtle pt-4">
+                    <label
+                      htmlFor="jd-save-name"
+                      className="text-xs font-medium text-content-muted"
+                    >
+                      Save this for next time
+                    </label>
+                    <div className="mt-1.5 flex gap-2">
+                      <Input
+                        id="jd-save-name"
+                        value={savingName}
+                        onChange={(e) => setSavingName(e.target.value)}
+                        placeholder="e.g. Senior Backend Engineer"
+                        maxLength={100}
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="shrink-0"
+                        loading={savingBusy}
+                        disabled={
+                          !savingName.trim() || jdText.trim().length < JD_MIN_CHARS
+                        }
+                        onClick={() => void saveCurrentJd()}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                    {savedNotice && (
+                      <p className="mt-2 text-xs text-positive">{savedNotice}</p>
+                    )}
+                    {jdError && <p className="mt-2 text-xs text-critical">{jdError}</p>}
                   </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC" }}>{jdFile ? jdFile.name : "Upload JD document"}</div>
-                  <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 4 }}>PDF, DOCX, or TXT up to {JD_MAX_MB}MB</div>
-                  {jdFileError && <div style={{ fontSize: 12, color: "#EF4444", marginTop: 8 }}>{jdFileError}</div>}
+                </>
+              ) : (
+                <div>
+                  <label className="flex cursor-pointer flex-col items-center rounded-lg border border-dashed border-line-strong bg-canvas-inset px-5 py-10 text-center transition-colors hover:border-brand-500">
+                    <input
+                      type="file"
+                      className="sr-only"
+                      accept={JD_ACCEPT.join(",")}
+                      onChange={(e) => pickJd(e.target.files?.[0])}
+                    />
+                    <span className="text-sm font-medium text-content">
+                      {jdFile ? jdFile.name : "Choose a job description file"}
+                    </span>
+                    <span className="mt-1 text-xs text-content-faint">
+                      {jdFile
+                        ? formatBytes(jdFile.size)
+                        : `PDF, DOCX or TXT · under ${JD_MAX_MB}MB`}
+                    </span>
+                  </label>
+                  {jdFile && (
+                    <Button size="sm" className="mt-3" onClick={() => setJdFile(null)}>
+                      Remove
+                    </Button>
+                  )}
+                  {jdError && <p className="mt-2 text-xs text-critical">{jdError}</p>}
                 </div>
               )}
-            </div>
+            </CardBody>
+          </Card>
 
-            {/* Right: Resumes Dropzone */}
-            <div style={{ background: "rgba(30, 41, 59, 0.6)", backdropFilter: "blur(16px)", border: "1px solid rgba(255, 255, 255, 0.08)", borderRadius: 20, padding: 28, display: "flex", flexDirection: "column" }}>
-              <span style={{ fontSize: 16, fontWeight: 700, color: "#F8FAFC", marginBottom: 16 }}>2. Candidate Resumes</span>
-              
-              <div onClick={() => inputRef.current?.click()} style={{ border: "2px dashed rgba(99,102,241,0.4)", borderRadius: 16, padding: "36px 24px", textAlign: "center", cursor: "pointer", background: "rgba(15, 23, 42, 0.5)", marginBottom: 16 }}>
-                <input ref={inputRef} type="file" multiple accept=".pdf,.docx" style={{ display: "none" }} onChange={(e) => { if (e.target.files?.length) addFiles(e.target.files); }} />
-                <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
-                  <Target size={28} color="#818CF8" />
-                </div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#F8FAFC" }}>Drop resumes to match</div>
-                <div style={{ fontSize: 12, color: "#94A3B8", marginTop: 4 }}>PDF or DOCX up to {MAX_FILES} files</div>
-              </div>
+          {/* Step 2 — resumes */}
+          <Card className="flex h-full flex-col">
+            <CardHeader
+              title="2 · Candidate resumes"
+              description={`Up to ${MAX_FILES} per run.`}
+              action={
+                pending.length > 0 ? (
+                  <span className="text-xs text-content-faint">
+                    {pluralize(pending.length, "file")}
+                  </span>
+                ) : null
+              }
+            />
+            <CardBody className="flex-1 space-y-3">
+              <FileDropzone
+                compact
+                multiple
+                maxFiles={MAX_FILES}
+                onFiles={addFiles}
+                title="Drop resumes here"
+                hint="PDF or DOCX · 10MB each"
+              />
 
               {pending.length > 0 && (
-                <div style={{ flex: 1, marginBottom: 16 }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#CBD5E1", marginBottom: 8 }}>Resumes Selected ({pending.length})</div>
-                  <div style={{ maxHeight: 120, overflowY: "auto", display: "flex", flexDirection: "column", gap: 6 }}>
-                    {pending.map((f, i) => (
-                      <div key={i} style={{ fontSize: 12, color: "#94A3B8", background: "rgba(15,23,42,0.6)", padding: "6px 10px", borderRadius: 6 }}>
+                <ul className="max-h-48 space-y-1.5 overflow-y-auto">
+                  {pending.map((f, i) => (
+                    <li
+                      key={`${f.name}:${i}`}
+                      className="flex items-center gap-2 rounded-md border border-line-subtle bg-canvas-inset px-2.5 py-1.5"
+                    >
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-content-muted">
                         {f.name}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {pickError && (
-                <div style={{ fontSize: 12, color: "#EF4444", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
-                  <AlertCircle size={14} style={{ flexShrink: 0 }} />
-                  <span>{pickError}</span>
-                </div>
-              )}
-
-              <button onClick={startAnalysis} disabled={pending.length === 0} style={{ width: "100%", padding: "12px 24px", borderRadius: 12, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 14, border: "none", cursor: pending.length ? "pointer" : "default", opacity: pending.length ? 1 : 0.5 }}>
-                Run JD Match Analysis
-              </button>
-            </div>
-
-          </div>
-        )}
-
-        {/* ── Results ── */}
-        {(state.phase === "uploading" || state.phase === "processing" || state.phase === "done") && batch && (
-          <div className="animate-fade-up">
-            <div style={{ background: "rgba(30, 41, 59, 0.7)", backdropFilter: "blur(16px)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 20, padding: 28, marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: "#F8FAFC", marginBottom: 4 }}>JD Match Completed</div>
-                <div style={{ fontSize: 13, color: "#94A3B8" }}>{batch.complete} of {batch.total} candidates evaluated</div>
-              </div>
-              <div style={{ display: "flex", gap: 10 }}>
-                <button onClick={() => exportCsv(batch.batch_id)} disabled={exporting} style={{ padding: "10px 20px", borderRadius: 10, background: "linear-gradient(135deg,#6366F1,#4F46E5)", color: "#FFF", fontWeight: 700, fontSize: 13, border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
-                  <Download size={14} />
-                  <span>{exporting ? "Exporting…" : "Export Match CSV"}</span>
-                </button>
-                <button onClick={() => { reset(); setPending([]); setJdText(""); setJdFile(null); }} style={{ padding: "10px 20px", borderRadius: 10, background: "rgba(30,41,59,0.8)", border: "1px solid rgba(255,255,255,0.1)", color: "#CBD5E1", fontSize: 13, cursor: "pointer" }}>
-                  New JD Match
-                </button>
-              </div>
-            </div>
-
-            {/* Candidates Fit Table */}
-            <div style={{ background: "rgba(30, 41, 59, 0.6)", backdropFilter: "blur(16px)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 20, overflow: "hidden" }}>
-              <div style={{ padding: "16px 24px", borderBottom: "1px solid rgba(255,255,255,0.08)", fontSize: 13, fontWeight: 700, color: "#CBD5E1" }}>
-                Candidate Match Rankings ({batch.ranking.length})
-              </div>
-              {batch.ranking.map((c: any, i: number) => {
-                const badge = verdictBadge(c.verdict);
-                return (
-                  <div key={c.report_id || i} style={{ padding: "18px 24px", borderBottom: i < batch.ranking.length - 1 ? "1px solid rgba(255,255,255,0.05)" : "none" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                      <div style={{ fontSize: 14, fontWeight: 800, color: "#64748B", width: 24 }}>#{i + 1}</div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 15, fontWeight: 700, color: "#F8FAFC" }}>{c.candidate_name || "Unknown Candidate"}</div>
-                        <div style={{ fontSize: 12, color: "#94A3B8", fontFamily: "var(--font-mono), monospace" }}>{c.file_name}</div>
-                      </div>
-
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 11, color: "#94A3B8" }}>Match Score</span>
-                        <span style={{ fontSize: 20, fontWeight: 900, color: matchColor(c.match_score), fontFamily: "var(--font-mono), monospace" }}>{c.match_score}%</span>
-                      </div>
-
-                      <span style={{ padding: "4px 12px", borderRadius: 99, background: badge.bg, border: `1px solid ${badge.border}`, color: badge.color, fontSize: 11, fontWeight: 700 }}>
-                        {badge.label}
                       </span>
-
-                      <button onClick={() => setExpanded(expanded === c.report_id ? null : c.report_id)} style={{ padding: "6px 14px", borderRadius: 8, background: "rgba(99,102,241,0.15)", color: "#818CF8", fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer" }}>
-                        {expanded === c.report_id ? "Hide Skills" : "View Breakdown"}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${f.name}`}
+                        onClick={() => setPending((p) => p.filter((_, idx) => idx !== i))}
+                        className="rounded p-0.5 text-content-faint transition-colors hover:text-critical"
+                      >
+                        <X className="size-3.5" />
                       </button>
-                    </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
 
-                    {expanded === c.report_id && (
-                      <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(255,255,255,0.06)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-                        <div>
-                          <div style={{ fontSize: 12, fontWeight: 700, color: "#10B981", marginBottom: 8 }}>Matching Skills ({(c.matching_skills || []).length})</div>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                            {(c.matching_skills || []).map((s: string, idx: number) => (
-                              <span key={idx} style={{ padding: "3px 10px", borderRadius: 6, background: "rgba(16,185,129,0.15)", color: "#10B981", fontSize: 11, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                                <Check size={11} strokeWidth={3} />
-                                <span>{s}</span>
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 12, fontWeight: 700, color: "#EF4444", marginBottom: 8 }}>Missing Skills ({(c.missing_skills || []).length})</div>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                            {(c.missing_skills || []).map((s: string, idx: number) => (
-                              <span key={idx} style={{ padding: "3px 10px", borderRadius: 6, background: "rgba(239,68,68,0.15)", color: "#EF4444", fontSize: 11, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
-                                <X size={11} strokeWidth={3} />
-                                <span>{s}</span>
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+              <Button
+                variant="primary"
+                size="lg"
+                fullWidth
+                disabled={!canRun}
+                icon={<Play className="size-4" />}
+                onClick={run}
+              >
+                Run match
+              </Button>
+              {!canRun && (
+                <p className="text-center text-xs text-content-faint">
+                  {!jdReady
+                    ? "Add a job description to continue."
+                    : "Add at least one resume to continue."}
+                </p>
+              )}
+            </CardBody>
+          </Card>
+        </div>
+      )}
+
+      {(state.phase === "uploading" || batch) && (
+        <div className="space-y-5">
+          <Card>
+            <CardBody>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h2 className="text-sm font-semibold text-content">
+                    {state.phase === "done" ? "Match complete" : "Matching candidates"}
+                  </h2>
+                  <p className="mt-0.5 text-xs text-content-faint">
+                    {batch
+                      ? `${batch.complete} of ${batch.total} analysed${batch.failed ? ` · ${batch.failed} failed` : ""}`
+                      : "Uploading…"}
+                  </p>
+                </div>
+                <span className="text-sm tabular text-content-muted">{pct}%</span>
+              </div>
+              <div
+                className="mt-4 h-1 overflow-hidden rounded-full bg-canvas-inset"
+                role="progressbar"
+                aria-valuenow={pct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="Match progress"
+              >
+                <div
+                  className="h-full rounded-full bg-brand-500 transition-[width] duration-500 ease-out"
+                  style={{ width: `${Math.max(pct, 2)}%` }}
+                />
+              </div>
+            </CardBody>
+          </Card>
+
+          {batch && (
+            <Card className="overflow-hidden">
+              <CardHeader
+                title="Ranked by fit"
+                description="Match percentage reflects evidenced experience against the JD's requirements — not keyword overlap."
+              />
+              {batch.ranking.length === 0 ? (
+                <EmptyState
+                  icon={<Crosshair className="size-5" />}
+                  title="No results yet"
+                  description="Candidates appear here as each resume finishes."
+                />
+              ) : (
+                <ErrorBoundary title="The ranking" resetKeys={[batch.batch_id]}>
+                <div className="divide-y divide-line-subtle">
+                  {batch.ranking.map((c, i) => (
+                    <CandidateRow
+                      key={c.report_id || i}
+                      candidate={c}
+                      rank={i + 1}
+                      expanded={expanded === c.report_id}
+                      onToggle={() =>
+                        setExpanded((prev) => (prev === c.report_id ? null : c.report_id))
+                      }
+                    />
+                  ))}
+                </div>
+                </ErrorBoundary>
+              )}
+            </Card>
+          )}
+        </div>
+      )}
+    </AppShell>
+  );
+}
+
+export default function MatchPage() {
+  return (
+    <RequireAuth>
+      <MatchContent />
+    </RequireAuth>
   );
 }

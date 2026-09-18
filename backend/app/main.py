@@ -4,22 +4,23 @@ from contextlib import asynccontextmanager
 import asyncio, os, time, uuid, logging
 
 from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
 from app.core.exceptions import (
     HireLensException, RateLimitExceeded,
     FileTooLarge, UnsupportedFileType, AuthError,
 )
-from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match, verify, ats, teams, collaboration, copilot
+from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match, verify, ats, teams, collaboration, copilot, jds
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hirelens")
 
 
-DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production-min-32"
 
 
 # ── Self-ping keep-alive (prevents Render free tier sleep) ──────────────────
@@ -29,11 +30,9 @@ async def _keep_alive_loop():
     considers the service idle and spins it down.
     Only runs in production; development can skip it.
 
-    Requires BACKEND_URL to be set explicitly. This used to derive the URL
-    by string-replacing two specific hardcoded hostnames inside
-    FRONTEND_URL — which silently pinged the wrong URL (or a URL that
-    doesn't exist) the moment either domain changed. Failing loudly and
-    skipping is safer than guessing.
+    Requires BACKEND_URL to be set explicitly, and skips with a warning when
+    it is not. Deriving it from FRONTEND_URL would mean guessing, and a
+    keep-alive that pings the wrong host looks exactly like one that works.
     """
     import httpx
 
@@ -68,12 +67,16 @@ async def lifespan(app: FastAPI):
     # refuses to boot is not. Forgeable JWTs and wide-open CORS are not
     # conditions this app should ever silently serve traffic under.
     if settings.is_production:
-        if settings.SECRET_KEY == DEFAULT_SECRET_KEY or len(settings.SECRET_KEY) < 32:
+        # There is no longer a shipped default to compare against — an unset
+        # key is simply empty here, because development fills its own in from
+        # a machine-local file and production is left to fail.
+        if len(settings.SECRET_KEY) < 32:
             logger.critical(
-                "SECURITY: SECRET_KEY is unset or using the default dev value in "
-                "production. JWTs can be forged by anyone who has read this public "
-                "repo. Set a real random SECRET_KEY (32+ chars) in your environment "
-                "immediately — e.g. `python -c \"import secrets; print(secrets.token_urlsafe(48))\"`."
+                "SECURITY: SECRET_KEY is unset or too short in production. "
+                "Session tokens are signed with it, so a guessable value means "
+                "anyone can mint one. Set a real random SECRET_KEY (32+ chars) "
+                "in your environment immediately — e.g. "
+                "`python -c \"import secrets; print(secrets.token_urlsafe(48))\"`."
             )
             raise SystemExit(
                 "Refusing to start: SECRET_KEY is missing or too short for a "
@@ -132,14 +135,7 @@ app = FastAPI(
 
 # ── Middleware ────────────────────────────────────────────────────────────────
 app.add_middleware(GZipMiddleware, minimum_size=1000)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.allowed_origins_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["X-Request-ID", "X-Response-Time"],
-)
+
 
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):
@@ -172,12 +168,149 @@ async def request_middleware(request: Request, call_next):
             "request_id": rid,
         })
 
+# CORS is added LAST so it ends up OUTERMOST: Starlette wraps each new
+# middleware around the ones already added, and the catch-all handler above
+# has to run INSIDE the CORS layer. Outside it, a 500 goes back without an
+# Access-Control-Allow-Origin header and the browser refuses to let the app
+# read it — which leaves the frontend unable to tell a server error from an
+# unreachable API: no status, no message, just a failed fetch. Everything the
+# server says, "something went wrong" included, has to be readable by the app
+# that asked.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.allowed_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Request-ID", "X-Response-Time"],
+)
+
+
 # ── Exception Handlers ────────────────────────────────────────────────────────
+def _request_id(request: Request) -> str:
+    """The per-request trace id, or a placeholder if the middleware never ran."""
+    return getattr(request.state, "request_id", "unknown")
+
+
+# Field names as a person would say them, for validation messages. Anything
+# not listed falls back to the raw field with underscores replaced.
+_FIELD_LABELS = {
+    "email": "Email",
+    "password": "Password",
+    "full_name": "Full name",
+    "company": "Company",
+    "name": "Name",
+    "file": "File",
+    "files": "Files",
+    "jd_text": "Job description",
+    "comment": "Comment",
+    "vote": "Vote",
+    "decision": "Decision",
+}
+
+
+def _humanize_validation_errors(errors: list) -> str:
+    """
+    Flatten Pydantic's error list into one sentence a user can act on.
+
+    FastAPI's default 422 body is `{"detail": [{"loc": [...], "msg": ...}]}`,
+    which is not the `{error, message, request_id}` envelope every other
+    response uses and every client here expects. Clients were left either
+    showing "Server error 422" or reaching into `detail` themselves.
+    """
+    parts: list[str] = []
+    for err in errors[:5]:
+        if not isinstance(err, dict):
+            continue
+        msg = str(err.get("msg") or "").strip()
+        if not msg:
+            continue
+        # Pydantic prefixes custom validator messages with "Value error, ".
+        if msg.lower().startswith("value error,"):
+            msg = msg.split(",", 1)[1].strip()
+        if msg == "Field required":
+            msg = "is required"
+
+        loc = [str(x) for x in (err.get("loc") or []) if x not in ("body", "query", "path")]
+        field = loc[-1] if loc else ""
+        if field and not field.isdigit():
+            label = _FIELD_LABELS.get(field, field.replace("_", " ").capitalize())
+            parts.append(f"{label} {msg}" if msg.startswith("is ") else f"{label}: {msg}")
+        else:
+            parts.append(msg)
+
+    if not parts:
+        return "Some of the submitted values were not valid."
+    joined = ". ".join(p.rstrip(".") for p in parts)
+    return f"{joined}."
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_handler(request: Request, exc: RequestValidationError):
+    """
+    Return request-validation failures in the standard envelope.
+
+    `details` is preserved for programmatic clients that want per-field
+    information, but `message` is always present and always readable.
+    """
+    errors = exc.errors()
+    logger.info(f"Validation failed on {request.method} {request.url.path}: {errors[:3]}")
+    return JSONResponse(status_code=422, content={
+        "error": "validation_error",
+        "message": _humanize_validation_errors(errors),
+        "request_id": _request_id(request),
+        "details": [
+            {
+                "field": ".".join(
+                    str(x) for x in (e.get("loc") or []) if x not in ("body", "query", "path")
+                ),
+                "message": str(e.get("msg") or ""),
+            }
+            for e in errors[:10]
+            if isinstance(e, dict)
+        ],
+    })
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """
+    Envelope for everything Starlette raises directly — chiefly 404 for an
+    unknown route and 405 for a wrong method. Those come out of Starlette as
+    `{"detail": "..."}`, and this puts them in the same shape as every other
+    error the API returns, so the client has one thing to parse.
+    """
+    codes = {
+        400: "bad_request",
+        401: "unauthorized",
+        403: "forbidden",
+        404: "not_found",
+        405: "method_not_allowed",
+        413: "payload_too_large",
+        415: "unsupported_media_type",
+        429: "rate_limit_exceeded",
+    }
+    messages = {
+        404: "That endpoint does not exist. Check the URL and the API version prefix.",
+        405: f"{request.method} is not allowed on this endpoint.",
+        413: "That request body is too large.",
+    }
+    detail = exc.detail if isinstance(exc.detail, str) else None
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": codes.get(exc.status_code, "http_error"),
+            "message": messages.get(exc.status_code) or detail or "That request could not be completed.",
+            "request_id": _request_id(request),
+        },
+        headers=getattr(exc, "headers", None) or None,
+    )
+
+
 @app.exception_handler(HireLensException)
 async def hirelens_handler(request: Request, exc: HireLensException):
-    rid = getattr(request.state, "request_id", "?")
     return JSONResponse(status_code=exc.http_status, content={
-        "error": exc.code, "message": exc.message, "request_id": rid,
+        "error": exc.code, "message": exc.message, "request_id": _request_id(request),
     })
 
 @app.exception_handler(RateLimitExceeded)
@@ -186,6 +319,7 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
         "error": "rate_limit_exceeded",
         "message": f"Too many requests. Retry after {exc.retry_after}s.",
         "retry_after": exc.retry_after,
+        "request_id": _request_id(request),
     }, headers={"Retry-After": str(exc.retry_after)})
 
 @app.exception_handler(FileTooLarge)
@@ -194,6 +328,7 @@ async def file_too_large_handler(request: Request, exc: FileTooLarge):
         "error": "file_too_large",
         "message": f"File exceeds {exc.max_mb}MB limit.",
         "max_mb": exc.max_mb,
+        "request_id": _request_id(request),
     })
 
 @app.exception_handler(UnsupportedFileType)
@@ -201,12 +336,15 @@ async def unsupported_type_handler(request: Request, exc: UnsupportedFileType):
     return JSONResponse(status_code=415, content={
         "error": "unsupported_file_type",
         "message": f"'{exc.file_type}' not supported. Upload PDF or DOCX.",
+        "request_id": _request_id(request),
     })
 
 @app.exception_handler(AuthError)
 async def auth_handler(request: Request, exc: AuthError):
     return JSONResponse(status_code=401, content={
-        "error": "unauthorized", "message": exc.message,
+        "error": "unauthorized",
+        "message": exc.message,
+        "request_id": _request_id(request),
     }, headers={"WWW-Authenticate": "Bearer"})
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -215,6 +353,7 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(analysis.router, prefix="/api/v1/analysis", tags=["Analysis"])
 app.include_router(bulk.router, prefix="/api/v1/bulk", tags=["Bulk Upload"])
 app.include_router(match.router, prefix="/api/v1/match", tags=["JD Match"])
+app.include_router(jds.router, prefix="/api/v1/job-descriptions", tags=["Saved JDs"])
 app.include_router(verify.router, prefix="/api/v1/verify", tags=["Verification"])
 app.include_router(ats.router, prefix="/api/v1/ats", tags=["ATS Import"])
 app.include_router(teams.router, prefix="/api/v1/teams", tags=["Teams"])

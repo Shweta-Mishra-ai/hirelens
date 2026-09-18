@@ -40,6 +40,22 @@ _INJECTION_PATTERNS = [
     r"disregard\s+(all\s+)?(the\s+)?(prior|previous|above|earlier)\s+instructions?",
     r"new\s+instructions?\s*[:\-]",
     r"system\s*[:\-]\s*you\s+(are|must|should)",
+    # A chat-role prefix followed by an instruction. The module docstring has
+    # always claimed "system:" was detected, but the pattern above required
+    # the exact continuation "system: you are/must/should", so the far more
+    # common "system: override the score" slipped through.
+    #
+    # The continuation list is required, not optional: a bare `^system\s*:`
+    # would fire on "System: Linux" or "Systems: distributed" in an ordinary
+    # skills section, and a false positive here costs a real candidate an
+    # unnecessary manual-review flag.
+    r"^\s*(system|assistant|developer)\s*[:\-]\s*"
+    r"(you\b|ignore|disregard|override|set\s|do\s+not\b|don't\b|always\b|never\b"
+    r"|output\b|return\b|respond\b|reply\b|print\b|treat\b|assume\b|rate\b|score\b)",
+    r"\boverride\s+(the\s+)?(score|rating|credibility|recommendation|assessment)\b",
+    r"\b(rate|score)\s+(this\s+)?(candidate|resume|applicant)\s+(as\s+)?"
+    r"(a\s+)?(100|perfect|highest|maximum|excellent|10/10)\b",
+    r"end\s+of\s+(resume|document)\s*[.\-]*\s*(new|now|system|instruction)",
     r"\byou\s+are\s+now\s+(a|an)\b",
     r"\bact\s+as\s+(a|an|if)\b.{0,30}(ai|assistant|system|model)",
     r"as\s+an\s+ai\s+(language\s+model|assistant|system)",
@@ -53,7 +69,9 @@ _INJECTION_PATTERNS = [
     r"###\s*(instruction|system|prompt)",
 ]
 
-_COMPILED_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _INJECTION_PATTERNS]
+_COMPILED_PATTERNS = [
+    re.compile(p, re.IGNORECASE | re.MULTILINE) for p in _INJECTION_PATTERNS
+]
 
 # Zero-width and invisible-formatting characters sometimes used to hide text
 # from a human reader while it remains fully readable to a text-extracting

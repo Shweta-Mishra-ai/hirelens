@@ -13,9 +13,11 @@ defense-in-depth measure, not the only line of defense, so an outage
 here shouldn't take down login for everyone.
 """
 
+import ipaddress
 import time
 import logging
 from fastapi import Request
+from app.core.config import settings
 from app.core.exceptions import RateLimitExceeded
 
 logger = logging.getLogger("hirelens")
@@ -41,12 +43,48 @@ def _check_in_memory_rate_limit(key: str, limit: int, window_seconds: int = 60) 
             _mem_rate_limit.pop(k, None)
 
 
+def _looks_like_an_address(value: str) -> bool:
+    """Reject anything that is not an IP, so a junk header cannot poison the key."""
+    try:
+        ipaddress.ip_address(value.strip("[]"))
+        return True
+    except ValueError:
+        return False
+
+
 def get_client_ip(request: Request) -> str:
-    """Best-effort real client IP behind a proxy (Render/Vercel set X-Forwarded-For)."""
+    """
+    The caller's address, as far as it can be trusted.
+
+    X-Forwarded-For is written by proxies AND by the caller: each proxy
+    appends the address it saw, so the rightmost entries are the ones added by
+    infrastructure and everything to the left is whatever the caller chose to
+    send. Only `TRUSTED_PROXY_HOPS` entries from the right are evidence.
+
+    This matters because rate limits are keyed on the result. Reading the
+    leftmost entry lets a caller mint a fresh bucket per request by changing a
+    header — which is unlimited password guesses against sign-in, and
+    unlimited account creation.
+    """
+    direct = request.client.host if request.client else "unknown"
+
+    hops = getattr(settings, "TRUSTED_PROXY_HOPS", 1)
+    if hops <= 0:
+        # Nothing proxies this app, so the header is not evidence of anything.
+        return direct
+
     xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    if not xff:
+        return direct
+
+    parts = [p.strip() for p in xff.split(",") if p.strip()]
+    if not parts:
+        return direct
+
+    # Count in from the right: parts[-hops] is the address the outermost
+    # trusted proxy actually observed.
+    candidate = parts[-hops] if len(parts) >= hops else parts[0]
+    return candidate if _looks_like_an_address(candidate) else direct
 
 
 def check_rate_limit(redis, key: str, limit: int, window_seconds: int = 60) -> None:

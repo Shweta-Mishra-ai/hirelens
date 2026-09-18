@@ -6,20 +6,25 @@ and store structured interviewer notes.
 """
 
 import logging
+import time
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import NotFoundError, HireLensException
+from app.core.shapes import as_dict
+from app.core.exceptions import CopilotUnavailable, NotFoundError, HireLensException
 from app.api.v1.endpoints.analysis import _jobs
+from app.core import local_db
 from app.services.teams.access import user_can_access_report
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
 
-# In-memory fallback store for co-pilot evaluations when DB is unconfigured
-# Key: report_id -> copilot data dict
-_copilot_store: dict[str, dict] = {}
+# NOTE: co-pilot data lives with the report it belongs to, in Supabase and/or
+# the local SQLite store — deliberately not in a module-level dict here. A
+# store keyed by report id alone carries no owner, which leaves the read path
+# with nothing to authorize against. See _assert_can_access below.
 
 
 class CustomQuestion(BaseModel):
@@ -32,9 +37,16 @@ class CustomQuestion(BaseModel):
 
 
 class CompetencyScore(BaseModel):
-    category: str  # technical, problem_solving, culture_fit, authenticity
-    score: int = Field(..., ge=1, le=5)  # 1 to 5 scale
-    notes: str | None = None
+    category: str  # technical_depth, problem_solving, culture_fit, authenticity
+    # 0 means "not yet rated", 1-5 is the rating.
+    #
+    # ge=0, not ge=1: a partially-filled scorecard is the normal case. The UI
+    # starts every category unrated and lets an interviewer clear a rating by
+    # clicking it again, so requiring a rating would 422 any save made before
+    # all four were scored — discarding the interviewer's notes along with it,
+    # mid-interview, and naming no field as the cause.
+    score: int = Field(0, ge=0, le=5)
+    notes: str | None = Field(None, max_length=2000)
 
 
 class CoPilotSaveRequest(BaseModel):
@@ -44,6 +56,65 @@ class CoPilotSaveRequest(BaseModel):
     recommendation_override: str | None = None  # advance, reject, follow_up
 
 
+def _assert_can_access(report_id: str, user_id: str, db) -> None:
+    """
+    Raise NotFoundError unless `user_id` may see this report.
+
+    SECURITY: every co-pilot path must go through this before touching
+    stored data. The previous implementation keyed an in-memory dict by
+    report id alone and checked ownership on *some* branches only:
+
+      * GET fell through to `_copilot_store.get(report_id)` with no check at
+        all, so any authenticated user could read another recruiter's
+        private interview notes by guessing or obtaining a report id;
+      * POST wrote `_copilot_store[report_id]` as its first statement,
+        before any check, so any authenticated user could overwrite them.
+
+    Interview notes routinely contain compensation expectations and candid
+    assessments, so this was a cross-tenant leak of the most sensitive data
+    in the product.
+    """
+    lookup_failed = False
+
+    if db:
+        try:
+            res = (
+                db.table("reports")
+                .select("id,user_id,team_id")
+                .eq("id", report_id)
+                .maybe_single()
+                .execute()
+            )
+            if res and res.data:
+                if not user_can_access_report(db, res.data, user_id):
+                    raise NotFoundError(f"Report '{report_id}' not found.")
+                return
+        except NotFoundError:
+            raise
+        except Exception as e:
+            logger.warning(f"Co-pilot access check via DB failed for {report_id}: {e}")
+            lookup_failed = True
+
+    # Local path: the in-process copy first, then the durable store.
+    mem_report = _jobs.get(f"report_{report_id}")
+    if isinstance(mem_report, dict) and mem_report:
+        if mem_report.get("_owner_user_id") != user_id:
+            raise NotFoundError(f"Report '{report_id}' not found.")
+        return
+
+    if local_db.get_report(report_id, user_id) is not None:
+        return
+
+    if lookup_failed:
+        # The report lives in Supabase and Supabase did not answer. Telling a
+        # recruiter their candidate does not exist would be a lie, and it is
+        # the kind of lie they act on — the same reason the reports list
+        # raises instead of returning an empty page during an outage.
+        raise CopilotUnavailable()
+
+    raise NotFoundError(f"Report '{report_id}' not found.")
+
+
 @router.get("/{report_id}/copilot", tags=["Interview Co-Pilot"])
 async def get_copilot_data(
     report_id: str,
@@ -51,33 +122,32 @@ async def get_copilot_data(
     db=Depends(get_db),
 ):
     """Retrieve saved interview co-pilot notes, scorecard, and custom questions."""
+    user_id = current_user["id"]
+    _assert_can_access(report_id, user_id, db)
+
     if db:
         try:
             res = (
                 db.table("reports")
-                .select("id,user_id,report_data")
+                .select("report_data")
                 .eq("id", report_id)
                 .maybe_single()
                 .execute()
             )
             if res and res.data:
-                if not user_can_access_report(db, res.data, current_user["id"]):
-                    raise NotFoundError(f"Report '{report_id}' not found.")
-                report_data = res.data.get("report_data") or {}
-                copilot_data = report_data.get("copilot_data") or _copilot_store.get(report_id) or {}
-                return {"report_id": report_id, "copilot": copilot_data}
+                data = as_dict(res.data.get("report_data")).get("copilot_data")
+                if data:
+                    return {"report_id": report_id, "copilot": data}
         except Exception as e:
             logger.warning(f"Co-pilot DB get failed for report {report_id}: {e}")
 
-    # Fallback in-memory lookup
     mem_report = _jobs.get(f"report_{report_id}")
-    if mem_report and mem_report.get("_owner_user_id") == current_user["id"]:
-        copilot_data = mem_report.get("copilot_data") or _copilot_store.get(report_id) or {}
-        return {"report_id": report_id, "copilot": copilot_data}
+    if mem_report and mem_report.get("copilot_data"):
+        return {"report_id": report_id, "copilot": mem_report["copilot_data"]}
 
-    stored = _copilot_store.get(report_id)
-    if stored:
-        return {"report_id": report_id, "copilot": stored}
+    persisted = local_db.get_copilot(report_id, user_id)
+    if persisted:
+        return {"report_id": report_id, "copilot": persisted}
 
     return {"report_id": report_id, "copilot": {}}
 
@@ -90,40 +160,51 @@ async def save_copilot_data(
     db=Depends(get_db),
 ):
     """Save live interview scorecard ratings, custom questions, and notes."""
+    user_id = current_user["id"]
+    _assert_can_access(report_id, user_id, db)
+
     payload = {
         "scorecard": [s.model_dump() for s in body.scorecard],
         "custom_questions": [q.model_dump() for q in body.custom_questions],
         "interview_notes": body.interview_notes,
         "recommendation_override": body.recommendation_override,
-        "updated_by": current_user["id"],
-        "updated_at": __import__("time").time(),
+        "updated_by": user_id,
+        "updated_at": time.time(),
     }
 
-    _copilot_store[report_id] = payload
+    saved = False
 
     if db:
         try:
             res = (
                 db.table("reports")
-                .select("id,user_id,report_data")
+                .select("report_data")
                 .eq("id", report_id)
                 .maybe_single()
                 .execute()
             )
             if res and res.data:
-                if not user_can_access_report(db, res.data, current_user["id"]):
-                    raise NotFoundError(f"Report '{report_id}' not found.")
-
-                report_data = dict(res.data.get("report_data") or {})
+                report_data = dict(as_dict(res.data.get("report_data")))
                 report_data["copilot_data"] = payload
-
                 db.table("reports").update({"report_data": report_data}).eq("id", report_id).execute()
+                saved = True
         except Exception as e:
             logger.warning(f"Co-pilot DB save failed for report {report_id}: {e}")
 
-    mem_report = _jobs.get(f"report_{report_id}")
-    if mem_report:
-        mem_report["copilot_data"] = payload
+    # Durable local store — this is what survives a restart. The in-memory
+    # copy below is only a cache for this process.
+    if local_db.save_copilot(report_id, user_id, payload):
+        saved = True
 
-    logger.info(f"Co-pilot data saved | report={report_id} user={current_user['id']}")
+    mem_report = _jobs.get(f"report_{report_id}")
+    if mem_report is not None:
+        mem_report["copilot_data"] = payload
+        saved = True
+
+    if not saved:
+        raise HireLensException(
+            "Could not save your interview notes. Please try again."
+        )
+
+    logger.info(f"Co-pilot data saved | report={report_id} user={user_id}")
     return {"status": "ok", "report_id": report_id, "copilot": payload}

@@ -1,20 +1,44 @@
 "use client";
+import { Badge } from "@/components/ui/Badge";
 
 /**
- * VerdictStamp / VerdictChip — Modern, sleek status indicator chips.
+ * Verdict chips. These map the backend's `recommendation` field to a label a
+ * recruiter can act on.
+ *
+ * Wording note: the labels are deliberately investigative ("Needs review"),
+ * not adjudicating ("Rejected"). HireLens is decision support — the verdict
+ * says what a human should do next, never what the outcome should be.
  */
-
 export type VerdictKind = "recommended" | "manual_review" | "high_risk";
 
-const VERDICT_META: Record<VerdictKind, { label: string; color: string; bg: string; border: string; dot: string }> = {
-  recommended:   { label: "Recommended",  color: "#10B981", bg: "rgba(16, 185, 129, 0.12)", border: "rgba(16, 185, 129, 0.3)", dot: "#10B981" },
-  manual_review: { label: "Needs Review", color: "#F59E0B", bg: "rgba(245, 158, 11, 0.12)", border: "rgba(245, 158, 11, 0.3)", dot: "#F59E0B" },
-  high_risk:     { label: "High Risk",    color: "#EF4444", bg: "rgba(239, 68, 68, 0.12)",  border: "rgba(239, 68, 68, 0.3)",  dot: "#EF4444" },
+const VERDICT_META: Record<
+  VerdictKind,
+  { label: string; tone: "positive" | "caution" | "critical"; hint: string }
+> = {
+  recommended: {
+    label: "Recommended",
+    tone: "positive",
+    hint: "Claims are consistent and evidenced — proceed to your normal screen.",
+  },
+  manual_review: {
+    label: "Needs review",
+    tone: "caution",
+    hint: "Specific claims need clarification before you proceed.",
+  },
+  high_risk: {
+    label: "High risk",
+    tone: "critical",
+    hint: "Multiple claims could not be reconciled — verify directly before proceeding.",
+  },
 };
 
-export function verdictFromRecommendation(rec: string): VerdictKind {
+export function verdictFromRecommendation(rec: string | null | undefined): VerdictKind {
   if (rec === "recommended" || rec === "manual_review" || rec === "high_risk") return rec;
   return "manual_review";
+}
+
+export function verdictHint(verdict: VerdictKind): string {
+  return VERDICT_META[verdict].hint;
 }
 
 export function VerdictStamp({
@@ -22,32 +46,13 @@ export function VerdictStamp({
   size = "md",
 }: {
   verdict: VerdictKind;
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md";
 }) {
-  const meta = VERDICT_META[verdict] || VERDICT_META.manual_review;
-  const fontSize = size === "lg" ? 13 : size === "sm" ? 10 : 11;
-  const padding = size === "lg" ? "6px 14px" : size === "sm" ? "2px 8px" : "4px 11px";
-
+  const meta = VERDICT_META[verdict] ?? VERDICT_META.manual_review;
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        color: meta.color,
-        background: meta.bg,
-        border: `1px solid ${meta.border}`,
-        borderRadius: 9999,
-        fontSize,
-        padding,
-        fontWeight: 600,
-        letterSpacing: "0.025em",
-        whiteSpace: "nowrap",
-      }}
-    >
-      <span style={{ width: 6, height: 6, borderRadius: "50%", background: meta.dot, boxShadow: `0 0 8px ${meta.dot}` }} />
+    <Badge tone={meta.tone} dot className={size === "md" ? "px-2.5 py-1 text-xs" : undefined}>
       {meta.label}
-    </span>
+    </Badge>
   );
 }
 

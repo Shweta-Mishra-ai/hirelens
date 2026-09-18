@@ -79,12 +79,20 @@ def test_e2e_health_check_and_diagnostics():
 
 
 def test_e2e_auth_signup_login_flow():
-    login_res = client.post(
-        "/api/v1/auth/login",
-        json={"email": "e2e_recruiter@example.com", "password": "Password123!"},
+    """Signs up here rather than relying on an earlier test having done it —
+    a test that only passes when its neighbour ran first fails the moment
+    anyone runs a subset, which says nothing about the code."""
+    credentials = {"email": "e2e_login_flow@example.com", "password": "Password123!"}
+
+    signup_res = client.post(
+        "/api/v1/auth/signup",
+        json={**credentials, "full_name": "E2E Login", "company": "E2E Enterprise HR"},
     )
-    assert login_res.status_code == 200
-    assert login_res.json()["user"]["email"] == "e2e_recruiter@example.com"
+    assert signup_res.status_code in (200, 409), signup_res.text
+
+    login_res = client.post("/api/v1/auth/login", json=credentials)
+    assert login_res.status_code == 200, login_res.text
+    assert login_res.json()["user"]["email"] == credentials["email"]
 
 
 @patch("app.services.ai.engine.engine.run", new_callable=AsyncMock)
@@ -98,12 +106,18 @@ def test_e2e_single_resume_analysis_and_report_flow(mock_parser, mock_analysis, 
         "recommendation": "recommended",
         "credibility_score": {"score": 88, "confidence": "high", "sub_scores": {}},
         "ai_content_analysis": {"likelihood": "low"},
-        "talent_velocity": {
-            "growth_velocity_index": 85,
-            "trajectory_stage": "Accelerating",
-            "promotion_cadence_months": 18,
-            "retention_stability_score": 90,
-            "note": "Accelerating trajectory",
+        "career_trajectory": {
+            "status": "computed",
+            "total_experience_months": 84,
+            "median_tenure_months": 31,
+            "roles_analyzed": 3,
+            "advancement_steps": 2,
+            "months_per_advancement": 42,
+            "gap_months": 0,
+            "retention_stability": 100,
+            "progression_score": 71,
+            "trajectory": "Steady advancement",
+            "basis": "Measured from 3 dated role(s) spanning 7.0 years.",
         },
         "flags": [],
         "positive_signals": [{"title": "FastAPI Master", "description": "Proven experience"}],
@@ -143,12 +157,18 @@ def test_e2e_single_resume_analysis_and_report_flow(mock_parser, mock_analysis, 
         "candidate_email": "jane@example.com",
         "overall_score": 88,
         "recommendation": "recommended",
-        "talent_velocity": {
-            "growth_velocity_index": 85,
-            "trajectory_stage": "Accelerating",
-            "promotion_cadence_months": 18,
-            "retention_stability_score": 90,
-            "note": "Accelerating trajectory",
+        "career_trajectory": {
+            "status": "computed",
+            "total_experience_months": 84,
+            "median_tenure_months": 31,
+            "roles_analyzed": 3,
+            "advancement_steps": 2,
+            "months_per_advancement": 42,
+            "gap_months": 0,
+            "retention_stability": 100,
+            "progression_score": 71,
+            "trajectory": "Steady advancement",
+            "basis": "Measured from 3 dated role(s) spanning 7.0 years.",
         },
         "flags": [],
         "positive_signals": [{"title": "FastAPI Master", "description": "Proven experience"}],
@@ -160,7 +180,7 @@ def test_e2e_single_resume_analysis_and_report_flow(mock_parser, mock_analysis, 
     assert report_res.status_code == 200
     report = report_res.json()
     assert report["candidate_name"] == "Jane Doe"
-    assert "talent_velocity" in report
+    assert "career_trajectory" in report
 
     # 4. Submit Recruiter Decision
     decision_res = client.post(
@@ -180,17 +200,56 @@ def test_e2e_single_resume_analysis_and_report_flow(mock_parser, mock_analysis, 
     assert len(draft_res.json()["body"]) > 10
 
 
-def test_e2e_copilot_and_talent_analytics_flow():
-    login_res = client.post(
-        "/api/v1/auth/login",
-        json={"email": "e2e_recruiter@example.com", "password": "Password123!"},
+def _auth_headers(email="e2e_recruiter@example.com", password="Password123!"):
+    """
+    A signed-in recruiter, regardless of what ran before.
+
+    Several tests in this file used to call login directly and index
+    ["access_token"], which only worked if an earlier test in the same
+    session had already signed the account up. That made the file
+    order-dependent: running one test alone, or reordering them, produced a
+    bare KeyError instead of a useful failure.
+    """
+    res = client.post(
+        "/api/v1/auth/signup",
+        json={"email": email, "password": password, "full_name": "E2E Recruiter"},
     )
-    token = login_res.json()["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    if res.status_code == 409:
+        res = client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    assert res.status_code == 200, res.text
+    return {"Authorization": f"Bearer {res.json()['access_token']}"}
+
+
+def _owned_report(headers, report_id=None):
+    """Create a report owned by the caller, so access checks have something real."""
+    import uuid as _uuid
+
+    from app.api.v1.endpoints.analysis import _jobs, _stamp_report_metadata, _persist_report_locally
+    from app.core.security import decode_token
+
+    user_id = decode_token(headers["Authorization"][7:])["sub"]
+    rid = report_id or str(_uuid.uuid4())
+    blob = {
+        "candidate": {"name": "Jane Doe"},
+        "credibility": {"overall": 88, "recommendation": "recommended", "sub_scores": {}},
+        "flags": [],
+        "summary": "Test report.",
+    }
+    _stamp_report_metadata(blob, user_id=user_id, filename="jane.pdf", report_id=rid)
+    _persist_report_locally(blob, report_id=rid, user_id=user_id, filename="jane.pdf")
+    _jobs[f"report_{rid}"] = blob
+    return rid
+
+
+def test_e2e_copilot_and_talent_analytics_flow():
+    headers = _auth_headers()
+    # Co-pilot data hangs off a report, and every path is gated on owning it,
+    # so the test needs a real one rather than an invented id.
+    rid = _owned_report(headers)
 
     # 1. Feature A: Save Interview Co-Pilot Scorecard & Notes
     copilot_save = client.post(
-        "/api/v1/reports/rep_test123/copilot",
+        f"/api/v1/reports/{rid}/copilot",
         headers=headers,
         json={
             "scorecard": [
@@ -207,7 +266,7 @@ def test_e2e_copilot_and_talent_analytics_flow():
     assert copilot_save.status_code == 200
 
     # 2. Get Co-Pilot Data
-    copilot_get = client.get("/api/v1/reports/rep_test123/copilot", headers=headers)
+    copilot_get = client.get(f"/api/v1/reports/{rid}/copilot", headers=headers)
     assert copilot_get.status_code == 200
     assert len(copilot_get.json()["copilot"]["scorecard"]) == 2
 
@@ -219,12 +278,7 @@ def test_e2e_copilot_and_talent_analytics_flow():
 
 @patch("app.services.parser.document_parser.extract_text", return_value=REALISTIC_RESUME)
 def test_e2e_bulk_upload_ranking_duplicate_flow(mock_extract):
-    login_res = client.post(
-        "/api/v1/auth/login",
-        json={"email": "e2e_recruiter@example.com", "password": "Password123!"},
-    )
-    token = login_res.json()["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _auth_headers()
 
     files = [
         ("files", ("alice.pdf", io.BytesIO(MOCK_PDF), "application/pdf")),
@@ -241,12 +295,7 @@ def test_e2e_bulk_upload_ranking_duplicate_flow(mock_extract):
 
 @patch("app.services.parser.document_parser.extract_text", return_value=REALISTIC_RESUME)
 def test_e2e_job_description_match_flow(mock_extract):
-    login_res = client.post(
-        "/api/v1/auth/login",
-        json={"email": "e2e_recruiter@example.com", "password": "Password123!"},
-    )
-    token = login_res.json()["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _auth_headers()
 
     match_res = client.post(
         "/api/v1/match/upload",
@@ -259,17 +308,20 @@ def test_e2e_job_description_match_flow(mock_extract):
 
 
 def test_e2e_team_workspace_collaboration_flow():
-    login_res = client.post(
-        "/api/v1/auth/login",
-        json={"email": "e2e_recruiter@example.com", "password": "Password123!"},
-    )
-    token = login_res.json()["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = _auth_headers()
 
     # Mock DB for team collaboration operations
     mock_db = MagicMock()
     mock_row = MagicMock()
-    mock_row.data = {"id": "rep_test123", "user_id": login_res.json()["user"]["id"], "team_id": "team_1", "candidate_name": "Test Candidate"}
+    from app.core.security import decode_token
+
+    acting_user_id = decode_token(headers["Authorization"][7:])["sub"]
+    mock_row.data = {
+        "id": "rep_test123",
+        "user_id": acting_user_id,
+        "team_id": "team_1",
+        "candidate_name": "Test Candidate",
+    }
     mock_db.table.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value = mock_row
     mock_db.table.return_value.insert.return_value.execute.return_value = MagicMock()
 

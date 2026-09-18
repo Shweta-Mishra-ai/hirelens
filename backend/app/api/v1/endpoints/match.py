@@ -21,13 +21,15 @@ from functools import partial
 from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
+from app.core.shapes import as_dict, as_list, as_score, as_str, normalize_report
 from app.core.config import settings
+from app.core import local_db
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import (
     NotFoundError, ForbiddenError, EmptyBatch, TooManyFiles,
     TooManyBatches, FileTooLarge, InvalidJobDescription,
 )
-from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload
+from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload, require_analysis_available
 from app.services.ai.engine import engine
 from app.services.parser.document_parser import extract_text
 from app.services.queue import batch_store
@@ -38,9 +40,48 @@ router = APIRouter()
 _match_semaphore = asyncio.Semaphore(settings.BULK_CONCURRENCY)
 
 
-async def _resolve_jd_text(jd_text: str | None, jd_file: UploadFile | None) -> str:
-    """Accepts either pasted JD text or an uploaded JD file (PDF/DOCX/TXT)."""
-    if jd_text and jd_text.strip():
+async def _resolve_jd_text(
+    jd_text: str | None,
+    jd_file: UploadFile | None,
+    saved_jd_id: str | None = None,
+    user_id: str | None = None,
+    db=None,
+) -> str:
+    """
+    The job description to rank against: pasted, uploaded, or one saved
+    earlier.
+
+    A saved description is read by id and scoped to its owner, so the id alone
+    never reaches someone else's text. It is checked first because it is the
+    most specific thing the caller can ask for.
+    """
+    if saved_jd_id and user_id:
+        record = None
+        if db:
+            try:
+                res = (
+                    db.table("saved_jds")
+                    .select("jd_text")
+                    .eq("id", saved_jd_id)
+                    .eq("user_id", user_id)
+                    .maybe_single()
+                    .execute()
+                )
+                record = (res.data or None) if res else None
+            except Exception as e:
+                logger.warning(f"Saved JD {saved_jd_id} unreadable in Supabase: {e}")
+        if not record:
+            record = local_db.get_jd(saved_jd_id, user_id)
+        if not record or not (record.get("jd_text") or "").strip():
+            # Deliberately not a silent fall-through to whatever else was sent.
+            # Ranking a shortlist against the wrong description produces a
+            # confident, wrong answer about every candidate on it.
+            raise NotFoundError(
+                "That saved job description could not be found. Pick another, or paste the text."
+            )
+        local_db.touch_jd(saved_jd_id, user_id)
+        text = (record["jd_text"] or "").strip()
+    elif jd_text and jd_text.strip():
         text = jd_text.strip()
     elif jd_file is not None:
         contents = await jd_file.read()
@@ -70,6 +111,7 @@ async def match_upload(
     files: list[UploadFile] = File(..., description=f"Up to {settings.BULK_MAX_FILES} PDF/DOCX resumes"),
     jd_text: str | None = Form(None, description="Job description pasted as text"),
     jd_file: UploadFile | None = File(None, description="Job description as PDF/DOCX/TXT"),
+    saved_jd_id: str | None = Form(None, description="Id of a previously saved job description"),
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
     redis=Depends(get_redis),
@@ -83,7 +125,7 @@ async def match_upload(
     batch_store.cleanup_old_batches()
 
     user_id = current_user["id"]
-    resolved_jd = await _resolve_jd_text(jd_text, jd_file)
+    resolved_jd = await _resolve_jd_text(jd_text, jd_file, saved_jd_id, user_id, db)
 
     if not files:
         raise EmptyBatch()
@@ -94,8 +136,13 @@ async def match_upload(
     if active >= settings.BULK_MAX_CONCURRENT_BATCHES_PER_USER:
         raise TooManyBatches(settings.BULK_MAX_CONCURRENT_BATCHES_PER_USER)
 
+    require_analysis_available()
     _check_rate_limit(redis, user_id)
 
+    # See bulk.py for why the cap is enforced during the read rather than
+    # after it: checking the total once every file is already buffered means
+    # the process can be OOM-killed before it gets to reject anything.
+    max_total_bytes = settings.BULK_MAX_TOTAL_MB * 1024 * 1024
     valid_items: list[dict] = []
     job_ids: list[str] = []
     total_bytes = 0
@@ -104,9 +151,23 @@ async def match_upload(
         contents = await f.read()
         filename = (f.filename or "resume").strip()
         mime = (f.content_type or "").lower().strip()
+        total_bytes += len(contents)
+
+        if total_bytes > max_total_bytes:
+            for item in valid_items:
+                item["bytes"] = b""
+            valid_items.clear()
+            del contents
+            for jid in job_ids:
+                _jobs.pop(jid, None)
+            logger.warning(
+                f"JD match batch rejected mid-read | user={user_id} "
+                f"at={total_bytes / (1024 * 1024):.0f}MB cap={settings.BULK_MAX_TOTAL_MB}MB"
+            )
+            raise FileTooLarge(settings.BULK_MAX_TOTAL_MB)
+
         job_id = str(uuid.uuid4())
         job_ids.append(job_id)
-        total_bytes += len(contents)
 
         try:
             effective_mime = validate_upload(contents, filename, mime)
@@ -132,11 +193,6 @@ async def match_upload(
             "mime": effective_mime, "filename": filename,
         })
 
-    total_mb = total_bytes / (1024 * 1024)
-    if total_mb > settings.BULK_MAX_TOTAL_MB:
-        for jid in job_ids:
-            _jobs.pop(jid, None)
-        raise FileTooLarge(settings.BULK_MAX_TOTAL_MB)
 
     if not valid_items:
         raise EmptyBatch()
@@ -213,14 +269,17 @@ def _get_report_full(report_id: str, db) -> dict | None:
                 .execute()
             )
             if res.data:
-                return res.data
+                row = dict(res.data)
+                row["report_data"] = normalize_report(row.get("report_data"))
+                return row
         except Exception as e:
             logger.warning(f"Match ranking DB lookup failed for {report_id}: {e}")
 
     data = _jobs.get(f"report_{report_id}")
-    if data:
-        cred = data.get("credibility") or {}
-        cand = data.get("candidate") or {}
+    if isinstance(data, dict) and data:
+        data = normalize_report(data)
+        cred = as_dict(data.get("credibility"))
+        cand = as_dict(data.get("candidate"))
         return {
             "id": report_id,
             "file_name": data.get("file_name"),
@@ -259,19 +318,25 @@ def _build_match_status(batch: dict, db) -> dict:
         if job["status"] == "complete" and job["report_id"]:
             full = _get_report_full(job["report_id"], db)
             if full:
-                rd = full.get("report_data") or {}
-                jd = rd.get("jd_match") or {}
+                # Every field here comes out of a stored blob, so none of it
+                # can be trusted to have the type it should. int("seventy")
+                # raises, and `list("python")` quietly becomes six
+                # single-letter skills on the candidate's card — the same
+                # string-explosion the engine was fixed for. See
+                # app/core/shapes.py.
+                rd = as_dict(full.get("report_data"))
+                jd = as_dict(rd.get("jd_match"))
                 ranking.append({
                     "report_id": job["report_id"],
-                    "file_name": full.get("file_name") or job["file_name"],
-                    "candidate_name": full.get("candidate_name") or "Unknown",
-                    "overall_score": int(full.get("overall_score") or 0),
-                    "recommendation": full.get("recommendation") or "manual_review",
-                    "match_percent": int(jd.get("match_percent") or 0),
-                    "matching_skills": list(jd.get("matching_skills") or []),
-                    "missing_skills": list(jd.get("missing_skills") or []),
-                    "verdict": jd.get("verdict") or "unknown",
-                    "rationale": jd.get("rationale") or "",
+                    "file_name": as_str(full.get("file_name")) or job["file_name"],
+                    "candidate_name": as_str(full.get("candidate_name")) or "Unknown",
+                    "overall_score": as_score(full.get("overall_score")),
+                    "recommendation": as_str(full.get("recommendation")) or "manual_review",
+                    "match_percent": as_score(jd.get("match_percent")),
+                    "matching_skills": as_list(jd.get("matching_skills")),
+                    "missing_skills": as_list(jd.get("missing_skills")),
+                    "verdict": as_str(jd.get("verdict")) or "unknown",
+                    "rationale": as_str(jd.get("rationale")),
                 })
 
     ranking.sort(key=lambda r: r["match_percent"], reverse=True)

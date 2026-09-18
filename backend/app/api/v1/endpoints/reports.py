@@ -1,10 +1,13 @@
 """
 HireLens — Reports API
-Fixed:
-- All Supabase calls are SYNC (no await)
-- Proper error handling on each DB call
-- ForbiddenError not swallowed
-- Decision validation with proper 422
+
+Reading, listing, filtering, exporting and deleting stored reports, plus the
+recruiter's decision on a candidate.
+
+Two rules run through the whole module. Supabase calls are synchronous — the
+v2 client is not awaitable — and every one of them is wrapped, because a
+database that is briefly unavailable has to produce an error the UI can
+retry rather than an empty list that reads as "your candidates are gone".
 """
 
 import re
@@ -14,9 +17,22 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
 from app.core.dependencies import get_current_user, get_db, get_redis
-from app.core.exceptions import NotFoundError, ForbiddenError, HireLensException, ValidationError
+from app.core.exceptions import (
+    NotFoundError, ForbiddenError, HireLensException, ValidationError,
+    StorageWriteFailed,
+)
 from app.core.rate_limit import check_rate_limit
 from app.core.config import settings
+from app.core import local_db
+from app.services import directory
+from app.core.shapes import (
+    as_dict,
+    as_score,
+    as_list,
+    as_str,
+    normalize_report,
+    report_summary_row,
+)
 from app.api.v1.endpoints.analysis import _jobs  # in-memory fallback store
 from app.services.teams.access import user_can_access_report
 
@@ -68,6 +84,57 @@ SORT_MAP = {
 }
 
 
+def _sort_key(column: str):
+    """
+    A comparison key that cannot raise, whatever the rows hold.
+
+    Every column has to yield exactly one type. The obvious `row.get(col) or ""`
+    does not: for a score column it turns a legitimate 0 into a string, and
+    Python will not compare a string with an int — so one candidate scoring
+    zero, which is what a failed or genuinely poor analysis produces, would
+    take down sorting for the whole list.
+    """
+    if column == "overall_score":
+        return lambda row: as_score(row.get(column))
+    return lambda row: as_str(row.get(column)).lower()
+
+
+def _local_reports_for_user(user_id: str) -> list[dict]:
+    """
+    Every report we can see for this user without Supabase: the durable
+    SQLite rows, plus anything this process analysed that has not been
+    persisted (a storage failure, or a report written by an older build).
+
+    SQLite is the primary source here — `_jobs` is a process-local dict that
+    empties on restart, so relying on it alone is what made reports vanish
+    after a Render sleep.
+    """
+    by_id: dict[str, dict] = {}
+
+    for row in local_db.list_reports(user_id):
+        by_id[row["id"]] = {
+            "id": row["id"],
+            "file_name": row.get("file_name") or "",
+            "candidate_name": row.get("candidate_name") or "Unknown",
+            "overall_score": row.get("overall_score") or 0,
+            "recommendation": row.get("recommendation") or "manual_review",
+            "created_at": row.get("created_at") or "",
+            "recruiter_decision": row.get("recruiter_decision"),
+            # Skill text is only used for search; the summary row doesn't
+            # carry it, so in-memory entries below can enrich it.
+            "_skills_text": "",
+        }
+
+    for mem in _mem_reports_for_user(user_id):
+        existing = by_id.get(mem["id"])
+        if existing is None:
+            by_id[mem["id"]] = mem
+        elif mem.get("_skills_text"):
+            existing["_skills_text"] = mem["_skills_text"]
+
+    return list(by_id.values())
+
+
 def _mem_reports_for_user(user_id: str) -> list[dict]:
     out = []
     for key, v in _jobs.items():
@@ -75,25 +142,29 @@ def _mem_reports_for_user(user_id: str) -> list[dict]:
             continue
         # Reports are stamped with `_owner_user_id` at write time (see
         # analysis.py's _run_analysis and verify.py's _persist_verification).
-        # This used to check the wrong key (`user_id`, which report blobs
-        # never actually had) and treated a missing owner as "visible to
-        # everyone" — which meant, in practice, that this endpoint returned
-        # every user's reports to every user whenever the DB path wasn't
-        # taken. Fail closed: no owner stamp means nobody sees it here.
+        # That exact key is the ownership test, and it fails closed: a blob
+        # with no owner stamp is visible to nobody here, never to everybody.
         if v.get("_owner_user_id") != user_id:
             continue
-        cred = v.get("credibility") or {}
-        cand = v.get("candidate") or {}
+        # Shapes are coerced rather than trusted. This loop runs over every
+        # report the user owns, so a single blob with a field of the wrong
+        # type would otherwise take down the whole list and leave the
+        # dashboard showing no candidates at all. See app/core/shapes.py.
+        row = report_summary_row(
+            key.replace("report_", "", 1),
+            v,
+            # `_owner_file_name` is the legacy key — report blobs written by
+            # earlier versions only carry that one. See analysis.py's
+            # _stamp_report_metadata().
+            as_str(v.get("_owner_file_name")),
+        )
+        skills = as_dict(v.get("skills"))
         out.append({
-            "id": key.replace("report_", "", 1),
-            "file_name": v.get("file_name"),
-            "candidate_name": cand.get("name") or "Unknown",
-            "overall_score": cred.get("overall", 0),
-            "recommendation": cred.get("recommendation", "manual_review"),
-            "created_at": v.get("created_at") or "",
+            **row,
+            "created_at": as_str(v.get("created_at")),
             "recruiter_decision": v.get("recruiter_decision"),
             "_skills_text": " ".join(
-                (v.get("skills") or {}).get("all_claimed") or []
+                str(x) for x in as_list(skills.get("all_claimed"))
             ).lower(),
         })
     return out
@@ -113,7 +184,7 @@ async def list_reports(
     sort_col, sort_desc = SORT_MAP.get(sort, SORT_MAP["newest"])
 
     if not db:
-        items = _mem_reports_for_user(current_user["id"])
+        items = _local_reports_for_user(current_user["id"])
         if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
             items = [r for r in items if r["recommendation"] == recommendation]
         if search:
@@ -126,7 +197,7 @@ async def list_reports(
             ]
         for r in items:
             r.pop("_skills_text", None)
-        items.sort(key=lambda r: (r.get(sort_col) or ""), reverse=sort_desc)
+        items.sort(key=_sort_key(sort_col), reverse=sort_desc)
 
         total = len(items)
         offset = (page - 1) * limit
@@ -148,12 +219,10 @@ async def list_reports(
         if search:
             s = _sanitize_search(search)
             # NOTE: .or_() only builds the filter — it makes no network call,
-            # so it can't itself raise a PostgREST error. The previous
-            # try/except here was dead code; any actual failure (e.g. an
-            # unsupported JSON-path filter) only surfaces from .execute()
-            # below, which is now wrapped separately so search failures are
-            # distinguishable from "no results" instead of silently
-            # returning an empty list either way.
+            # so it cannot raise a PostgREST error and wrapping it here would
+            # catch nothing. A real failure (an unsupported JSON-path filter,
+            # say) surfaces from .execute() below, which is wrapped separately
+            # so a failed search is distinguishable from an empty one.
             query = query.or_(
                 f"candidate_name.ilike.%{s}%,"
                 f"file_name.ilike.%{s}%,"
@@ -210,11 +279,10 @@ async def list_reports(
             "pages": max(1, (total + limit - 1) // limit),
         }
     except Exception as e:
-        # This used to return {"reports": [], "total": 0} — indistinguishable
-        # from "you have no reports yet" in the UI. A DB outage should never
-        # look identical to a brand-new, empty account; the frontend needs a
-        # real error here so it can show "couldn't load, retry" instead of
-        # a false empty state.
+        # Raise, rather than returning {"reports": [], "total": 0}. A database
+        # outage must never look identical to a brand-new empty account: the
+        # frontend needs a real error here so it can offer a retry instead of
+        # telling a recruiter their candidates are gone.
         logger.error(f"list_reports failed for user {current_user['id']}: {e}")
         raise HireLensException(
             "Could not load your reports right now due to a database error. Please try again."
@@ -250,7 +318,7 @@ async def get_talent_analytics(
 
     if not items:
         # Fallback to in-memory items for user
-        items = _mem_reports_for_user(current_user["id"])
+        items = _local_reports_for_user(current_user["id"])
 
     total = len(items)
     if total == 0:
@@ -274,7 +342,7 @@ async def get_talent_analytics(
         dist[rec] = dist.get(rec, 0) + 1
 
         rdata = i.get("report_data") or i
-        sk = (rdata.get("skills") or {}).get("all_claimed") or []
+        sk = as_list(as_dict(rdata.get("skills")).get("all_claimed"))
         for s in sk:
             if isinstance(s, str) and s.strip():
                 clean_s = s.strip().title()
@@ -319,7 +387,7 @@ async def export_all_reports_csv(
     CAP = 1000
 
     if not db:
-        items = _mem_reports_for_user(current_user["id"])
+        items = _local_reports_for_user(current_user["id"])
         if recommendation and recommendation in ("recommended", "manual_review", "high_risk"):
             items = [r for r in items if r["recommendation"] == recommendation]
         if search:
@@ -332,7 +400,7 @@ async def export_all_reports_csv(
             ]
         for r in items:
             r.pop("_skills_text", None)
-        items.sort(key=lambda r: (r.get(sort_col) or ""), reverse=sort_desc)
+        items.sort(key=_sort_key(sort_col), reverse=sort_desc)
         items = items[:CAP]
     else:
         try:
@@ -399,7 +467,7 @@ async def get_report(
                     raise ForbiddenError()
 
                 # Merge report_data with top-level fields
-                report = dict(row.get("report_data") or {})
+                report = normalize_report(row.get("report_data"))
                 report["id"] = report_id
                 report["created_at"] = row.get("created_at")
                 report["file_name"] = row.get("file_name") or report.get("file_name", "")
@@ -414,13 +482,23 @@ async def get_report(
 
     # ── Fallback: in-memory store ─────────────────────────────────────────────
     # Same ownership rule as the DB path above: no owner stamp means nobody
-    # can read it here, not "everybody can". See _mem_reports_for_user()
-    # above for the fuller explanation of why this was previously fail-open.
+    # can read it here, not "everybody can". See _mem_reports_for_user().
     data = _jobs.get(f"report_{report_id}")
-    if data:
+    if isinstance(data, dict) and data:
         if data.get("_owner_user_id") != current_user["id"]:
             raise ForbiddenError()
-        return data
+        return normalize_report(data)
+
+    # ── Fallback: durable local store ─────────────────────────────────────────
+    # Reached after a restart, when the in-memory copy is gone. Ownership is
+    # part of the query, so a wrong owner and a missing row are
+    # indistinguishable from here.
+    persisted = local_db.get_report(report_id, current_user["id"])
+    if persisted:
+        persisted = normalize_report(persisted)
+        # Warm this process's cache so repeat reads skip the disk.
+        _jobs[f"report_{report_id}"] = persisted
+        return persisted
 
     raise NotFoundError(f"Report '{report_id}' not found.")
 
@@ -433,17 +511,15 @@ async def submit_decision(
     db=Depends(get_db),
 ):
     """
-    Record recruiter's hiring decision.
-    This feeds the model improvement feedback loop.
+    Record the recruiter's hiring decision. This feeds the model-improvement
+    feedback loop.
 
-    This used to always return {"status": "ok"} — even when the DB write
-    raised an exception, and even when the update matched zero rows (wrong
-    report_id, or a report belonging to someone else). Both cases told the
-    recruiter "recorded" when nothing was saved. It also never wrote
-    anything to the in-memory fallback store at all, so a decision made
-    while the DB was unavailable was silently discarded every time. Both
-    are fixed below: DB errors and zero-row matches now raise a real error,
-    and the in-memory path actually persists the decision.
+    "Recorded" is only ever reported when something was actually written. A
+    failed write raises, and so does an update that matched zero rows — a
+    wrong report_id, or a report belonging to someone else — because both of
+    those would otherwise tell a recruiter their decision was saved when it
+    was not. The fallback store is written too, so a decision made while the
+    database is unavailable is still kept.
     """
     saved = False
 
@@ -472,8 +548,12 @@ async def submit_decision(
 
     if not saved:
         # Either there's no DB configured, or the DB update matched zero
-        # rows. Fall back to (or additionally use) the in-memory store,
-        # but only if this user actually owns the report there.
+        # rows. Write to the durable local store first — the in-memory copy
+        # below is only a cache for this process, and a decision that exists
+        # solely there is lost on the next restart.
+        if local_db.set_report_decision(report_id, current_user["id"], body.decision):
+            saved = True
+
         mem_key = f"report_{report_id}"
         existing = _jobs.get(mem_key)
         if existing is not None and existing.get("_owner_user_id") == current_user["id"]:
@@ -490,7 +570,9 @@ async def submit_decision(
     return {
         "status": "ok",
         "decision": body.decision,
-        "message": "Decision recorded. This helps improve AI accuracy.",
+        # No claim about model improvement here: recruiter decisions are
+        # stored against the report and are not used for training.
+        "message": "Decision recorded on this candidate's file.",
     }
 
 
@@ -508,11 +590,13 @@ async def get_notify_draft(
     from app.services.email.sender import build_decision_email
 
     report = await get_report(report_id, current_user, db)  # reuses access checks + fallback
-    candidate = report.get("candidate") or {}
+    candidate = as_dict(report.get("candidate"))
     candidate_email = candidate.get("email")
     candidate_name = candidate.get("name") or "Candidate"
 
-    sender_name = current_user.get("full_name") or current_user.get("email") or "The Hiring Team"
+    sender_name = directory.get_display_name(
+        db, current_user["id"], current_user.get("email") or "The Hiring Team"
+    )
     team_name = "HireLens"
     if db:
         try:
@@ -557,7 +641,7 @@ async def notify_candidate(
     check_rate_limit(redis, f"notify:{current_user['id']}", settings.NOTIFY_RATE_LIMIT_PER_MINUTE)
 
     report = await get_report(report_id, current_user, db)
-    candidate = report.get("candidate") or {}
+    candidate = as_dict(report.get("candidate"))
     candidate_email = candidate.get("email")
 
     if not candidate_email:
@@ -623,14 +707,26 @@ async def delete_report(
             logger.warning(f"Delete failed for {report_id}: {e}")
 
     # Also remove from in-memory — but only if this user actually owns it.
-    # This used to pop() unconditionally: any authenticated user could
-    # delete any other user's in-memory report just by guessing/obtaining
-    # its ID, with no ownership check at all.
+    # An unconditional pop() here would let any authenticated user delete
+    # anyone else's report from the fallback store knowing only its id.
     mem_key = f"report_{report_id}"
     existing = _jobs.get(mem_key)
     if existing is not None:
         if existing.get("_owner_user_id") != current_user["id"]:
             raise ForbiddenError()
         _jobs.pop(mem_key, None)
+
+    # And from the durable local store, or the report would reappear on the
+    # next restart when the in-memory cache is repopulated from disk.
+    try:
+        local_db.delete_report(report_id, current_user["id"])
+    except local_db.LocalStoreError:
+        # "Deleted" has to mean deleted. Reporting success here leaves the
+        # report on the dashboard at the next restart, after the recruiter
+        # believed they had removed a candidate's file.
+        logger.error(f"Report deletion failed to persist | report={report_id}")
+        raise StorageWriteFailed(
+            "That report could not be deleted. It is unchanged — please try again."
+        )
 
     logger.info(f"Report deleted | id={report_id} user={current_user['id']}")

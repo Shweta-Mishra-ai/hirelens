@@ -1,12 +1,31 @@
 /**
  * HireLens — Typed API Client
- * Fixed:
- * - Network error handling (fetch can throw TypeError)
- * - Response content-type check before .json()
- * - Timeout handling
- * - 204 No Content handled correctly
+ *
+ * One place where every request is made and every failure is turned into an
+ * APIError the UI can render.
+ *
+ * fetch rejects with a TypeError when the network is down, which is not an
+ * HTTP error and has no status; the content type is checked before parsing,
+ * because an error page is not JSON; requests time out rather than hanging;
+ * and a 204 is not fed to .json().
  */
-import type { Report, AnalysisJob, User, BulkUploadResponse, BatchStatus, MatchBatchStatus, VerificationResult, DuplicateCheckResult, Team, TeamMember, ReportComment, VotesResult } from "@/types";
+import type {
+  TeamInvite,
+  Report,
+  ReportListResponse,
+  PoolAnalytics,
+  AnalysisJob,
+  User,
+  BulkUploadResponse,
+  BatchStatus,
+  MatchBatchStatus,
+  VerificationResult,
+  DuplicateCheckResult,
+  Team,
+  TeamMember,
+  ReportComment,
+  VotesResult,
+} from "@/types";
 
 const BASE =
   (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
@@ -84,16 +103,154 @@ async function req<T>(
   }
 
   if (!res.ok) {
-    const b = typeof body === "object" && body !== null ? (body as Record<string, string>) : {};
-    throw new APIError(
-      res.status,
-      b["error"] ?? "http_error",
-      b["message"] ?? `Server error ${res.status}`,
-      b["request_id"],
-    );
+    throw toAPIError(res.status, body);
   }
 
   return body as T;
+}
+
+/**
+ * FastAPI request-validation failures (422) do not use the app's
+ * `{error, message}` envelope. They return `{detail: [{loc, msg, type}, …]}`,
+ * which the previous implementation had no branch for — so `b["message"]`
+ * was undefined and every validation failure surfaced to the user as the
+ * literal string "Server error 422". Signing up with an address the server
+ * rejected produced that instead of "Enter a valid email address", with no
+ * indication of which field was at fault.
+ */
+export function toAPIError(status: number, body: unknown): APIError {
+  const b = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+
+  // The app's own error envelope, raised by HireLensException handlers.
+  if (typeof b["message"] === "string") {
+    return new APIError(
+      status,
+      typeof b["error"] === "string" ? b["error"] : "http_error",
+      b["message"],
+      typeof b["request_id"] === "string" ? b["request_id"] : undefined,
+    );
+  }
+
+  const detail = b["detail"];
+
+  // FastAPI/Pydantic validation error list.
+  if (Array.isArray(detail) && detail.length > 0) {
+    const messages = detail
+      .map((d) => {
+        if (typeof d === "string") return d;
+        if (typeof d !== "object" || d === null) return null;
+        const item = d as { loc?: unknown[]; msg?: unknown };
+        const msg = typeof item.msg === "string" ? item.msg : null;
+        if (!msg) return null;
+        // `loc` is like ["body", "email"] — the last segment is the field.
+        const field = Array.isArray(item.loc)
+          ? item.loc.filter((x) => typeof x === "string" && x !== "body").pop()
+          : undefined;
+        const clean = msg.replace(/^Value error,\s*/i, "");
+        return field ? `${humanizeField(String(field))}: ${clean}` : clean;
+      })
+      .filter((m): m is string => Boolean(m));
+
+    if (messages.length > 0) {
+      return new APIError(status, "validation_error", messages.join(" "), undefined);
+    }
+  }
+
+  // A plain string detail (FastAPI's HTTPException default).
+  if (typeof detail === "string" && detail.trim()) {
+    return new APIError(status, "http_error", detail, undefined);
+  }
+
+  return new APIError(status, "http_error", genericMessage(status), undefined);
+}
+
+function humanizeField(field: string): string {
+  const words = field.replace(/_/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * Last-resort copy. "Server error 500" tells a recruiter nothing they can
+ * act on, so each status maps to a sentence that says what to do next.
+ */
+function genericMessage(status: number): string {
+  if (status === 401) return "Your session has expired. Please sign in again.";
+  if (status === 403) return "You do not have access to this.";
+  if (status === 404) return "That could not be found. It may have been deleted.";
+  if (status === 409) return "That already exists.";
+  if (status === 413) return "That file is too large.";
+  if (status === 415) return "That file type is not supported. Upload a PDF or DOCX.";
+  if (status === 429) return "Too many requests. Wait a moment and try again.";
+  if (status === 503) return "The service is temporarily unavailable. Try again shortly.";
+  if (status >= 500) return "Something went wrong on our end. Please try again.";
+  return "That request could not be completed.";
+}
+
+/**
+ * Shape guards for responses.
+ *
+ * A render throws if the server sends a shape the page doesn't expect — and
+ * React unmounts the whole tree when it does, so one wrong field replaces the
+ * entire app with a generic crash page. Verified: `reports` arriving as an
+ * object instead of an array wiped the dashboard, navigation included.
+ *
+ * These coerce at the boundary instead. A contract drift, a partial deploy or
+ * a proxy returning something odd then degrades to "no rows" rather than
+ * taking the page down.
+ */
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function asCount(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * Coerce a stored report into the shape every panel on the report page
+ * assumes before any of them touches it.
+ *
+ * The panels reach straight into the blob — `report.flags.map(...)`,
+ * `report.candidate.name` — which is fine for a report this build wrote and
+ * not fine for one written by an older build, saved partially, or holding a
+ * field whose type changed. A `flags` that arrived as a string threw
+ * "flags.map is not a function" during render, which the route boundary
+ * caught by replacing the entire page, navigation included. One odd field
+ * should cost you that panel, not the app.
+ */
+function asReport(value: unknown): Report {
+  const raw = asRecord(value);
+  const credibility = asRecord(raw.credibility);
+  return {
+    ...(raw as object),
+    candidate: asRecord(raw.candidate),
+    skills: asRecord(raw.skills),
+    credibility: {
+      ...credibility,
+      overall: asCount(credibility.overall),
+    },
+    ai_content_analysis: raw.ai_content_analysis === undefined
+      ? undefined
+      : asRecord(raw.ai_content_analysis),
+    career_trajectory: raw.career_trajectory === undefined
+      ? undefined
+      : asRecord(raw.career_trajectory),
+    experience: asArray(raw.experience),
+    education: asArray(raw.education),
+    projects: asArray(raw.projects),
+    certifications: asArray(raw.certifications),
+    timeline_gaps: asArray(raw.timeline_gaps),
+    flags: asArray(raw.flags),
+    positive_signals: asArray(raw.positive_signals),
+    interview_questions: asArray(raw.interview_questions),
+    summary: typeof raw.summary === "string" ? raw.summary : "",
+  } as unknown as Report;
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -226,14 +383,52 @@ export const bulkAPI = {
 export interface JdInput {
   text?: string;
   file?: File;
+  /** Id of a description saved earlier; takes precedence over text and file. */
+  savedId?: string;
 }
+
+export interface SavedJd {
+  id: string;
+  name: string;
+  char_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  last_used_at?: string | null;
+}
+
+export const jdsAPI = {
+  list: (token: string) =>
+    req<{ job_descriptions: SavedJd[] }>("/api/v1/job-descriptions", { token }),
+
+  get: (id: string, token: string) =>
+    req<{ job_description: SavedJd & { jd_text: string } }>(
+      `/api/v1/job-descriptions/${encodeURIComponent(id)}`,
+      { token },
+    ),
+
+  save: (name: string, jdText: string, token: string) =>
+    req<{ job_description: SavedJd; status: string }>("/api/v1/job-descriptions", {
+      method: "POST",
+      body: JSON.stringify({ name, jd_text: jdText }),
+      token,
+    }),
+
+  remove: (id: string, token: string) =>
+    req<{ status: string }>(`/api/v1/job-descriptions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      token,
+    }),
+};
 
 export const matchAPI = {
   upload: (files: File[], jd: JdInput, token: string) => {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
-    if (jd.text && jd.text.trim()) form.append("jd_text", jd.text.trim());
-    if (jd.file) form.append("jd_file", jd.file);
+    // A saved description is sent by id and read server-side, so the text a
+    // batch was ranked against is the text that was actually stored.
+    if (jd.savedId) form.append("saved_jd_id", jd.savedId);
+    else if (jd.text && jd.text.trim()) form.append("jd_text", jd.text.trim());
+    if (!jd.savedId && jd.file) form.append("jd_file", jd.file);
     return req<BulkUploadResponse>("/api/v1/match/upload", {
       method: "POST",
       body: form,
@@ -264,8 +459,11 @@ export const verifyAPI = {
       token,
     }),
 
-  get: (reportId: string, token: string) =>
-    req<VerificationResult>(`/api/v1/verify/${reportId}`, { token }),
+  // No GET here on purpose. `GET /api/v1/verify/{id}` does exist and works —
+  // it answers 404 with "No verification has been run for this report yet"
+  // until one has — but the last run is also stored on the report and comes
+  // back with it, so the extra round trip on every report open bought
+  // nothing. The page reads report.verification instead.
 };
 
 // ── Teams (Team Collaboration) ──────────────────────────────────────────────
@@ -281,6 +479,16 @@ export const teamsAPI = {
   invite: (teamId: string, email: string, token: string) =>
     req<{ status: string; email?: string; email_sent?: boolean; invite_url?: string }>(`/api/v1/teams/${teamId}/invite`, {
       method: "POST", body: JSON.stringify({ email }), token,
+    }),
+
+  invites: (teamId: string, token: string) =>
+    req<{ invites: TeamInvite[] }>(`/api/v1/teams/${teamId}/invites`, { token }).then(
+      (res): { invites: TeamInvite[] } => ({ invites: asArray(res?.invites) }),
+    ),
+
+  revokeInvite: (teamId: string, inviteId: string, token: string) =>
+    req<{ status: string }>(`/api/v1/teams/${teamId}/invites/${inviteId}`, {
+      method: "DELETE", token,
     }),
 
   removeMember: (teamId: string, userId: string, token: string) =>
@@ -324,16 +532,30 @@ export const collaborationAPI = {
 export const reportsAPI = {
   list: (
     token: string,
-    params?: { page?: number; recommendation?: string; search?: string; sort?: string },
+    params?: {
+      page?: number;
+      limit?: number;
+      recommendation?: string;
+      search?: string;
+      sort?: string;
+    },
   ) => {
     const qs = new URLSearchParams();
     if (params?.page) qs.set("page", String(params.page));
+    if (params?.limit) qs.set("limit", String(params.limit));
     if (params?.recommendation) qs.set("recommendation", params.recommendation);
     if (params?.search) qs.set("search", params.search);
     if (params?.sort) qs.set("sort", params.sort);
-    return req<{ reports: Report[]; total: number; pages: number }>(
-      `/api/v1/reports?${qs.toString()}`,
-      { token },
+    // ReportSummary, not Report: the list endpoint returns a flat row, not
+    // the full nested report. Typing it as Report[] here is what let the
+    // dashboard bind to the DOM `Report` global and cast everything away.
+    return req<ReportListResponse>(`/api/v1/reports?${qs.toString()}`, { token }).then(
+      (res): ReportListResponse => ({
+        reports: asArray(res?.reports),
+        total: asCount(res?.total, asArray(res?.reports).length),
+        page: asCount(res?.page, 1),
+        pages: asCount(res?.pages, 1),
+      }),
     );
   },
 
@@ -355,7 +577,7 @@ export const reportsAPI = {
   },
 
   get: (id: string, token: string) =>
-    req<Report>(`/api/v1/reports/${id}`, { token }),
+    req<unknown>(`/api/v1/reports/${id}`, { token }).then(asReport),
 
   decision: (
     id: string,
@@ -398,13 +620,22 @@ export const reportsAPI = {
     ),
 
   analytics: (token: string) =>
-    req<{
-      total_candidates: number;
-      avg_credibility_score: number;
-      distribution: { recommended: number; manual_review: number; high_risk: number };
-      top_skills: { skill: string; count: number }[];
-      risk_categories: Record<string, number>;
-    }>("/api/v1/reports/analytics", { token }),
+    req<PoolAnalytics>("/api/v1/reports/analytics", { token }).then(
+      (res): PoolAnalytics => {
+        const dist = asRecord(res?.distribution);
+        return {
+          total_candidates: asCount(res?.total_candidates),
+          avg_credibility_score: asCount(res?.avg_credibility_score),
+          distribution: {
+            recommended: asCount(dist.recommended),
+            manual_review: asCount(dist.manual_review),
+            high_risk: asCount(dist.high_risk),
+          },
+          top_skills: asArray(res?.top_skills),
+          risk_categories: asRecord(res?.risk_categories) as Record<string, number>,
+        };
+      },
+    ),
 };
 
 // ── Interview Co-Pilot (Feature A) ──────────────────────────────────────────
@@ -422,9 +653,13 @@ export const copilotAPI = {
 // ── Health ────────────────────────────────────────────────────────────────────
 export const healthAPI = {
   check: () =>
-    req<{ status: string; version: string; llm_ready: boolean }>(
-      "/api/v1/health",
-    ),
+    req<{
+      status: string;
+      version: string;
+      llm_ready: boolean;
+      /** Older backends omit this; treat `undefined` as "unknown", not "off". */
+      google_auth_ready?: boolean;
+    }>("/api/v1/health"),
   diagnostics: () =>
     req<{
       health: { status: string; version: string; env: string; llm_ready: boolean };

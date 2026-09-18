@@ -1,9 +1,16 @@
 /**
  * HireLens — Auth Store (Zustand + persist)
- * Fixed:
- * - signup handles requires_email_confirmation response
- * - Token expiry detection
- * - isLoading always reset (even on error)
+ *
+ * The session, persisted across reloads.
+ *
+ * Sign-up handles the confirmation-required answer as its own outcome rather
+ * than an error, and `isLoading` is reset on every path out — including the
+ * failing ones, which is what keeps a failed sign-in from leaving a spinner on
+ * screen.
+ *
+ * Nothing here decides that a session has ended. That judgement lives in
+ * lib/session.ts, which checks with the identity endpoint before a 401 is
+ * allowed to sign anyone out.
  */
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
@@ -118,7 +125,11 @@ export const useAuthStore = create<AuthStore>()(
       },
 
       logout: () => {
-        supabase.auth.signOut();
+        // Best effort. This client holds no session of its own (see
+        // lib/supabase.ts), so there is usually nothing to revoke — but a
+        // rejected promise here must never stop the local session being
+        // cleared, which is the part that actually signs the user out.
+        void supabase.auth.signOut().catch(() => {});
         set({
           user: null,
           token: null,

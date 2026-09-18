@@ -12,16 +12,15 @@ Supabase DB is configured. Being pure in-memory meant:
   2. It could never support more than one backend process/instance — a
      hard ceiling on horizontal scaling long before 10k users.
 
-This class is a drop-in replacement with the EXACT SAME dict access
-pattern (`d[k]`, `d.get(k)`, `k in d`, `del d[k]`, `.items()`) specifically
-so none of the five call sites need risky logic rewrites — only two
-in-place-mutation patterns (`d[k].update(...)` and `d[k]["x"] = y`, which
-silently bypass persistence because they mutate the returned object
-in-place rather than calling `__setitem__`) needed a one-line fix at their
-3 call sites. Every write is mirrored to Redis (when configured) with a
-TTL; every read checks the fast local in-memory cache first, then falls
-through to Redis. No Redis configured → behaves exactly like the old
-plain dict (same degrade-gracefully philosophy as the rest of the app).
+This class keeps the EXACT SAME dict access pattern (`d[k]`, `d.get(k)`,
+`k in d`, `del d[k]`, `.items()`), so the five call sites read as they always
+did. The one thing to watch is in-place mutation: `d[k].update(...)` and
+`d[k]["x"] = y` change the returned object without going through
+`__setitem__`, so they never reach Redis — assign the whole value back
+instead. Every write is mirrored to Redis (when configured) with a TTL; every
+read checks the local cache first and falls through to Redis. With no Redis
+configured it behaves exactly like a plain dict, which is the same
+degrade-gracefully philosophy as the rest of the app.
 
 Known limitation (documented, not silently swept under the rug): full-scan
 iteration (`.items()`, used only by job cleanup and the in-memory report

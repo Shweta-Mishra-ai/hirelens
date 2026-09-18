@@ -15,6 +15,34 @@ class ForbiddenError(HireLensException):
 class NotFoundError(HireLensException):
     http_status = 404; code = "not_found"; message = "Resource not found."
 
+class AccountStoreUnavailable(HireLensException):
+    http_status = 503; code = "account_store_unavailable"
+    message = (
+        "We couldn't create your account right now. This is on our side — "
+        "please try again in a moment."
+    )
+
+
+class CopilotUnavailable(HireLensException):
+    http_status = 503; code = "copilot_unavailable"
+    message = (
+        "We couldn't reach the database to open this candidate's interview "
+        "notes. Please try again in a moment — nothing has been lost."
+    )
+
+
+class ConflictError(HireLensException):
+    """
+    The request is well-formed and authenticated, but conflicts with existing
+    state — e.g. signing up with an email that already has an account.
+
+    409, not 401. A 401 would be wrong twice over: the caller is not being
+    asked to authenticate, and any client that reads 401 as "session expired"
+    — this app's own API client among them — would sign the user out in
+    response to a duplicate signup.
+    """
+    http_status = 409; code = "conflict"; message = "This conflicts with existing data."
+
 class FileTooLarge(HireLensException):
     http_status = 413; code = "file_too_large"
     def __init__(self, max_mb: int = 10):
@@ -43,11 +71,27 @@ class LLMError(HireLensException):
     http_status = 503; code = "llm_unavailable"
     message = "AI service temporarily unavailable."
 
+class AnalysisUnavailable(HireLensException):
+    """
+    Raised at upload time when no AI provider is configured at all.
+
+    Distinct from LLMError, which means a configured provider failed. Raised
+    at upload rather than during the run: accepting the file would make the
+    recruiter sit through the whole progress animation to be told about a
+    missing GEMINI_API_KEY, which is advice for the operator, not for them.
+    """
+    http_status = 503; code = "analysis_unavailable"
+    message = (
+        "Resume analysis is not available right now because no AI provider is "
+        "configured on the server. Your file was not uploaded. Contact your "
+        "administrator to finish setting up HireLens."
+    )
+
 class RateLimitExceeded(HireLensException):
     http_status = 429; code = "rate_limit_exceeded"
-    def __init__(self, retry_after: int = 60):
+    def __init__(self, retry_after: int = 60, message: str | None = None):
         self.retry_after = retry_after
-        super().__init__(f"Rate limit exceeded. Retry after {retry_after}s.")
+        super().__init__(message or f"Rate limit exceeded. Retry after {retry_after}s.")
 
 class TooManyFiles(HireLensException):
     http_status = 413; code = "too_many_files"
@@ -79,6 +123,22 @@ class AllResumesUnreachable(HireLensException):
 class DBRequiredError(HireLensException):
     http_status = 503; code = "database_required"
     message = "This feature requires a configured database. Ask your admin to set SUPABASE_URL/SUPABASE_SERVICE_KEY."
+
+class StorageWriteFailed(HireLensException):
+    """
+    A write that the caller was told had succeeded did not reach any durable
+    store.
+
+    Raised instead of returning success, because the alternative is the worst
+    kind of failure: the UI shows the team, the invite, the decision — and it
+    is gone at the next restart, with nobody having seen an error and nothing
+    to retry.
+    """
+    http_status = 503; code = "storage_write_failed"
+    message = (
+        "That could not be saved. Nothing has been changed — please try again."
+    )
+
 
 class ValidationError(HireLensException):
     http_status = 422; code = "validation_error"

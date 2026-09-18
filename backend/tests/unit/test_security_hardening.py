@@ -64,14 +64,26 @@ class TestRateLimitHelper:
         with pytest.raises(RateLimitExceeded):
             check_rate_limit(None, key, limit=5, window_seconds=60)
 
-    def test_get_client_ip_uses_forwarded_for(self):
+    def test_get_client_ip_trusts_only_the_proxy_written_entries(self):
+        """
+        This used to assert the LEFTMOST entry of X-Forwarded-For.
+
+        That is the wrong end. A proxy APPENDS the address it saw, so the
+        rightmost entries are written by infrastructure and everything to the
+        left is whatever the caller sent. Keying the rate limiter on the
+        leftmost entry let a caller mint a fresh bucket per request by
+        changing a header — unlimited password guesses against sign-in.
+
+        Only `TRUSTED_PROXY_HOPS` entries from the right count, which for a
+        single proxy is the last one. Full coverage in test_client_ip.py.
+        """
         from app.core.rate_limit import get_client_ip
 
         class FakeRequest:
             headers = {"x-forwarded-for": "203.0.113.5, 10.0.0.1"}
             client = None
 
-        assert get_client_ip(FakeRequest()) == "203.0.113.5"
+        assert get_client_ip(FakeRequest()) == "10.0.0.1"
 
     def test_get_client_ip_falls_back_to_client_host(self):
         from app.core.rate_limit import get_client_ip
@@ -143,18 +155,43 @@ class TestSearchSanitization:
 
 # ── Production startup security checks ──────────────────────────────────────
 class TestProductionSecurityChecks:
-    def test_default_secret_key_is_flaggable_in_production(self):
+    def test_production_does_not_invent_a_secret_key(self):
+        """
+        Production must be left holding nothing, so main.py's startup check
+        can refuse. Only development fills a key in for itself.
+        """
         from app.core.config import Settings
-        s = Settings(APP_ENV="production", SECRET_KEY="dev-secret-key-change-in-production-min-32")
+        s = Settings(APP_ENV="production", SECRET_KEY="")
         assert s.is_production is True
-        # This is exactly the condition main.py's startup check guards against
-        assert s.SECRET_KEY == "dev-secret-key-change-in-production-min-32"
+        assert s.SECRET_KEY == ""
+        # This is exactly the condition main.py's startup check guards against.
+        assert len(s.SECRET_KEY) < 32
 
-    def test_custom_secret_key_not_flaggable(self):
+    def test_development_generates_its_own_key(self, tmp_path, monkeypatch):
+        """
+        No shipped constant. A hardcoded default would be one publicly known
+        signing key shared by every install that forgot to set one — and this
+        repository was public for a period.
+        """
+        monkeypatch.setenv("HIRELENS_DEV_SECRET_PATH", str(tmp_path / ".dev-secret"))
+        import importlib
+        from app.core import config as config_module
+        importlib.reload(config_module)
+
+        s = config_module.Settings(APP_ENV="development", SECRET_KEY="")
+        assert len(s.SECRET_KEY) >= 32
+
+        # Stable across restarts, or every reload signs everyone out.
+        again = config_module.Settings(APP_ENV="development", SECRET_KEY="")
+        assert again.SECRET_KEY == s.SECRET_KEY
+
+        importlib.reload(config_module)
+
+    def test_custom_secret_key_is_used_as_given(self):
         from app.core.config import Settings
         s = Settings(APP_ENV="production", SECRET_KEY="a" * 48)
+        assert s.SECRET_KEY == "a" * 48
         assert len(s.SECRET_KEY) >= 32
-        assert s.SECRET_KEY != "dev-secret-key-change-in-production-min-32"
 
     def test_development_mode_is_not_production(self):
         from app.core.config import Settings

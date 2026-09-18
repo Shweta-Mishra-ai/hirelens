@@ -38,23 +38,67 @@ DEEP_SCAN_WITH_TOKEN = 25    # repos to fetch full language breakdown for, with 
 DEEP_SCAN_NO_TOKEN = 8       # same, but conservative without a token (60/hr budget)
 DEEP_SCAN_CONCURRENCY = 5    # parallel /languages requests
 
-# Maps a GitHub-reported language/topic to the skill-name family a resume
-# would plausibly use for it (kept intentionally small + conservative).
-SKILL_ALIASES = {
-    "c#": ["c#", "csharp", ".net", "dotnet"],
-    "c++": ["c++", "cpp"],
-    "shell": ["bash", "shell scripting", "shell", "shell script"],
-    "jupyter notebook": ["python", "data science", "machine learning", "jupyter"],
-    "html": ["html", "html5"],
-    "css": ["css", "css3", "scss", "sass"],
-    "typescript": ["typescript", "ts"],
-    "javascript": ["javascript", "js", "node", "node.js", "nodejs"],
-    "dockerfile": ["docker", "containerization", "containers"],
-    "kubernetes": ["k8s", "kubernetes"],
-    "tensorflow": ["tensorflow", "deep learning", "machine learning", "ml"],
-    "pytorch": ["pytorch", "deep learning", "machine learning", "ml"],
-    "postgresql": ["postgres", "postgresql", "sql"],
-    "plpgsql": ["postgres", "postgresql", "sql"],
+# Equivalence families. Every member of a family is treated as naming the
+# same underlying skill, in either direction — so GitHub reporting the
+# language "Dockerfile" satisfies a resume claiming "Docker", and vice versa.
+#
+# Each family must list EVERY spelling including the GitHub-reported one.
+# The previous version keyed families by the GitHub name but omitted that
+# name from its own alias list, so the alias path never actually fired;
+# "Dockerfile" only matched "Docker" through the substring fallback that
+# `_skill_matches_evidence` has since dropped.
+SKILL_FAMILIES: list[set[str]] = [
+    {"c#", "csharp", "c sharp", ".net", "dotnet", "asp.net"},
+    {"c++", "cpp", "cplusplus"},
+    {"shell", "bash", "sh", "zsh", "shell script", "shell scripting"},
+    {"jupyter notebook", "jupyter", "ipython"},
+    {"html", "html5"},
+    {"css", "css3", "scss", "sass", "less"},
+    {"typescript", "ts"},
+    {"javascript", "js", "ecmascript"},
+    {"node", "node.js", "nodejs"},
+    {"dockerfile", "docker", "containerization", "containers"},
+    {"kubernetes", "k8s", "kubectl"},
+    {"tensorflow", "tf", "keras"},
+    {"pytorch", "torch"},
+    {"postgresql", "postgres", "plpgsql", "psql"},
+    {"objective-c", "objectivec", "objc"},
+    {"golang", "go"},
+    {"ruby", "rb"},
+    {"rust", "rs"},
+    {"python", "py"},
+    {"markdown", "md"},
+    {"jinja", "jinja2"},
+    {"vue", "vue.js", "vuejs"},
+    {"react", "react.js", "reactjs"},
+]
+
+# Precomputed lookup: normalized name -> the family it belongs to.
+_FAMILY_INDEX: dict[str, set[str]] = {}
+for _family in SKILL_FAMILIES:
+    for _member in _family:
+        _FAMILY_INDEX[_member] = _family
+
+# Skills whose names are too short or too common to ever be matched by
+# anything other than an exact token. Without this, substring or fuzzy
+# matching credits "R" from "Rust", "Go" from "Google", "C" from "CSS",
+# and "AI" from "domain".
+AMBIGUOUS_SHORT_SKILLS = {"r", "c", "go", "d", "ai", "ml", "js", "ts", "sh", "rb", "py", "tf"}
+
+# Ordinary prose that appears in repo descriptions and is not a technology.
+# Repo *topics* are not filtered — those are deliberately chosen labels.
+_DESCRIPTION_STOPWORDS = {
+    "the", "and", "for", "with", "this", "that", "from", "into", "your", "you",
+    "are", "was", "will", "can", "all", "any", "how", "why", "what", "when",
+    "simple", "small", "basic", "easy", "fast", "new", "old", "using", "used",
+    "use", "build", "built", "building", "make", "makes", "made", "tool",
+    "tools", "app", "application", "project", "repo", "repository", "demo",
+    "example", "examples", "sample", "test", "tests", "code", "source",
+    "library", "framework", "based", "written", "implementation", "implements",
+    "support", "supports", "management", "manage", "manager", "system",
+    "service", "services", "server", "client", "personal", "awesome", "list",
+    "collection", "set", "very", "more", "most", "some", "not", "but", "its",
+    "has", "have", "been", "one", "two", "first", "best", "free", "open",
 }
 
 
@@ -71,19 +115,91 @@ def extract_username(github_field: str | None) -> str | None:
     return None
 
 
+def _normalize(text: str) -> str:
+    """
+    Lowercase, collapse whitespace, and drop surrounding punctuation.
+
+    Leading dots are preserved: ".net" is a skill name, and stripping the dot
+    turns it into "net", which belongs to no family and matches nothing.
+    """
+    cleaned = re.sub(r"\s+", " ", text.lower().strip())
+    cleaned = cleaned.lstrip("(['\"“‘ ")
+    return cleaned.rstrip(".,;:!?)]}'\"”’ ")
+
+
+def _tokens(text: str) -> set[str]:
+    """
+    Split a phrase into comparable tokens, preserving the characters that
+    actually distinguish language names: `c++` and `c#` must not both
+    collapse to `c`, and `node.js` must survive as one token.
+    """
+    return {t for t in re.split(r"[\s/,|]+", _normalize(text)) if t}
+
+
 def _skill_matches_evidence(skill: str, evidence_terms: set[str]) -> bool:
-    skill_l = skill.lower().strip()
-    if not skill_l:
-        return False
-    for term in evidence_terms:
-        term_l = term.lower().strip()
-        if not term_l:
-            continue
+    """
+    Decide whether a claimed skill is evidenced by GitHub activity.
+
+    Substring matching is not an option here. Accepting a match whenever
+    either string contains the other —
+
         if skill_l == term_l or skill_l in term_l or term_l in skill_l:
+
+    — verifies "Java" from a JavaScript repo, matches "R" against "Rust",
+    "React" and "Terraform", "Go" against "Google", "MongoDB" and "Django",
+    and "C" against almost anything. A false "verified" tells a recruiter a
+    claim has been independently corroborated when it has not, which is worse
+    than reporting nothing.
+
+    A skill now matches only when one of the following holds:
+
+      1. it equals an evidence term exactly (normalized), or
+      2. it and the term belong to the same equivalence family, or
+      3. it appears as a whole token inside a multi-word term — and only
+         when the skill is long enough and not on the ambiguous list.
+
+    Everything else is reported as unverified, which the UI already frames
+    as "not seen in public repos" rather than as a mark against the
+    candidate.
+    """
+    skill_n = _normalize(skill)
+    if not skill_n:
+        return False
+
+    skill_family = _FAMILY_INDEX.get(skill_n)
+    skill_is_ambiguous = skill_n in AMBIGUOUS_SHORT_SKILLS
+
+    for term in evidence_terms:
+        term_n = _normalize(term)
+        if not term_n:
+            continue
+
+        # 1. Exact match.
+        if skill_n == term_n:
             return True
-        for aliases in SKILL_ALIASES.values():
-            if term_l in aliases and skill_l in aliases:
-                return True
+
+        # 2. Same equivalence family (bidirectional).
+        term_family = _FAMILY_INDEX.get(term_n)
+        if skill_family is not None and skill_family is term_family:
+            return True
+
+        # 3. Whole-token containment, e.g. skill "kubernetes" evidenced by
+        #    the topic "kubernetes operator". Never for ambiguous short
+        #    names, and never as a bare substring.
+        if skill_is_ambiguous or len(skill_n) < 3:
+            continue
+
+        term_tokens = _tokens(term_n)
+        if skill_n in term_tokens:
+            return True
+        if skill_family is not None and skill_family & term_tokens:
+            return True
+
+        # A multi-word skill ("machine learning") evidenced by a term that
+        # contains that exact phrase as consecutive words.
+        if " " in skill_n and re.search(rf"\b{re.escape(skill_n)}\b", term_n):
+            return True
+
     return False
 
 
@@ -150,9 +266,19 @@ async def verify_github(username: str | None, claimed_skills: list[str]) -> dict
         evidence_terms: set[str] = set()
         for repo in repos:
             for topic in (repo.get("topics") or []):
+                # Topics are curated by the repo owner and are strong signal.
                 evidence_terms.add(topic.replace("-", " "))
+
+            # Description words are much weaker: every ordinary English word
+            # in a sentence lands here too. Dropping common prose words keeps
+            # a description like "a simple tool to manage builds" from
+            # contributing "simple", "tool" and "manage" as if they were
+            # technologies.
             desc = repo.get("description") or ""
-            evidence_terms.update(w.lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9+.#]{2,}", desc))
+            for word in re.findall(r"[A-Za-z][A-Za-z0-9+.#-]{1,}", desc):
+                lowered = word.lower()
+                if lowered not in _DESCRIPTION_STOPWORDS:
+                    evidence_terms.add(lowered)
 
         # 2. Full per-repo language breakdown (costs 1 request per repo scanned —
         #    scan depth depends on whether GITHUB_TOKEN raised our budget)

@@ -1,9 +1,18 @@
 """
 HireLens — FastAPI Dependencies
-Fixed: Supabase client properly initialized, no stale singletons,
-Redis graceful degradation, auth header validation.
+
+Shared clients (Supabase, Redis) and the auth dependency.
+
+Both clients are optional: when neither is configured the app runs on the
+local SQLite store with in-memory rate limiting. The rule both follow is that
+a client is only published to the rest of the app once it has been proven to
+work, and a failed attempt is remembered for a short cooldown so a dead
+dependency costs one connection timeout per cooldown rather than one per
+request.
 """
 import logging
+import threading
+import time
 from fastapi import Depends, Header
 from app.core.security import decode_token
 from app.core.exceptions import AuthError
@@ -11,57 +20,129 @@ from app.core.config import settings
 
 logger = logging.getLogger("hirelens")
 
+# How long to wait before probing a dependency that just failed. Long enough
+# that an outage does not cost every request a connection timeout, short
+# enough that recovery is picked up without a redeploy.
+_PROBE_COOLDOWN_SECONDS = 30.0
 
-# ── Supabase DB — pooled singleton client (thread-safe) ─────────────────────
+
+# ── Supabase DB — pooled singleton client ───────────────────────────────────
 _supabase_client = None
+_supabase_lock = threading.Lock()
+_supabase_failed_at = 0.0
+
 
 def get_db():
     """
-    Returns Supabase client or None.
-    Supabase Python v2 client is synchronous — do NOT await its methods.
-    Use .execute() directly (no await). Reuses a singleton instance for high-concurrency performance.
+    The shared Supabase client, or None when it is not configured or not
+    reachable — callers fall back to the local store.
+
+    The supabase-py v2 client is synchronous: call .execute() directly, never
+    await it.
     """
-    global _supabase_client
+    global _supabase_client, _supabase_failed_at
+
     if not (settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY):
-        logger.warning("Supabase not configured — DB unavailable")
         return None
     if _supabase_client is not None:
         return _supabase_client
-    try:
-        from supabase import create_client
-        _supabase_client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
-        return _supabase_client
-    except Exception as e:
-        logger.error(f"Supabase client creation failed: {e}")
-        return None
+
+    with _supabase_lock:
+        # Another thread may have built it while this one waited.
+        if _supabase_client is not None:
+            return _supabase_client
+        if time.monotonic() - _supabase_failed_at < _PROBE_COOLDOWN_SECONDS:
+            return None
+        try:
+            from supabase import create_client
+            client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
+        except Exception as e:
+            _supabase_failed_at = time.monotonic()
+            logger.error(f"Supabase client creation failed: {e}")
+            return None
+        _supabase_client = client
+        return client
 
 
 
-# ── Redis — optional, graceful degradation ────────────────────────────────────
+# ── Redis — optional, graceful degradation ──────────────────────────────────
 _redis_client = None
+_redis_lock = threading.Lock()
+_redis_failed_at = 0.0
+
 
 def get_redis():
-    """Returns Redis client or None. Rate limiting disabled if unavailable."""
-    global _redis_client
+    """
+    The shared Redis client, or None when Redis is not configured or not
+    answering — callers fall back to their in-process equivalent.
+
+    Two things matter here, and both are load-bearing:
+
+    The client is published only after `ping()` proves it works. Assigning it
+    before the probe means a single failed health check hands every later
+    request a client that was never verified, and each of those requests then
+    pays the full connect timeout before falling back.
+
+    A failure is remembered for `_PROBE_COOLDOWN_SECONDS`. Without that, an
+    unreachable Redis costs one connection timeout on every request that
+    touches it — sign-in, upload, batch polling — which turns a degraded
+    optional dependency into a slow app.
+    """
+    global _redis_client, _redis_failed_at
+
     if _redis_client is not None:
         return _redis_client
     if not settings.REDIS_URL:
         return None
-    try:
-        import redis
-        _redis_client = redis.from_url(
-            settings.REDIS_URL,
-            password=settings.REDIS_PASSWORD or None,
-            decode_responses=True,
-            socket_connect_timeout=3,
-            socket_timeout=3,
-        )
-        _redis_client.ping()
+
+    with _redis_lock:
+        if _redis_client is not None:
+            return _redis_client
+        if time.monotonic() - _redis_failed_at < _PROBE_COOLDOWN_SECONDS:
+            return None
+        client = None
+        try:
+            import redis
+            client = redis.from_url(
+                settings.REDIS_URL,
+                password=settings.REDIS_PASSWORD or None,
+                decode_responses=True,
+                socket_connect_timeout=3,
+                socket_timeout=3,
+            )
+            client.ping()
+        except Exception as e:
+            _redis_failed_at = time.monotonic()
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            logger.warning(
+                f"Redis unavailable, falling back to in-process state "
+                f"(retrying in {_PROBE_COOLDOWN_SECONDS:.0f}s): {e}"
+            )
+            return None
+        _redis_client = client
         logger.info("Redis connected")
-        return _redis_client
-    except Exception as e:
-        logger.warning(f"Redis unavailable — rate limiting disabled: {e}")
-        return None
+        return client
+
+
+def reset_clients() -> None:
+    """Drop both cached clients and any cooldown, so the next call probes
+    afresh. Used by tests to keep one case from leaking into the next."""
+    global _supabase_client, _redis_client, _supabase_failed_at, _redis_failed_at
+    with _supabase_lock:
+        _supabase_client = None
+        _supabase_failed_at = 0.0
+    with _redis_lock:
+        if _redis_client is not None:
+            try:
+                _redis_client.close()
+            except Exception:
+                pass
+        _redis_client = None
+        _redis_failed_at = 0.0
 
 
 # ── Auth dependency ───────────────────────────────────────────────────────────

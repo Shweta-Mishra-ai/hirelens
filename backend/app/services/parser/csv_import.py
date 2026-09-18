@@ -22,6 +22,8 @@ requiring the recruiter to manually map columns for a v1.
 
 import csv
 import io
+
+from app.core.exceptions import ValidationError
 import re
 
 NAME_ALIASES = {"name", "candidate name", "candidate_name", "full name", "full_name", "applicant name", "applicant_name", "candidate"}
@@ -65,19 +67,47 @@ def parse_ats_csv(file_bytes: bytes) -> dict:
     try:
         text = file_bytes.decode("utf-8-sig")  # handles Excel's UTF-8 BOM
     except UnicodeDecodeError:
-        text = file_bytes.decode("latin-1")
+        text = file_bytes.decode("latin-1", errors="replace")
+
+    # A NUL byte makes csv treat the whole file as one broken record.
+    text = text.replace("\x00", "")
 
     reader = csv.DictReader(io.StringIO(text))
-    headers = reader.fieldnames or []
+    try:
+        headers = reader.fieldnames or []
+    except csv.Error as e:
+        raise ValidationError(
+            f"This CSV could not be read ({e}). Re-export it from your ATS and try again."
+        )
 
     name_col = _detect_column(headers, NAME_ALIASES)
     email_col = _detect_column(headers, EMAIL_ALIASES)
     resume_col = _detect_column(headers, RESUME_URL_ALIASES)
 
-    rows = []
-    skipped = []
+    rows: list[dict] = []
+    skipped: list[dict] = []
 
-    for i, raw_row in enumerate(reader, start=2):  # row 1 is the header
+    # csv raises on a field over its internal limit (131072 chars by default),
+    # and one oversized cell would otherwise escape as a 500 that fails the
+    # whole import. Iterate manually so a bad record is reported as a skipped
+    # row alongside the ones that parsed.
+    row_iter = iter(reader)
+    i = 1
+    while True:
+        i += 1
+        try:
+            raw_row = next(row_iter)
+        except StopIteration:
+            break
+        except csv.Error as e:
+            skipped.append({
+                "row_num": i,
+                "reason": f"Row could not be read ({str(e)[:120]}). It may contain an oversized or malformed field.",
+            })
+            # A field-size error leaves the reader unusable for the rest of
+            # the file, so stop rather than spin.
+            break
+
         if i - 1 > MAX_ROWS:
             skipped.append({"row_num": i, "reason": f"Exceeds max {MAX_ROWS} rows per import — split into multiple files."})
             continue

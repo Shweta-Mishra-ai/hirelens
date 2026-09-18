@@ -48,36 +48,108 @@ KNOWN_ABBREVIATIONS = {
 }
 
 
-def _candidate_queries(institution: str) -> list[str]:
-    """Yields the raw name first, then progressively broader/cleaned variants."""
-    queries = [institution]
+def _candidate_queries(institution: str) -> list[tuple[str, bool]]:
+    """
+    The raw name first, then progressively broader variants, each tagged with
+    whether a hit on it is strong enough to call the institution confirmed.
+
+    The tag is the important part. Searching the full name, or the same name
+    with "(Main Campus)" trimmed, or a known abbreviation expanded, all still
+    describe the institution the resume claimed. Searching a single word out of
+    it does not — and the registry does substring matching, so "Technical" from
+    "Stanford Technical College" comes back with "Technical University of
+    Munich" and every word of that response is true and irrelevant.
+    """
+    queries: list[tuple[str, bool]] = [(institution, True)]
 
     cleaned = TRAILING_QUALIFIERS.sub("", institution).strip()
     if cleaned and cleaned.lower() != institution.lower():
-        queries.append(cleaned)
+        queries.append((cleaned, True))
 
-    # Expand a leading known abbreviation ("IIT Delhi" → "Indian Institute of Technology Delhi")
-    first_word = institution.strip().split(" ", 1)[0].lower().rstrip(".")
+    # Expand a leading known abbreviation ("IIT Delhi" → "Indian Institute of Technology Delhi").
+    #
+    # Split on the word, rather than slicing by its length: "IIT" is three
+    # characters but "IIT." is four, and slicing past the wrong offset joined
+    # the expansion straight onto the rest of the name — "indian institute of
+    # technologyDelhi", a query that matches nothing in the registry.
+    parts = institution.strip().split(None, 1)
+    first_word = parts[0].lower().rstrip(".") if parts else ""
     if first_word in KNOWN_ABBREVIATIONS:
-        expanded = KNOWN_ABBREVIATIONS[first_word] + institution[len(first_word) + 1:]
-        queries.append(expanded.strip())
+        remainder = parts[1].strip() if len(parts) > 1 else ""
+        expanded = f"{KNOWN_ABBREVIATIONS[first_word]} {remainder}".strip()
+        queries.append((expanded, True))
 
-    # Last resort: just the most distinctive (usually longest) word —
-    # broad, but Hipolabs itself still requires a substring match so this
-    # rarely over-matches in practice.
+    # Last resort: the most distinctive (usually longest) word. Useful for
+    # finding a plausible candidate to show the recruiter, never enough on its
+    # own to confirm one.
     words = [w for w in re.split(r"\s+", cleaned or institution) if len(w) > 3]
     if words:
-        queries.append(max(words, key=len))
+        queries.append((max(words, key=len), False))
 
-    # De-dupe while preserving order
     seen = set()
-    out = []
-    for q in queries:
+    out: list[tuple[str, bool]] = []
+    for q, strong in queries:
         key = q.lower()
         if key and key not in seen:
             seen.add(key)
-            out.append(q)
+            out.append((q, strong))
     return out[:4]  # cap retries per institution
+
+
+# Grammar, not identity. Dropping these changes nothing about which
+# institution is being named.
+_STOPWORDS = {"of", "the", "and", "at", "for", "main", "campus", "a"}
+
+# Words describing what kind of institution it is. These are NOT noise —
+# "Springfield State College" and "Springfield University" are different
+# places — so they must match like any other word. They are listed only
+# because a name made of nothing else ("The University") identifies nobody.
+_INSTITUTION_TYPES = {
+    "university", "universite", "universidad", "universitat", "college",
+    "institute", "institution", "school", "academy", "polytechnic",
+}
+
+
+def _tokens(name: str) -> set[str]:
+    # Apostrophes are closed up rather than split on, so "Xavier's" and
+    # "Xaviers" are the same word — registries drop the punctuation, resumes
+    # keep it, and neither spelling means a different institution.
+    flattened = re.sub(r"['\u2018\u2019]", "", (name or "").lower())
+    return {t for t in re.split(r"[^a-z0-9]+", flattened) if t}
+
+
+def _names_agree(claimed: str, matched: str) -> bool:
+    """
+    Whether the registry's name is really the institution the resume named.
+
+    Every word of the claim, bar pure grammar, has to appear in the match. The
+    registry answers a substring search, so without this a claim keeps whatever
+    name the search happened to land on — and the report then tells a recruiter
+    a different, real institution was confirmed.
+
+    Deliberately one-directional: the registry's canonical name is often longer
+    than the resume's ("Massachusetts Institute of Technology" for "MIT"), and
+    that extra detail is not a disagreement. Extra words in the *claim* are.
+    """
+    claim_tokens = _tokens(claimed) - _STOPWORDS
+    matched_tokens = _tokens(matched)
+
+    # A name with no word of its own — "The University" — matches thousands of
+    # entries and identifies none of them.
+    if not (claim_tokens - _INSTITUTION_TYPES):
+        return False
+
+    return claim_tokens <= matched_tokens
+
+
+def _best_match(matches: list[dict], claimed: str) -> dict:
+    """The closest name in the response, rather than whichever came first."""
+    from difflib import SequenceMatcher
+
+    def score(row: dict) -> float:
+        return SequenceMatcher(None, claimed.lower(), (row.get("name") or "").lower()).ratio()
+
+    return max(matches, key=score)
 
 
 async def _search_once(client: httpx.AsyncClient, query: str) -> list[dict] | None:
@@ -106,8 +178,9 @@ async def verify_education(education: list[dict]) -> list[dict]:
 
             matches = None
             matched_query = None
+            query_is_strong = False
             had_error = False
-            for query in _candidate_queries(institution):
+            for query, strong in _candidate_queries(institution):
                 found = await _search_once(client, query)
                 if found is None:
                     had_error = True
@@ -116,19 +189,50 @@ async def verify_education(education: list[dict]) -> list[dict]:
                 if found:
                     matches = found
                     matched_query = query
+                    query_is_strong = strong
                     break
 
             if matches:
-                best = matches[0]
+                best = _best_match(matches, institution)
+                matched_name = best.get("name") or ""
+
+                # Two independent gates, and a match has to clear both. The
+                # search term must have described the whole institution, and
+                # the name that came back must actually be the one searched
+                # for.
+                #
+                # Checked against the QUERY, not the raw claim. A strong query
+                # is the claim restated — trimmed of "(Main Campus)", or with a
+                # known abbreviation spelled out — and "IIT Delhi" shares no
+                # word with "Indian Institute of Technology Delhi" even though
+                # they are the same place. The weak single-word query never
+                # reaches here as confirmed, so it cannot exploit this.
+                confirmed = query_is_strong and _names_agree(matched_query or institution, matched_name)
+
                 result = {
                     "institution": institution,
-                    "status": "verified",
-                    "matched_name": best.get("name"),
+                    "status": "verified" if confirmed else "possible_match",
+                    "matched_name": matched_name,
                     "country": best.get("country"),
                     "domain": (best.get("domains") or [None])[0],
                 }
-                if matched_query and matched_query.lower() != institution.lower():
-                    result["note"] = f"Matched via broadened search term \"{matched_query}\"."
+                if confirmed:
+                    if matched_query and matched_query.lower() != institution.lower():
+                        result["note"] = (
+                            f"Matched via search term \"{matched_query}\". Confirms this "
+                            f"institution is in the registry — not that the candidate attended it."
+                        )
+                    else:
+                        result["note"] = (
+                            "Found in the open university registry. This confirms the "
+                            "institution exists, not that the candidate attended it."
+                        )
+                else:
+                    result["note"] = (
+                        f"The closest entry in the registry is \"{matched_name}\", which is not "
+                        f"clearly the same institution as \"{institution}\". Treated as unconfirmed "
+                        f"— worth a look, not evidence either way."
+                    )
                 results.append(result)
             elif had_error:
                 results.append({

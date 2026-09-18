@@ -57,7 +57,8 @@ export function useJdMatch() {
       }
       const hasText = !!jd.text && jd.text.trim().length >= 30;
       const hasFile = !!jd.file;
-      if (!hasText && !hasFile) {
+      const hasSaved = !!jd.savedId;
+      if (!hasText && !hasFile && !hasSaved) {
         safeSetState({
           phase: "error",
           message: "Paste a job description (at least a few sentences) or upload a JD file.",
@@ -80,15 +81,23 @@ export function useJdMatch() {
 
       const { batch_id } = uploadRes;
       let attempts = 0;
+      // See useBulkAnalysis: the first poll runs before any interval exists,
+      // so stopPolling() inside it is a no-op and the interval below would
+      // start on an already-finished batch.
+      let finished = false;
+      const finish = () => {
+        finished = true;
+        stopPolling();
+      };
 
       const pollOnce = async () => {
         if (!mountedRef.current) {
-          stopPolling();
+          finish();
           return;
         }
         attempts++;
         if (attempts > MAX_ATTEMPTS) {
-          stopPolling();
+          finish();
           safeSetState({
             phase: "error",
             message: "This batch is taking unusually long. Check your dashboard shortly.",
@@ -101,14 +110,14 @@ export function useJdMatch() {
           if (!mountedRef.current) return;
 
           if (batch.is_done) {
-            stopPolling();
+            finish();
             safeSetState({ phase: "done", batch });
           } else {
             safeSetState({ phase: "processing", batch });
           }
         } catch (err) {
           if (err instanceof APIError && (err.status === 401 || err.status === 404)) {
-            stopPolling();
+            finish();
             safeSetState({
               phase: "error",
               message:
@@ -121,7 +130,9 @@ export function useJdMatch() {
       };
 
       await pollOnce();
-      pollRef.current = setInterval(pollOnce, POLL_MS);
+      if (!finished && mountedRef.current) {
+        pollRef.current = setInterval(pollOnce, POLL_MS);
+      }
     },
     [token, stopPolling, safeSetState],
   );

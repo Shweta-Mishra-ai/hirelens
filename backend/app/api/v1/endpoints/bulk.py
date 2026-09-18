@@ -20,16 +20,19 @@ import csv
 import uuid
 import asyncio
 import logging
-from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File
+from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File, Request
 from pydantic import BaseModel, Field
 from typing import Literal
 from fastapi.responses import StreamingResponse
 
+from app.core import local_db
+from app.services import directory
+from app.core.shapes import as_dict, as_str, normalize_report, report_summary_row
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.rate_limit import check_rate_limit
 from app.core.exceptions import NotFoundError, ForbiddenError, EmptyBatch, TooManyFiles, TooManyBatches, FileTooLarge
-from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload
+from app.api.v1.endpoints.analysis import _jobs, _run_analysis, _check_rate_limit, _cleanup_old_jobs, validate_upload, require_analysis_available
 from app.services.queue import batch_store
 from app.services.fraud.duplicate_detection import extract_fingerprint_text, find_duplicate_clusters
 
@@ -44,6 +47,7 @@ _bulk_semaphore = asyncio.Semaphore(settings.BULK_CONCURRENCY)
 
 @router.post("/upload", status_code=202)
 async def bulk_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(..., description=f"Up to {settings.BULK_MAX_FILES} PDF/DOCX files"),
     current_user: dict = Depends(get_current_user),
@@ -70,9 +74,32 @@ async def bulk_upload(
         raise TooManyBatches(settings.BULK_MAX_CONCURRENT_BATCHES_PER_USER)
 
     # One rate-limit tick per batch (not per file) — a batch is one action.
+    require_analysis_available()
     _check_rate_limit(redis, user_id)
 
+    # ── Reject an oversized batch before reading anything ─────────────────
+    # Content-Length is advisory (a client can lie, and it includes multipart
+    # framing overhead), so it is a cheap early-out, not the real guard. The
+    # running total inside the read loop below is what actually enforces the
+    # cap.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit():
+        declared_mb = int(declared) / (1024 * 1024)
+        if declared_mb > settings.BULK_MAX_TOTAL_MB * 1.1:  # allow for framing
+            logger.warning(
+                f"Batch rejected on Content-Length | user={user_id} declared={declared_mb:.0f}MB"
+            )
+            raise FileTooLarge(settings.BULK_MAX_TOTAL_MB)
+
     # ── Read + validate every file up front ───────────────────────────────
+    #
+    # The cumulative size is checked as each file is read, and the loop stops
+    # the moment the cap is passed. The previous version read every file
+    # fully into memory and only then compared the total against
+    # BULK_MAX_TOTAL_MB — so 50 files x 10MB reached ~500MB resident on a
+    # 512MB instance before the 150MB limit was ever evaluated, and the
+    # process was OOM-killed before it could reject anything.
+    max_total_bytes = settings.BULK_MAX_TOTAL_MB * 1024 * 1024
     valid_items: list[dict] = []
     job_ids: list[str] = []
     total_bytes = 0
@@ -81,9 +108,25 @@ async def bulk_upload(
         contents = await f.read()
         filename = (f.filename or "resume").strip()
         mime = (f.content_type or "").lower().strip()
+        total_bytes += len(contents)
+
+        if total_bytes > max_total_bytes:
+            # Drop everything already buffered before raising, so the bytes
+            # are reclaimable while the error response is being built.
+            for item in valid_items:
+                item["bytes"] = b""
+            valid_items.clear()
+            del contents
+            for jid in job_ids:
+                _jobs.pop(jid, None)
+            logger.warning(
+                f"Batch rejected mid-read | user={user_id} "
+                f"at={total_bytes / (1024 * 1024):.0f}MB cap={settings.BULK_MAX_TOTAL_MB}MB"
+            )
+            raise FileTooLarge(settings.BULK_MAX_TOTAL_MB)
+
         job_id = str(uuid.uuid4())
         job_ids.append(job_id)
-        total_bytes += len(contents)
 
         try:
             effective_mime = validate_upload(contents, filename, mime)
@@ -109,12 +152,8 @@ async def bulk_upload(
             "mime": effective_mime, "filename": filename,
         })
 
+
     total_mb = total_bytes / (1024 * 1024)
-    if total_mb > settings.BULK_MAX_TOTAL_MB:
-        # Roll back the jobs we just created — reject the whole batch.
-        for jid in job_ids:
-            _jobs.pop(jid, None)
-        raise FileTooLarge(settings.BULK_MAX_TOTAL_MB)
 
     if not valid_items:
         raise EmptyBatch()
@@ -183,16 +222,8 @@ def _get_report_summary(report_id: str, db) -> dict | None:
             logger.warning(f"Ranking DB lookup failed for {report_id}: {e}")
 
     data = _jobs.get(f"report_{report_id}")
-    if data:
-        cred = data.get("credibility") or {}
-        cand = data.get("candidate") or {}
-        return {
-            "id": report_id,
-            "file_name": data.get("file_name"),
-            "candidate_name": cand.get("name") or "Unknown",
-            "overall_score": cred.get("overall", 0),
-            "recommendation": cred.get("recommendation", "manual_review"),
-        }
+    if isinstance(data, dict) and data:
+        return report_summary_row(report_id, data)
     return None
 
 
@@ -315,14 +346,21 @@ def _fetch_full_report(report_id: str, db) -> dict | None:
                 .execute()
             )
             if res.data:
-                return res.data
+                row = dict(res.data)
+                row["report_data"] = normalize_report(row.get("report_data"))
+                return row
         except Exception as e:
             logger.warning(f"Duplicate-detection DB lookup failed for {report_id}: {e}")
 
     data = _jobs.get(f"report_{report_id}")
-    if data:
-        cand = data.get("candidate") or {}
-        return {"id": report_id, "candidate_name": cand.get("name") or "Unknown", "report_data": data}
+    if isinstance(data, dict) and data:
+        report = normalize_report(data)
+        candidate = as_dict(report.get("candidate"))
+        return {
+            "id": report_id,
+            "candidate_name": as_str(candidate.get("name")) or "Unknown",
+            "report_data": report,
+        }
     return None
 
 
@@ -379,14 +417,16 @@ async def bulk_notify_all(
         raise ForbiddenError()
 
     status = _build_status_and_ranking(batch, db)
-    sender_name = current_user.get("full_name") or current_user.get("email") or "The Hiring Team"
+    sender_name = directory.get_display_name(
+        db, current_user["id"], current_user.get("email") or "The Hiring Team"
+    )
 
     results = []
     for r in status["ranking"]:
         report_id = r["report_id"]
         full = _fetch_full_report(report_id, db)
-        candidate = (full.get("report_data") or {}).get("candidate") if full else None
-        candidate_email = (candidate or {}).get("email")
+        candidate = as_dict(as_dict(full).get("report_data")).get("candidate") if full else None
+        candidate_email = as_dict(candidate).get("email")
         candidate_name = r.get("candidate_name") or "Candidate"
 
         if not candidate_email:
@@ -454,7 +494,7 @@ async def bulk_duplicate_check(
         full = _fetch_full_report(r["report_id"], db)
         if not full:
             continue
-        fingerprint = extract_fingerprint_text(full.get("report_data") or {})
+        fingerprint = extract_fingerprint_text(as_dict(full.get("report_data")))
         items.append({"id": r["report_id"], "name": full.get("candidate_name") or r["candidate_name"], "text": fingerprint})
 
     clusters = find_duplicate_clusters(items)
