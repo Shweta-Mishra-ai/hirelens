@@ -197,6 +197,67 @@ without an account. The detail is in the logs and in
 
 ---
 
+## When something says it failed
+
+A red tick is not a diagnosis. Each of these looks like a broken build or a
+broken server and is caused by something else entirely.
+
+### CI jobs fail in about two seconds with no logs
+
+Open any failed job. If it shows **no runner** (`runner_id: 0`, an empty
+runner name) and the log download 404s, no step ever executed — this says
+nothing about the code.
+
+That is GitHub Actions declining to run, almost always the monthly minute
+allowance. Public repositories get Actions free; private ones spend from a
+quota, so making a repository private can silently stop CI. Check
+**Settings → Billing and licensing → Actions** for minutes used and whether
+the spending limit is £0.
+
+While that is unresolved, `./scripts/verify.sh` runs the same four steps this
+workflow runs, with the same Python version and environment, and tells you
+what CI would have.
+
+### The API is unreachable, or the first request takes a minute
+
+Render's free instances sleep after roughly 15 minutes idle, and the request
+that wakes one waits 30–60 seconds for the container to start. Set
+`BACKEND_URL` to the service's own public URL so the keep-alive self-ping
+runs — without it the pinger logs a warning at startup and does nothing.
+
+### The API returns 502, or the deploy never goes live
+
+Read the Render logs from the top. The app refuses to start, on purpose, in
+two cases, and says which in the last line before it exits:
+
+- `SECRET_KEY` missing or under 32 characters in production. Tokens signed
+  with a key published in a public repository can be forged by anyone.
+- `ALLOWED_ORIGINS` set to `*` in production. That lets any website make
+  authenticated requests to the API.
+
+Both are configuration, not code. Set the variable and redeploy.
+
+### The Docker build cannot find the Dockerfile or requirements.txt
+
+`render.yaml` builds with `dockerContext: ./backend`, because the Dockerfile
+copies `requirements.txt` from the build context. A root context cannot see
+it. If the Render service was created by hand rather than from this
+blueprint, set **Root Directory** to `backend` in the service settings.
+
+### Vercel builds nothing, or 404s on every route
+
+The Next app is in `frontend/`, not at the repository root. The Vercel
+project needs **Root Directory** set to `frontend`. The `vercel.json` at the
+root is empty by design and does not override that setting.
+
+### Password reset emails stop arriving
+
+Supabase's built-in SMTP is rate-limited to a handful of messages an hour and
+is documented as development-only. Set custom SMTP under
+**Authentication → Emails**.
+
+---
+
 ## Verifying the deployment
 
 ```bash

@@ -2,8 +2,15 @@ services:
   - type: web
     name: hirelens-api
     runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
+    # Both paths are relative to the repository root, and both matter.
+    #
+    # The Dockerfile lives in backend/, and it does `COPY requirements.txt .`
+    # — a path relative to the BUILD CONTEXT, not to the Dockerfile. Pointing
+    # the context at the repository root makes that COPY fail, because
+    # requirements.txt is not there. This previously read `./Dockerfile` with
+    # a root context, which cannot build: there is no Dockerfile at the root.
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
     plan: free
     healthCheckPath: /api/v1/health
     #
@@ -35,6 +42,11 @@ services:
     envVars:
       - key: APP_ENV
         value: production
+      # Generated once, when Render first creates the service. Keep it —
+      # every session token is signed with it, so replacing this value signs
+      # every logged-in user out. If the service is ever deleted and
+      # recreated, a new value is generated and existing sessions die with
+      # the old one; that is expected, not a bug in the app.
       - key: SECRET_KEY
         generateValue: true
       - key: GEMINI_API_KEY
@@ -71,3 +83,10 @@ services:
       # comment and job_store.py for why.
       - key: WEB_CONCURRENCY
         value: "1"
+      # The service's own public URL, e.g. https://hirelens-api.onrender.com.
+      # Without it the keep-alive self-ping does not start and the free
+      # instance sleeps after ~15 minutes idle — the first request afterwards
+      # then takes 30-60s while the container wakes, which reads as the
+      # server being down.
+      - key: BACKEND_URL
+        sync: false
