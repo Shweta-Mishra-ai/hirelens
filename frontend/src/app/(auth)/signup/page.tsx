@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { MailCheck } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
-import { authAPI, APIError } from "@/lib/api";
+import { authAPI, APIError, API_URL_NOT_CONFIGURED } from "@/lib/api";
 import { useGoogleAuth } from "@/hooks/useGoogleAuth";
 import { InviteBanner } from "@/components/InviteBanner";
 import { readInviteParams, withInvite } from "@/lib/invite";
@@ -18,6 +18,9 @@ const MIN_PASSWORD_LENGTH = 8;
 /** Sign-up failures that aren't about a single field. */
 function signupError(err: unknown): string {
   if (!(err instanceof APIError)) return "Could not create your account. Please try again.";
+  // Checked before the generic status-0 branch below — see login/page.tsx.
+  if (err.code === API_URL_NOT_CONFIGURED) return err.message;
+
   if (err.status === 0 || err.code === "network_error") {
     return "Can't reach the HireLens server. Check your connection and try again.";
   }

@@ -218,6 +218,48 @@ While that is unresolved, `./scripts/verify.sh` runs the same four steps this
 workflow runs, with the same Python version and environment, and tells you
 what CI would have.
 
+### The site loads, but sign-in does nothing
+
+The most likely cause by far, and it does not look like a configuration
+problem from the outside: **the frontend was built without `NEXT_PUBLIC_API_URL`.**
+
+`NEXT_PUBLIC_*` values are inlined at build time. With it unset, the client
+falls back to `http://localhost:8000` — the *visitor's own machine*. Every page
+still renders, because they are static, and every request fails. Nothing
+appears in the API logs either, because no request ever reaches it.
+
+Fix it in the Vercel project's **Environment Variables**:
+
+```
+NEXT_PUBLIC_API_URL = https://<your-service>.onrender.com
+```
+
+Use the URL Render prints on deploy — the line reading
+`Available at your primary URL`. It is **not** necessarily named after the
+service; Render appends a suffix, so a service called `hirelens` can be served
+from `hirelens-gjoe.onrender.com`. Redeploy after setting it: the value is
+baked into the build, so an existing deployment will not pick it up.
+
+Since this is now a build-time error for any real Vercel deployment, a build
+that would have shipped broken fails instead, naming the variable.
+
+### Sign-in fails with the right API URL
+
+Then it is CORS. The API must list the site's origin:
+
+```
+ALLOWED_ORIGINS = https://your-app.vercel.app
+```
+
+The browser blocks these requests *before* sending them, so the API logs stay
+completely clean while sign-in appears broken. The API now warns at startup
+when `ALLOWED_ORIGINS` contains only local addresses, and logs the origins it
+is actually running with on every boot:
+
+```
+INFO:hirelens:Config: origins=['https://your-app.vercel.app'] frontend=… supabase=set redis=unset
+```
+
 ### The API is unreachable, or the first request takes a minute
 
 Render's free instances sleep after roughly 15 minutes idle, and the request
@@ -307,3 +349,58 @@ npm run dev
 Frontend on `:3000`, API docs on `:8000/docs`. Leave the Supabase variables
 unset and everything runs on a local SQLite file — no cloud account needed to
 develop.
+
+### Sign-in works once, then the app breaks for everyone
+
+Fixed in this version, and worth knowing about because the symptom points
+nowhere near the cause.
+
+`supabase-py` registers an auth-state listener on every client it builds. When
+a sign-in succeeds, that listener **replaces the calling client's own
+credentials with the new user's access token** and drops its cached PostgREST
+client. `auth._headers` is the same dict object handed to `auth.admin`, so the
+admin API loses service-role in the same instant.
+
+Sign-in used to run on the process-wide shared service-role client. One person
+signing in therefore handed the whole backend to that person:
+
+- every query afterwards ran under **their** RLS policies, not service-role;
+- `admin.list_users` and `admin.update_user_by_id` stopped being privileged,
+  which breaks the signup capacity check, password resets and team invites;
+- the next user's request was served with the **previous** user's token;
+- an hour later their JWT expired and **every** database call started failing,
+  for everybody, until someone signed in again and restarted the cycle.
+
+Nothing logged a word, and a restart always "fixed" it — for one login.
+
+Sign-in and sign-up now use a single-use client that is closed before the
+response is sent (`dependencies.get_auth_client`). The shared client also
+carries a guard that restores its service-role key and logs `CRITICAL` if any
+future code path ever authenticates on it, so this cannot come back silently.
+
+If you see this in the logs:
+
+```
+CRITICAL … A user session was created on the SHARED Supabase client
+```
+
+the guard caught something — the code that did it must use
+`dependencies.get_auth_client()` instead.
+
+### Accounts disappear after a redeploy
+
+If `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are not set, accounts are written
+to a local SQLite file at `/app/data/local.db`. On Render's free plan the
+container filesystem is ephemeral, so that file — and every account in it — is
+destroyed on **every deploy and every wake from idle sleep**. People who signed
+up successfully then cannot sign in, with a password that is genuinely correct.
+
+The API now logs this at `CRITICAL` on every production boot:
+
+```
+CRITICAL … No Supabase configured in production — accounts and reports are
+being written to a local SQLite file …
+```
+
+Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`, or attach a persistent disk
+(see the comment block in `render.yaml`), before taking real users.

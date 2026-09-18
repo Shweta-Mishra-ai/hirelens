@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.api.v1.endpoints import auth as auth_ep
 from app.core import local_db
-from app.core.dependencies import get_db
+from app.core.dependencies import get_db, get_auth_client
 from app.main import app
 from tests.fake_supabase import FakeSupabase, AuthApiError, AuthRetryableError, FakeUser
 
@@ -37,9 +37,16 @@ def mailer(monkeypatch):
 @pytest.fixture
 def supabase():
     fake = FakeSupabase({"profiles": [], "reports": []})
+    # The same fake stands in for both clients. In production they are
+    # deliberately different objects — signing in on the shared
+    # service-role client silently hands the whole process to that user
+    # (see test_shared_client_not_hijacked.py). What matters here is the
+    # behaviour against a Supabase that answers, so one fake is right.
     app.dependency_overrides[get_db] = lambda: fake
+    app.dependency_overrides[get_auth_client] = lambda: fake
     yield fake
     app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_auth_client, None)
 
 
 def _token_from(url: str) -> str:

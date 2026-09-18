@@ -23,7 +23,7 @@ Supabase's answer now stands. Only an unreachable Supabase falls back.
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.dependencies import get_db
+from app.core.dependencies import get_db, get_auth_client
 from app.main import app
 from app.services.teams import access
 from tests.fake_supabase import AuthApiError, AuthRetryableError, FakeSupabase, FakeUser
@@ -36,12 +36,19 @@ CREDS = {"email": "sb_user@example.com", "password": "Password123!", "full_name"
 @pytest.fixture
 def db():
     fake = FakeSupabase({"profiles": [], "teams": [], "team_members": [], "team_invites": []})
+    # The same fake stands in for both clients. In production they are
+    # deliberately different objects — signing in on the shared
+    # service-role client silently hands the whole process to that user
+    # (see test_shared_client_not_hijacked.py). What matters here is the
+    # behaviour against a Supabase that answers, so one fake is right.
     app.dependency_overrides[get_db] = lambda: fake
+    app.dependency_overrides[get_auth_client] = lambda: fake
     access._mem_teams.clear()
     access._mem_team_members.clear()
     access._mem_team_invites.clear()
     yield fake
     app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_auth_client, None)
 
 
 class TestSignup:

@@ -17,7 +17,12 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, EmailStr, field_validator
 
-from app.core.dependencies import get_db, get_current_user, get_redis
+from app.core.dependencies import (
+    get_db,
+    get_current_user,
+    get_redis,
+    get_auth_client,
+)
 from app.core.security import (
     create_access_token,
     hash_password,
@@ -104,7 +109,13 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/signup")
-async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redis=Depends(get_redis)):
+async def signup(
+    body: SignupRequest,
+    request: Request,
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+    sb=Depends(get_auth_client),
+):
     """
     Create a new recruiter account.
     Supports both Supabase Auth and graceful fallback in-memory auth.
@@ -152,8 +163,19 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
 
     if db:
         try:
-            # SYNC call — no await
-            result = db.auth.sign_up({
+            # SYNC call — no await.
+            #
+            # On a throwaway client, never on `db`. A successful sign-up hands
+            # back a session, and supabase-py reacts by replacing the calling
+            # client's service-role credentials with that new user's token.
+            # See dependencies.get_auth_client for the full explanation; the short
+            # version is that doing this on the shared client hands the whole
+            # backend to whoever signed in last.
+            if sb is None:
+                # Configured but unbuildable. Treated as an outage, not a
+                # rejection, so the local store still gets its turn.
+                raise ConnectionError("Supabase auth client unavailable")
+            result = sb.auth.sign_up({
                 "email": email_str,
                 "password": body.password,
                 "options": {
@@ -261,7 +283,13 @@ async def signup(body: SignupRequest, request: Request, db=Depends(get_db), redi
 
 
 @router.post("/login")
-async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=Depends(get_redis)):
+async def login(
+    body: LoginRequest,
+    request: Request,
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+    sb=Depends(get_auth_client),
+):
     """
     Login with email and password.
     Returns JWT access token valid for 7 days.
@@ -271,8 +299,15 @@ async def login(body: LoginRequest, request: Request, db=Depends(get_db), redis=
 
     if db:
         try:
-            # SYNC call — no await
-            result = db.auth.sign_in_with_password({
+            # SYNC call — no await.
+            #
+            # On a throwaway client, never on `db` — see dependencies
+            # .get_auth_client. Signing in on the shared client silently swaps its
+            # service-role key for this user's JWT, for every request the
+            # process serves afterwards.
+            if sb is None:
+                raise ConnectionError("Supabase auth client unavailable")
+            result = sb.auth.sign_in_with_password({
                 "email": email_str,
                 "password": body.password,
             })
