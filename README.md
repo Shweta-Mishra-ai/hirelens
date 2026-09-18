@@ -227,10 +227,17 @@ Every row is covered by a test that fails if the behaviour regresses.
 ## Testing
 
 ```bash
+./scripts/verify.sh          # everything CI runs, in order, locally
+
 cd backend && python -m pytest tests/ -v           # 1,307 tests
 cd frontend && npm test                            # 151 tests
 cd frontend && npm run build                       # types + production build
 ```
+
+`scripts/verify.sh` runs the same steps as `.github/workflows/ci.yml`, with the
+same Python version and environment. Worth having: when a GitHub account runs
+out of Actions minutes, every job is marked failed within seconds without a
+runner ever being assigned — a red tick that says nothing about the code.
 
 | | |
 |---|---|
