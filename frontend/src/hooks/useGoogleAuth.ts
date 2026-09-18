@@ -33,6 +33,16 @@ export function useGoogleAuth() {
   useEffect(() => {
     let cancelled = false;
 
+    // Wake the API while the person is still typing.
+    //
+    // A free-tier instance that has idled takes 30-60s to come back, and that
+    // wait landing on the sign-in button reads as the app being broken. This
+    // GET costs nothing and starts the container early, so by the time the
+    // form is submitted the server is usually already up. It runs before the
+    // Supabase check below on purpose: an unconfigured Google button is no
+    // reason to leave the API asleep.
+    void healthAPI.check().catch(() => {});
+
     if (!browserConfigured()) {
       setState({
         status: "unconfigured",

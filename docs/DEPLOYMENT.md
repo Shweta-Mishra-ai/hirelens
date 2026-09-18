@@ -404,3 +404,58 @@ being written to a local SQLite file …
 
 Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`, or attach a persistent disk
 (see the comment block in `render.yaml`), before taking real users.
+
+### Sign-in does nothing, and there is no log line anywhere
+
+If the API logs are clean **and** the Supabase logs show no `POST
+/auth/v1/token` (email sign-in) or `GET /auth/v1/user` (Google sign-in), then
+the request never left the browser. Two things do that, and neither produces
+an error on the server, because there is no request to produce one from.
+
+**1. `NEXT_PUBLIC_API_URL` missing from the build.** See "The site loads, but
+sign-in does nothing" above. Note that setting the variable is not enough —
+`NEXT_PUBLIC_*` is baked in at build time, so the Vercel project must be
+**redeployed** afterwards.
+
+**2. `ALLOWED_ORIGINS` that looks correct but does not match.** A browser's
+`Origin` header is scheme + host + optional port and nothing else. The CORS
+middleware compares by exact string equality, so every one of these blocks the
+whole frontend:
+
+```
+https://your-app.vercel.app/          ← one trailing slash
+https://your-app.vercel.app/login     ← pasted the page you were on
+HTTPS://Your-App.Vercel.App           ← copied with mixed case
+"https://your-app.vercel.app"         ← quotes kept from a JSON example
+your-app.vercel.app                   ← scheme left off
+```
+
+These are now all normalised to `https://your-app.vercel.app` at startup, and
+anything unusable is logged. Check the boot log to see exactly what the server
+ended up accepting:
+
+```
+INFO:hirelens:Config: origins=['https://your-app.vercel.app'] frontend=… supabase=set redis=unset
+```
+
+If your site's origin is not in that list, CORS will block it.
+
+### The app is asleep, or wakes up slowly
+
+Render's free plan spins an instance down after roughly 15 minutes without
+traffic, and the next request takes 30-60s while the container starts. That is
+the plan's behaviour, not a fault, but three things reduce it:
+
+- **Set `BACKEND_URL`** to the service's own public URL. The self-ping then
+  runs every 10 minutes and the instance never idles. Without it the API logs
+  a warning at boot saying exactly this.
+- The ping now refuses to start if `BACKEND_URL` is a **local address** — a
+  loopback ping keeps nothing awake while logging success forever — and
+  escalates to `CRITICAL` after three consecutive failures instead of warning
+  quietly until someone reports the app is down. A non-2xx response counts as
+  a failure, so a wrong path is caught too.
+- The sign-in page now pings `/api/v1/health` as soon as it loads, so the
+  container starts waking while the password is still being typed.
+
+A paid instance, or any external uptime pinger, removes the idle sleep
+entirely.

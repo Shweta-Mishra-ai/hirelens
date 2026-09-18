@@ -56,6 +56,125 @@ def _development_secret() -> str:
         return secrets.token_urlsafe(48)
 
 
+
+# ── CORS origins ────────────────────────────────────────────────────────────
+#
+# A browser's `Origin` header is a scheme, host and optional port. Nothing
+# else — no trailing slash, no path, and the host lower-cased. Starlette's
+# CORSMiddleware compares it to the configured list by exact string equality.
+#
+# So every one of these, typed into a hosting dashboard, silently blocks the
+# entire frontend:
+#
+#     https://app.vercel.app/          trailing slash
+#     https://app.vercel.app/login     someone pasted the page they were on
+#     HTTPS://App.Vercel.App           copied from a mixed-case source
+#     "https://app.vercel.app"         quotes kept from a JSON example
+#     app.vercel.app                   scheme left off
+#
+# and the failure is invisible from the server: the browser refuses to send
+# the request, so there is no log line, no error, no request id — on either
+# this API or Supabase. The only symptom is "sign-in does nothing".
+#
+# Normalising here is not tidiness. It is the difference between a deployment
+# that works and one that is silently broken with a correct-looking config.
+
+_ORIGIN_SEPARATORS = ",;\n\r\t "
+
+
+def normalize_origin(raw: str) -> str | None:
+    """
+    Turn one configured value into the exact string a browser would send, or
+    None if it cannot be one.
+    """
+    from urllib.parse import urlsplit
+
+    value = raw.strip().strip('"').strip("'").strip()
+    if not value:
+        return None
+    if value == "*":
+        # Meaningful to CORS, and refused outright in production by the
+        # startup check in main.py. Passed through unchanged.
+        return "*"
+
+    if "//" not in value:
+        # A bare host. It can only have meant https, and leaving it as-is
+        # guarantees it never matches anything.
+        logger.warning(
+            "ALLOWED_ORIGINS entry %r has no scheme; reading it as https://%s. "
+            "An origin must include the scheme to match anything.",
+            raw, value,
+        )
+        value = f"https://{value}"
+
+    parts = urlsplit(value)
+    if not parts.scheme or not parts.netloc:
+        logger.error(
+            "Ignoring ALLOWED_ORIGINS entry %r — it is not a usable origin. "
+            "Expected something like https://your-app.vercel.app", raw,
+        )
+        return None
+
+    # Scheme and host are case-insensitive; the port is part of the origin.
+    origin = f"{parts.scheme.lower()}://{parts.netloc.lower()}"
+    if parts.path.strip("/") or parts.query or parts.fragment:
+        logger.warning(
+            "ALLOWED_ORIGINS entry %r contains a path; using %s. A browser "
+            "never sends a path in the Origin header.", raw, origin,
+        )
+    return origin
+
+
+def parse_origins(raw: str) -> List[str]:
+    """
+    Read ALLOWED_ORIGINS in any of the shapes a person actually types, and
+    return normalised origins with duplicates removed and order preserved.
+
+    Accepts a JSON array, or a list separated by commas, semicolons, newlines
+    or spaces.
+    """
+    value = (raw or "").strip()
+    if not value:
+        return ["http://localhost:3000"]
+
+    items: List[str]
+    if value.startswith("["):
+        import json
+        try:
+            loaded = json.loads(value)
+            items = [str(i) for i in loaded] if isinstance(loaded, list) else [value]
+        except Exception:
+            logger.warning(
+                "ALLOWED_ORIGINS starts with '[' but is not valid JSON; "
+                "reading it as a plain separated list instead."
+            )
+            items = _split_origins(value.strip("[]"))
+    else:
+        items = _split_origins(value)
+
+    seen: dict[str, None] = {}
+    for item in items:
+        origin = normalize_origin(item)
+        if origin is not None:
+            seen[origin] = None
+
+    return list(seen) or ["http://localhost:3000"]
+
+
+def _split_origins(value: str) -> List[str]:
+    out, current = [], []
+    for ch in value:
+        if ch in _ORIGIN_SEPARATORS:
+            if current:
+                out.append("".join(current))
+                current = []
+        else:
+            current.append(ch)
+    if current:
+        out.append("".join(current))
+    return out
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(_ENV_PATH, ".env"),
@@ -149,27 +268,13 @@ class Settings(BaseSettings):
     @property
     def allowed_origins_list(self) -> List[str]:
         """
-        Parse ALLOWED_ORIGINS from any format:
-        - "http://localhost:3000"
-        - "http://localhost:3000,https://app.vercel.app"
-        - '["http://localhost:3000"]'
+        The origins CORS will accept, normalised so that a value which *looks*
+        right in a dashboard actually matches.
+
+        See `parse_origins` — this is the single highest-value normalisation
+        in the app, because getting it wrong produces no error anywhere.
         """
-        val = self.ALLOWED_ORIGINS.strip()
-        
-        # JSON array format: ["url1","url2"]
-        if val.startswith("["):
-            import json
-            try:
-                return json.loads(val)
-            except Exception:
-                pass
-        
-        # Comma-separated: url1,url2
-        if "," in val:
-            return [o.strip() for o in val.split(",") if o.strip()]
-        
-        # Single URL
-        return [val] if val else ["http://localhost:3000"]
+        return parse_origins(self.ALLOWED_ORIGINS)
 
     @property
     def is_production(self) -> bool:

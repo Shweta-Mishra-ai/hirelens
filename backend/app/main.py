@@ -24,6 +24,14 @@ logger = logging.getLogger("hirelens")
 
 
 # ── Self-ping keep-alive (prevents Render free tier sleep) ──────────────────
+#
+# Render's free plan spins an instance down after roughly 15 minutes without
+# traffic. Ten minutes leaves margin for one ping to fail without the gap
+# reaching that window.
+KEEP_ALIVE_SECONDS = 600
+# Let startup finish before the first self-ping.
+KEEP_ALIVE_STARTUP_DELAY = 30
+
 async def _keep_alive_loop():
     """
     Pings our own /api/v1/health endpoint every 10 minutes so Render never
@@ -36,25 +44,66 @@ async def _keep_alive_loop():
     """
     import httpx
 
-    backend_url = settings.BACKEND_URL.strip()
+    backend_url = settings.BACKEND_URL.strip().strip('"').strip("'")
     if not backend_url:
         logger.warning(
             "Keep-alive pinger not started: BACKEND_URL is not set. "
-            "Without it, this service may idle-sleep on Render's free tier. "
-            "Set BACKEND_URL to this service's own public URL to enable it."
+            "Without it this service idle-sleeps on Render's free tier, and "
+            "the first request afterwards takes 30-60s while the container "
+            "wakes — which reads as the app being down. Set BACKEND_URL to "
+            "this service's own public URL, e.g. "
+            "https://your-service.onrender.com"
         )
         return
 
-    await asyncio.sleep(30)  # let startup finish first
+    # A keep-alive that pings the wrong place is worse than none: it logs
+    # success forever while the service sleeps anyway.
+    if "//" not in backend_url:
+        backend_url = f"https://{backend_url}"
+    if "localhost" in backend_url or "127.0.0.1" in backend_url:
+        logger.error(
+            "Keep-alive not started: BACKEND_URL is %s, a local address. "
+            "The ping has to leave and re-enter through the public URL to "
+            "count as traffic; pinging localhost keeps nothing awake.",
+            backend_url,
+        )
+        return
+
+    await asyncio.sleep(KEEP_ALIVE_STARTUP_DELAY)
     ping_url = backend_url.rstrip("/") + "/api/v1/health"
+    logger.info("Keep-alive pinging %s every %ss", ping_url, KEEP_ALIVE_SECONDS)
+
+    consecutive_failures = 0
     while True:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 r = await client.get(ping_url)
-                logger.info(f"Keep-alive ping → {ping_url} [{r.status_code}]")
+            if r.status_code >= 400:
+                raise RuntimeError(f"unexpected status {r.status_code}")
+            if consecutive_failures:
+                logger.info(
+                    "Keep-alive ping recovered after %d failure(s)",
+                    consecutive_failures,
+                )
+            consecutive_failures = 0
+            logger.info(f"Keep-alive ping → {ping_url} [{r.status_code}]")
         except Exception as e:
-            logger.warning(f"Keep-alive ping failed: {e}")
-        await asyncio.sleep(600)  # 10 minutes
+            consecutive_failures += 1
+            # Escalated, because a quietly failing keep-alive is
+            # indistinguishable from a working one until the app is asleep
+            # and someone reports that it is down.
+            log = logger.critical if consecutive_failures >= 3 else logger.warning
+            log(
+                "Keep-alive ping to %s failed (%d in a row): %s%s",
+                ping_url,
+                consecutive_failures,
+                e,
+                " — this service will idle-sleep. Check that BACKEND_URL is "
+                "this service's own public URL."
+                if consecutive_failures >= 3
+                else "",
+            )
+        await asyncio.sleep(KEEP_ALIVE_SECONDS)
 
 
 @asynccontextmanager
