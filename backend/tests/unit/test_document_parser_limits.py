@@ -81,8 +81,11 @@ class TestNormalFiles:
 
 
 class TestTheZipBomb:
+    # classmethod, because a class-scoped fixture runs once while each test
+    # gets a fresh instance — pytest 10 removes the instance-method form.
     @pytest.fixture(scope="class")
-    def bomb(self) -> bytes:
+    @classmethod
+    def bomb(cls) -> bytes:
         """380KB on the wire, ~194MB unpacked — under every size limit."""
         return make_docx(paragraph(b"A" * 2000) * 100_000)
 

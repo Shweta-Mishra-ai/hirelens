@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [main, master]
 
+# A private repository spends Actions minutes from a monthly allowance, and
+# pushing three times in five minutes otherwise leaves three full runs racing
+# each other. Only the newest run for a branch is worth paying for; the older
+# ones are already out of date by the time they finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend-tests:
     name: Backend — pytest

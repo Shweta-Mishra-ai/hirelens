@@ -24,7 +24,10 @@ python-docx>=1.1.0,<2.0.0
 httpx>=0.27.0,<1.0.0
 
 # ── Auth & Security ───────────────────────────────────────────────────────────
-python-jose[cryptography]>=3.3.0,<4.0.0
+# PyJWT, not python-jose: the latter pulls in `ecdsa`, which has a published
+# timing-attack advisory with no fix. These are HS256 (HMAC) tokens, so
+# nothing here ever used ECDSA.
+PyJWT>=2.8.0,<3.0.0
 passlib[bcrypt]>=1.7.4,<2.0.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────────

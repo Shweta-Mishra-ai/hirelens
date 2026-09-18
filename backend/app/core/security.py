@@ -3,13 +3,19 @@ import hmac
 import logging
 from datetime import datetime, timedelta, timezone
 
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 
 from app.core.config import settings
 from app.core.exceptions import AuthError
 
 logger = logging.getLogger("hirelens")
 
+# PyJWT rather than python-jose. Both sign the same HS256 tokens, but
+# python-jose drags in `ecdsa`, which carries a published timing-attack
+# advisory its maintainers have declined to fix. Nothing here uses ECDSA —
+# these are HMAC tokens — so the dependency was pure exposure in an audit of a
+# product that gets sold, for two function calls.
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
@@ -22,8 +28,11 @@ def create_access_token(data: dict) -> str:
 
 def decode_token(token: str) -> dict:
     try:
+        # `algorithms` is explicit and single-valued on purpose: accepting
+        # whatever the token's own header asks for is how "alg": "none" and
+        # algorithm-confusion attacks get in.
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-    except JWTError:
+    except PyJWTError:
         raise AuthError("Invalid or expired token.")
 
 
