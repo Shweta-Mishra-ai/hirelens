@@ -1,9 +1,59 @@
+import logging
+import os
+import secrets
 from pathlib import Path
 from typing import List
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
+
+logger = logging.getLogger("hirelens")
+
+# Where a development machine keeps its own signing key.
+_DEV_SECRET_PATH = Path(
+    os.getenv("HIRELENS_DEV_SECRET_PATH")
+    or (Path(__file__).resolve().parent.parent.parent / "data" / ".dev-secret")
+)
+
+
+def _development_secret() -> str:
+    """
+    A signing key for development, generated once per machine and kept out of
+    git.
+
+    There is deliberately no hardcoded default. A constant like
+    ``"dev-secret-key-change-in-production-min-32"`` shipped in the source
+    means every install that forgets to set SECRET_KEY shares one publicly
+    known key — and this repository was public for a period, so anyone who
+    read it could mint valid tokens for any such deployment. It also trips
+    every secret scanner that looks at the repo, which is noise that trains
+    people to ignore real findings.
+
+    Generated on first run rather than per process, because a key that
+    changes on every restart invalidates every session — under ``--reload``
+    that means being signed out on every file save, which is indistinguishable
+    from a bug.
+    """
+    try:
+        if _DEV_SECRET_PATH.exists():
+            existing = _DEV_SECRET_PATH.read_text(encoding="utf-8").strip()
+            if len(existing) >= 32:
+                return existing
+        generated = secrets.token_urlsafe(48)
+        _DEV_SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _DEV_SECRET_PATH.write_text(generated, encoding="utf-8")
+        try:
+            _DEV_SECRET_PATH.chmod(0o600)
+        except OSError:
+            pass  # Windows, or a filesystem without POSIX modes.
+        return generated
+    except OSError:
+        # A read-only or otherwise unwritable checkout. Still better than a
+        # shared constant: this key is unique to the process, and production
+        # never reaches here because it refuses to start without an explicit
+        # SECRET_KEY.
+        return secrets.token_urlsafe(48)
 
 
 class Settings(BaseSettings):
@@ -15,7 +65,9 @@ class Settings(BaseSettings):
     )
 
     APP_ENV: str = "development"
-    SECRET_KEY: str = "dev-secret-key-change-in-production-min-32"
+    # No default. Production refuses to start without one (see main.py), and
+    # development fills it in below from a key generated on this machine.
+    SECRET_KEY: str = ""
     DEBUG: bool = False
 
     # CORS — stored as plain string, parsed manually
@@ -86,6 +138,13 @@ class Settings(BaseSettings):
     # Public Data Verification (Feature 3)
     GITHUB_TOKEN: str = ""             # optional — raises GitHub rate limit 60/hr → 5000/hr
     VERIFY_TIMEOUT_SECONDS: int = 20   # per external HTTP call
+
+    @model_validator(mode="after")
+    def _fill_development_secret(self):
+        """Give development a key of its own; leave production to fail loudly."""
+        if not self.SECRET_KEY and self.APP_ENV != "production":
+            object.__setattr__(self, "SECRET_KEY", _development_secret())
+        return self
 
     @property
     def allowed_origins_list(self) -> List[str]:

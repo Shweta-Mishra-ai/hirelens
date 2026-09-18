@@ -21,7 +21,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hirelens")
 
 
-DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production-min-32"
 
 
 # ── Self-ping keep-alive (prevents Render free tier sleep) ──────────────────
@@ -68,12 +67,16 @@ async def lifespan(app: FastAPI):
     # refuses to boot is not. Forgeable JWTs and wide-open CORS are not
     # conditions this app should ever silently serve traffic under.
     if settings.is_production:
-        if settings.SECRET_KEY == DEFAULT_SECRET_KEY or len(settings.SECRET_KEY) < 32:
+        # There is no longer a shipped default to compare against — an unset
+        # key is simply empty here, because development fills its own in from
+        # a machine-local file and production is left to fail.
+        if len(settings.SECRET_KEY) < 32:
             logger.critical(
-                "SECURITY: SECRET_KEY is unset or using the default dev value in "
-                "production. JWTs can be forged by anyone who has read this public "
-                "repo. Set a real random SECRET_KEY (32+ chars) in your environment "
-                "immediately — e.g. `python -c \"import secrets; print(secrets.token_urlsafe(48))\"`."
+                "SECURITY: SECRET_KEY is unset or too short in production. "
+                "Session tokens are signed with it, so a guessable value means "
+                "anyone can mint one. Set a real random SECRET_KEY (32+ chars) "
+                "in your environment immediately — e.g. "
+                "`python -c \"import secrets; print(secrets.token_urlsafe(48))\"`."
             )
             raise SystemExit(
                 "Refusing to start: SECRET_KEY is missing or too short for a "

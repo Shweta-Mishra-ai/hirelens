@@ -230,8 +230,9 @@ runs — without it the pinger logs a warning at startup and does nothing.
 Read the Render logs from the top. The app refuses to start, on purpose, in
 two cases, and says which in the last line before it exits:
 
-- `SECRET_KEY` missing or under 32 characters in production. Tokens signed
-  with a key published in a public repository can be forged by anyone.
+- `SECRET_KEY` missing or under 32 characters in production. There is no
+  default to fall back on, deliberately: a shipped constant would be one
+  publicly known signing key shared by every install that forgot to set one.
 - `ALLOWED_ORIGINS` set to `*` in production. That lets any website make
   authenticated requests to the API.
 

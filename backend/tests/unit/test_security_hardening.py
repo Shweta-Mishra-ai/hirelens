@@ -155,18 +155,43 @@ class TestSearchSanitization:
 
 # ── Production startup security checks ──────────────────────────────────────
 class TestProductionSecurityChecks:
-    def test_default_secret_key_is_flaggable_in_production(self):
+    def test_production_does_not_invent_a_secret_key(self):
+        """
+        Production must be left holding nothing, so main.py's startup check
+        can refuse. Only development fills a key in for itself.
+        """
         from app.core.config import Settings
-        s = Settings(APP_ENV="production", SECRET_KEY="dev-secret-key-change-in-production-min-32")
+        s = Settings(APP_ENV="production", SECRET_KEY="")
         assert s.is_production is True
-        # This is exactly the condition main.py's startup check guards against
-        assert s.SECRET_KEY == "dev-secret-key-change-in-production-min-32"
+        assert s.SECRET_KEY == ""
+        # This is exactly the condition main.py's startup check guards against.
+        assert len(s.SECRET_KEY) < 32
 
-    def test_custom_secret_key_not_flaggable(self):
+    def test_development_generates_its_own_key(self, tmp_path, monkeypatch):
+        """
+        No shipped constant. A hardcoded default would be one publicly known
+        signing key shared by every install that forgot to set one — and this
+        repository was public for a period.
+        """
+        monkeypatch.setenv("HIRELENS_DEV_SECRET_PATH", str(tmp_path / ".dev-secret"))
+        import importlib
+        from app.core import config as config_module
+        importlib.reload(config_module)
+
+        s = config_module.Settings(APP_ENV="development", SECRET_KEY="")
+        assert len(s.SECRET_KEY) >= 32
+
+        # Stable across restarts, or every reload signs everyone out.
+        again = config_module.Settings(APP_ENV="development", SECRET_KEY="")
+        assert again.SECRET_KEY == s.SECRET_KEY
+
+        importlib.reload(config_module)
+
+    def test_custom_secret_key_is_used_as_given(self):
         from app.core.config import Settings
         s = Settings(APP_ENV="production", SECRET_KEY="a" * 48)
+        assert s.SECRET_KEY == "a" * 48
         assert len(s.SECRET_KEY) >= 32
-        assert s.SECRET_KEY != "dev-secret-key-change-in-production-min-32"
 
     def test_development_mode_is_not_production(self):
         from app.core.config import Settings

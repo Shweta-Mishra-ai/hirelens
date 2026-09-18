@@ -16,6 +16,7 @@ tests/
 
 # Local database files and anything that looks like real credentials.
 data/
+.dev-secret
 *.db
 .env
 .env.*

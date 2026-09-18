@@ -15,6 +15,9 @@ htmlcov/
 .coverage
 *.db
 backend/data/
+# The development signing key, generated per machine. Never commit it.
+backend/data/.dev-secret
+.dev-secret
 
 # Node
 node_modules/
