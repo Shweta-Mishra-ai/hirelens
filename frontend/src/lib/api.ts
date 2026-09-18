@@ -32,6 +32,33 @@ const BASE =
 
 export const API_BASE = BASE;
 
+/**
+ * A build that was given no API URL, served from somewhere that is not a
+ * developer's laptop.
+ *
+ * NEXT_PUBLIC_* values are inlined at build time, so a missing
+ * NEXT_PUBLIC_API_URL leaves every request pointed at http://localhost:8000 —
+ * the visitor's own machine. The pages still load, because they are static,
+ * and nothing else works at all. next.config.js refuses to produce such a
+ * build for a real deployment; this is the second line, for a build made
+ * before that guard existed or outside Vercel.
+ *
+ * Worth naming precisely, because the symptom otherwise reads as "the server
+ * is down" and sends someone to check a server that is perfectly healthy.
+ */
+function buildIsMissingItsApiUrl(): boolean {
+  if (typeof window === "undefined") return false;
+  const apiIsLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(BASE);
+  const pageIsLocal = /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
+  return apiIsLocal && !pageIsLocal;
+}
+
+const MISCONFIGURED_MESSAGE =
+  "This site was built without its API address, so it is trying to reach a " +
+  "server on your own computer. Nothing is wrong with your connection or " +
+  "your details. Whoever deployed it needs to set NEXT_PUBLIC_API_URL to the " +
+  "API's public URL and redeploy.";
+
 // ── Error type ────────────────────────────────────────────────────────────────
 export class APIError extends Error {
   constructor(
@@ -63,6 +90,12 @@ async function req<T>(
   // Only set Content-Type for non-FormData bodies
   if (rest.body && !(rest.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
+  }
+
+  // Checked before the request rather than after it fails, so the answer is
+  // the actual cause instead of a network error.
+  if (buildIsMissingItsApiUrl()) {
+    throw new APIError(0, "api_url_not_configured", MISCONFIGURED_MESSAGE);
   }
 
   let res: Response;

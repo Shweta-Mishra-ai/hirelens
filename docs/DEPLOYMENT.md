@@ -218,6 +218,48 @@ While that is unresolved, `./scripts/verify.sh` runs the same four steps this
 workflow runs, with the same Python version and environment, and tells you
 what CI would have.
 
+### The site loads, but sign-in does nothing
+
+The most likely cause by far, and it does not look like a configuration
+problem from the outside: **the frontend was built without `NEXT_PUBLIC_API_URL`.**
+
+`NEXT_PUBLIC_*` values are inlined at build time. With it unset, the client
+falls back to `http://localhost:8000` — the *visitor's own machine*. Every page
+still renders, because they are static, and every request fails. Nothing
+appears in the API logs either, because no request ever reaches it.
+
+Fix it in the Vercel project's **Environment Variables**:
+
+```
+NEXT_PUBLIC_API_URL = https://<your-service>.onrender.com
+```
+
+Use the URL Render prints on deploy — the line reading
+`Available at your primary URL`. It is **not** necessarily named after the
+service; Render appends a suffix, so a service called `hirelens` can be served
+from `hirelens-gjoe.onrender.com`. Redeploy after setting it: the value is
+baked into the build, so an existing deployment will not pick it up.
+
+Since this is now a build-time error for any real Vercel deployment, a build
+that would have shipped broken fails instead, naming the variable.
+
+### Sign-in fails with the right API URL
+
+Then it is CORS. The API must list the site's origin:
+
+```
+ALLOWED_ORIGINS = https://your-app.vercel.app
+```
+
+The browser blocks these requests *before* sending them, so the API logs stay
+completely clean while sign-in appears broken. The API now warns at startup
+when `ALLOWED_ORIGINS` contains only local addresses, and logs the origins it
+is actually running with on every boot:
+
+```
+INFO:hirelens:Config: origins=['https://your-app.vercel.app'] frontend=… supabase=set redis=unset
+```
+
 ### The API is unreachable, or the first request takes a minute
 
 Render's free instances sleep after roughly 15 minutes idle, and the request

@@ -93,6 +93,32 @@ async def lifespan(app: FastAPI):
                 "environment. Set it to your real frontend domain(s) and redeploy."
             )
 
+        # A warning, not a refusal: the API works perfectly with only localhost
+        # allowed, it just cannot be reached from the deployed site. The browser
+        # blocks those requests before they are sent, so this surfaces as
+        # "login does not work" with a completely healthy API and nothing in
+        # these logs — the request never arrives to be logged.
+        origins = settings.allowed_origins_list
+        if origins and all(
+            "localhost" in o or "127.0.0.1" in o for o in origins
+        ):
+            logger.warning(
+                "ALLOWED_ORIGINS is %s — only local addresses. A deployed "
+                "frontend will be blocked by the browser before its requests "
+                "reach this API, which looks like sign-in being broken while "
+                "every health check here passes. Add the site's origin, e.g. "
+                "ALLOWED_ORIGINS=https://your-app.vercel.app",
+                origins,
+            )
+
+        logger.info(
+            "Config: origins=%s frontend=%s supabase=%s redis=%s",
+            origins,
+            settings.FRONTEND_URL,
+            "set" if settings.SUPABASE_URL else "unset",
+            "set" if settings.REDIS_URL else "unset",
+        )
+
     # ── Worker/job-store consistency check ──────────────────────────────────
     # See the comment in Dockerfile above the uvicorn CMD for the full
     # explanation. This is a best-effort runtime check (uvicorn doesn't
