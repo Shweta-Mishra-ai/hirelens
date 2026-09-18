@@ -9,7 +9,7 @@ why the system is built to degrade rather than fall over.
 
 ```mermaid
 flowchart LR
-    UI["<b>Vercel</b><br/>Next.js 14 · App Router<br/>React · Tailwind · Zustand"]
+    UI["<b>Vercel</b><br/>Next.js 16 · App Router<br/>React 19 · Tailwind · Zustand"]
 
     subgraph API["Render · FastAPI"]
         direction TB

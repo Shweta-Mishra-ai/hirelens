@@ -1,3 +1,4 @@
+import type React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -9,7 +10,9 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
  * navigation included. Verified against the running app: a `reports` field
  * arriving as an object instead of an array did exactly that.
  */
-function Boom({ shouldThrow = true }: { shouldThrow?: boolean }): JSX.Element {
+// React.JSX, not the bare global: React 19 removed the global JSX namespace,
+// so `JSX.Element` no longer resolves.
+function Boom({ shouldThrow = true }: { shouldThrow?: boolean }): React.JSX.Element {
   if (shouldThrow) throw new TypeError("simulated render failure");
   return <p>recovered content</p>;
 }

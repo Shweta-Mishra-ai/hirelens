@@ -13,7 +13,7 @@ public record. Nothing is decided for you.
 [![Tests](https://img.shields.io/badge/tests-1%2C307%20backend%20·%20151%20frontend-10B981?style=flat-square)](#testing)
 [![Coverage](https://img.shields.io/badge/backend%20coverage-87%25-10B981?style=flat-square)](#testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![Next.js](https://img.shields.io/badge/Next.js-14.2-000?style=flat-square&logo=next.js)](https://nextjs.org)
+[![Next.js](https://img.shields.io/badge/Next.js-16.3-000?style=flat-square&logo=next.js)](https://nextjs.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Supabase](https://img.shields.io/badge/Supabase-Postgres-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](https://supabase.com)
 [![Licence](https://img.shields.io/badge/licence-proprietary-6366F1?style=flat-square)](LICENSE)
@@ -244,6 +244,7 @@ runner ever being assigned — a red tick that says nothing about the code.
 | Backend | **1,307** tests · **87%** coverage |
 | Frontend | **151** tests · strict TypeScript · zero lint warnings |
 | CI | pytest · vitest · `pip-audit` · `npm audit` · production build |
+| Advisories | `pip-audit`: none · `npm audit`: none |
 
 Two things the suite does that a typical one does not:
 
@@ -282,7 +283,7 @@ dependencies were removed rather than carried.
 **Backend** — FastAPI · Python 3.12 · Pydantic v2 · Supabase (Postgres + Auth)
 · SQLite fallback · optional Redis · pdfminer.six · python-docx · bcrypt
 
-**Frontend** — Next.js 14 App Router · TypeScript (strict) · Tailwind ·
+**Frontend** — Next.js 16 App Router · React 19 · TypeScript (strict) · Tailwind ·
 Zustand · Vitest + Testing Library
 
 **AI** — Gemini 2.5 Flash, with Groq and Anthropic as fallbacks
