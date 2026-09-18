@@ -28,7 +28,16 @@ httpx>=0.27.0,<1.0.0
 # timing-attack advisory with no fix. These are HS256 (HMAC) tokens, so
 # nothing here ever used ECDSA.
 PyJWT>=2.8.0,<3.0.0
-passlib[bcrypt]>=1.7.4,<2.0.0
+# bcrypt is declared directly because app/core/security.py imports it
+# directly. It used to arrive only as an extra of `passlib[bcrypt]` — an
+# undeclared dependency for the one thing that hashes every password, which
+# would have stopped the app booting the moment passlib was dropped or a
+# resolver declined the extra.
+#
+# passlib itself is gone: nothing imports it, and its bcrypt backend probes
+# `bcrypt.__about__.__version__`, which bcrypt 4.1 removed. See the comment
+# in security.py.
+bcrypt>=4.1.0,<6.0.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 python-dateutil>=2.9.0,<3.0.0

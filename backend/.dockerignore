@@ -1,0 +1,25 @@
+# Nothing here belongs in the image, and several of these are large enough to
+# slow or break a build on a small instance.
+.venv/
+.venv-verify/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Tests and fixtures are not run from the image.
+tests/
+
+# Local database files and anything that looks like real credentials.
+data/
+*.db
+.env
+.env.*
+!.env.example
+
+Dockerfile
+.dockerignore
