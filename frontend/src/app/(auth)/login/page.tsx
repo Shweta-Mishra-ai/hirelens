@@ -2,7 +2,7 @@
 import { Suspense, useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuthStore } from "@/store/auth";
-import { authAPI, APIError } from "@/lib/api";
+import { authAPI, APIError, API_URL_NOT_CONFIGURED } from "@/lib/api";
 import { useGoogleAuth } from "@/hooks/useGoogleAuth";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
@@ -22,6 +22,16 @@ import { readInviteParams } from "@/lib/invite";
 function signInError(err: unknown): { message: string; hint?: string } {
   if (!(err instanceof APIError)) {
     return { message: "Something went wrong signing you in. Please try again." };
+  }
+
+  // Checked before the generic status-0 branch below: this error also has
+  // status 0, and "check your connection" is actively misleading advice for a
+  // site that was deployed without its API address.
+  if (err.code === API_URL_NOT_CONFIGURED) {
+    return {
+      message: "This site is not finished being set up.",
+      hint: err.message,
+    };
   }
 
   if (err.status === 0 || err.code === "network_error") {

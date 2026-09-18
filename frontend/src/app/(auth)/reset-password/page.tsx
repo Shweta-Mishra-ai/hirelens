@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { authAPI, APIError } from "@/lib/api";
+import { authAPI, APIError, API_URL_NOT_CONFIGURED } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Feedback";
@@ -24,6 +24,16 @@ function resetError(err: unknown): { message: string; hint?: string } {
   if (!(err instanceof APIError)) {
     return { message: "Something went wrong. Please try again." };
   }
+  // Checked before the generic status-0 branch below: this error also has
+  // status 0, and "check your connection" is actively misleading advice for a
+  // site that was deployed without its API address.
+  if (err.code === API_URL_NOT_CONFIGURED) {
+    return {
+      message: "This site is not finished being set up.",
+      hint: err.message,
+    };
+  }
+
   if (err.status === 0 || err.code === "network_error") {
     return {
       message: "Can't reach the HireLens server.",

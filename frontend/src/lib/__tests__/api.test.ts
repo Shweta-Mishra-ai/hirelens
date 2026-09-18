@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { APIError, toAPIError } from "@/lib/api";
 
 /**
@@ -259,5 +259,96 @@ describe("report shape coercion", () => {
     const report = await reportsAPI.get("r1", "tok") as unknown as Record<string, unknown>;
     expect(report.some_future_field).toEqual({ a: 1 });
     expect(report.id).toBe("r1");
+  });
+});
+
+/**
+ * A site deployed without NEXT_PUBLIC_API_URL calls http://localhost:8000 —
+ * the visitor's own machine. Every request fails while every page renders,
+ * and the honest-looking diagnosis ("check your connection") sends the person
+ * to inspect a network that is working perfectly.
+ *
+ * The client throws before the fetch so the reason is the actual cause. These
+ * pin the two halves that make that useful: the request never goes out, and
+ * the error carries a code the UI can distinguish from a real network error —
+ * both of which have status 0.
+ */
+describe("a build with no API address", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  async function loadApiServedFrom(host: string, apiUrl: string | undefined) {
+    vi.resetModules();
+    if (apiUrl === undefined) {
+      delete process.env.NEXT_PUBLIC_API_URL;
+    } else {
+      process.env.NEXT_PUBLIC_API_URL = apiUrl;
+    }
+    vi.stubGlobal("window", {
+      ...globalThis.window,
+      location: { ...globalThis.window.location, hostname: host },
+    });
+    return await import("@/lib/api");
+  }
+
+  it("refuses before sending anything when served from a real domain", async () => {
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      calls.push(String(url));
+      throw new Error("the request should never have been made");
+    }) as unknown as typeof fetch;
+
+    const api = await loadApiServedFrom("hirelens-theta.vercel.app", undefined);
+
+    await expect(api.authAPI.login("a@b.com", "pw")).rejects.toMatchObject({
+      status: 0,
+      code: api.API_URL_NOT_CONFIGURED,
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("says what is actually wrong, not 'check your connection'", async () => {
+    const api = await loadApiServedFrom("hirelens-theta.vercel.app", undefined);
+    await expect(api.authAPI.login("a@b.com", "pw")).rejects.toThrow(
+      /NEXT_PUBLIC_API_URL/,
+    );
+  });
+
+  it("does not interfere with local development", async () => {
+    let sent = 0;
+    globalThis.fetch = (async () => {
+      sent += 1;
+      return new Response(JSON.stringify({ access_token: "t" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const api = await loadApiServedFrom("localhost", "http://localhost:8000");
+    await api.authAPI.login("a@b.com", "pw");
+    expect(sent).toBe(1);
+  });
+
+  it("stays out of the way once a real API URL is configured", async () => {
+    let sent = 0;
+    globalThis.fetch = (async () => {
+      sent += 1;
+      return new Response(JSON.stringify({ access_token: "t" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const api = await loadApiServedFrom(
+      "hirelens-theta.vercel.app",
+      "https://hirelens-gjoe.onrender.com",
+    );
+    await api.authAPI.login("a@b.com", "pw");
+    expect(sent).toBe(1);
   });
 });

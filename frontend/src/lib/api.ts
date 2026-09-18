@@ -53,7 +53,15 @@ function buildIsMissingItsApiUrl(): boolean {
   return apiIsLocal && !pageIsLocal;
 }
 
-const MISCONFIGURED_MESSAGE =
+/**
+ * The code carried by the APIError thrown when the build has no API address.
+ * Exported so the auth screens can branch on it BEFORE their generic
+ * `status === 0` branch, which would otherwise bury it under "check your
+ * connection" — advice that sends the user to look at a working network.
+ */
+export const API_URL_NOT_CONFIGURED = "api_url_not_configured";
+
+export const MISCONFIGURED_MESSAGE =
   "This site was built without its API address, so it is trying to reach a " +
   "server on your own computer. Nothing is wrong with your connection or " +
   "your details. Whoever deployed it needs to set NEXT_PUBLIC_API_URL to the " +
@@ -95,7 +103,7 @@ async function req<T>(
   // Checked before the request rather than after it fails, so the answer is
   // the actual cause instead of a network error.
   if (buildIsMissingItsApiUrl()) {
-    throw new APIError(0, "api_url_not_configured", MISCONFIGURED_MESSAGE);
+    throw new APIError(0, API_URL_NOT_CONFIGURED, MISCONFIGURED_MESSAGE);
   }
 
   let res: Response;

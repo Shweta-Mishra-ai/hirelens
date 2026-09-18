@@ -349,3 +349,58 @@ npm run dev
 Frontend on `:3000`, API docs on `:8000/docs`. Leave the Supabase variables
 unset and everything runs on a local SQLite file — no cloud account needed to
 develop.
+
+### Sign-in works once, then the app breaks for everyone
+
+Fixed in this version, and worth knowing about because the symptom points
+nowhere near the cause.
+
+`supabase-py` registers an auth-state listener on every client it builds. When
+a sign-in succeeds, that listener **replaces the calling client's own
+credentials with the new user's access token** and drops its cached PostgREST
+client. `auth._headers` is the same dict object handed to `auth.admin`, so the
+admin API loses service-role in the same instant.
+
+Sign-in used to run on the process-wide shared service-role client. One person
+signing in therefore handed the whole backend to that person:
+
+- every query afterwards ran under **their** RLS policies, not service-role;
+- `admin.list_users` and `admin.update_user_by_id` stopped being privileged,
+  which breaks the signup capacity check, password resets and team invites;
+- the next user's request was served with the **previous** user's token;
+- an hour later their JWT expired and **every** database call started failing,
+  for everybody, until someone signed in again and restarted the cycle.
+
+Nothing logged a word, and a restart always "fixed" it — for one login.
+
+Sign-in and sign-up now use a single-use client that is closed before the
+response is sent (`dependencies.get_auth_client`). The shared client also
+carries a guard that restores its service-role key and logs `CRITICAL` if any
+future code path ever authenticates on it, so this cannot come back silently.
+
+If you see this in the logs:
+
+```
+CRITICAL … A user session was created on the SHARED Supabase client
+```
+
+the guard caught something — the code that did it must use
+`dependencies.get_auth_client()` instead.
+
+### Accounts disappear after a redeploy
+
+If `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are not set, accounts are written
+to a local SQLite file at `/app/data/local.db`. On Render's free plan the
+container filesystem is ephemeral, so that file — and every account in it — is
+destroyed on **every deploy and every wake from idle sleep**. People who signed
+up successfully then cannot sign in, with a password that is genuinely correct.
+
+The API now logs this at `CRITICAL` on every production boot:
+
+```
+CRITICAL … No Supabase configured in production — accounts and reports are
+being written to a local SQLite file …
+```
+
+Set `SUPABASE_URL` and `SUPABASE_SERVICE_KEY`, or attach a persistent disk
+(see the comment block in `render.yaml`), before taking real users.

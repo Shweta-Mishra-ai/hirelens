@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
-from app.core.dependencies import get_db
+from app.core.dependencies import get_db, get_auth_client
 from app.main import app
 from tests.fake_supabase import FakeSupabase
 
@@ -30,9 +30,16 @@ def broken_db():
         raise RuntimeError(SECRET)
 
     fake.table = table
+    # The same fake stands in for both clients. In production they are
+    # deliberately different objects — signing in on the shared
+    # service-role client silently hands the whole process to that user
+    # (see test_shared_client_not_hijacked.py). What matters here is the
+    # behaviour against a Supabase that answers, so one fake is right.
     app.dependency_overrides[get_db] = lambda: fake
+    app.dependency_overrides[get_auth_client] = lambda: fake
     yield fake
     app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_auth_client, None)
 
 
 class TestPublicHealth:
@@ -44,11 +51,13 @@ class TestPublicHealth:
     def test_a_healthy_database_reads_as_ok(self):
         fake = FakeSupabase({"reports": []})
         app.dependency_overrides[get_db] = lambda: fake
+        app.dependency_overrides[get_auth_client] = lambda: fake
         try:
             body = client.get("/api/v1/health").json()
             assert body["services"]["database"] == "ok"
         finally:
             app.dependency_overrides.pop(get_db, None)
+            app.dependency_overrides.pop(get_auth_client, None)
 
     def test_a_database_failure_is_reported_without_saying_why(self, broken_db):
         res = client.get("/api/v1/health")

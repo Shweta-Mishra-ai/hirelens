@@ -111,6 +111,23 @@ async def lifespan(app: FastAPI):
                 origins,
             )
 
+        # Not a refusal — running on the local store is a legitimate choice for
+        # a demo. It is a disaster silently, though: on Render's free plan the
+        # container filesystem is ephemeral, so /app/data/local.db is destroyed
+        # on every deploy AND every wake from idle sleep. Accounts created
+        # yesterday are simply gone, which the person experiences as sign-in
+        # having stopped working for no reason.
+        if not (settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY):
+            logger.critical(
+                "No Supabase configured in production — accounts and reports "
+                "are being written to a local SQLite file. On an ephemeral "
+                "container filesystem (Render's free plan, any redeploy) that "
+                "file is destroyed without warning, taking every account with "
+                "it: users who signed up successfully can no longer sign in. "
+                "Set SUPABASE_URL and SUPABASE_SERVICE_KEY, or attach a "
+                "persistent disk, before taking real users."
+            )
+
         logger.info(
             "Config: origins=%s frontend=%s supabase=%s redis=%s",
             origins,
