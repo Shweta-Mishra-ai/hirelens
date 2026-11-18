@@ -22,7 +22,15 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
 def create_access_token(data: dict) -> str:
     payload = data.copy()
-    payload["exp"] = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    now = datetime.now(timezone.utc)
+    # `iat` is what makes a session revocable: a password reset records a
+    # moment, and tokens issued before it are refused. See sessions.py.
+    payload["iat"] = int(now.timestamp())
+    # Millisecond precision for the revocation comparison: whole seconds
+    # would either refuse a sign-in made in the same second as a revocation
+    # or let a token from just before it through.
+    payload["iat_ms"] = int(now.timestamp() * 1000)
+    payload["exp"] = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 

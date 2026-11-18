@@ -262,7 +262,7 @@ _docs_enabled = not settings.is_production
 
 app = FastAPI(
     title="HireLens API",
-    description="AI-powered recruiter decision intelligence. Gemini 2.5 Flash backend.",
+    description="AI-powered recruiter decision intelligence.",
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs" if _docs_enabled else None,

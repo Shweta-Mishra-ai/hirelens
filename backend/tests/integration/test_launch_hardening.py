@@ -415,3 +415,84 @@ class TestEventLoopIsNotBlocked:
         # Each request makes two queries (page + count): 0.6s apiece. Run one
         # after another, four would take 2.4s.
         assert elapsed < 1.6, f"requests were serialised: {elapsed:.2f}s"
+
+
+# ── Session revocation ───────────────────────────────────────────────────────
+
+class TestSessionRevocation:
+    def test_sign_out_everywhere_ends_existing_sessions(self):
+        user = _account("revoke_everywhere@example.com")
+        assert client.get("/api/v1/reports", headers=user["headers"]).status_code == 200
+        res = client.post("/api/v1/auth/logout-all", headers=user["headers"])
+        assert res.status_code == 200, res.text
+        assert client.get("/api/v1/reports", headers=user["headers"]).status_code == 401
+
+    def test_a_new_sign_in_after_signing_out_everywhere_works(self):
+        user = _account("revoke_then_login@example.com")
+        client.post("/api/v1/auth/logout-all", headers=user["headers"])
+        res = client.post("/api/v1/auth/login", json={"email": user["email"], "password": "Password123!"})
+        fresh = {"Authorization": f"Bearer {res.json()['access_token']}"}
+        assert client.get("/api/v1/reports", headers=fresh).status_code == 200
+
+    def test_a_password_reset_ends_the_old_sessions(self):
+        from app.core import local_db
+
+        user = _account("revoke_on_reset@example.com")
+        token = "reset-token-for-revocation-test"
+        assert local_db.create_password_reset(user["user_id"], token, 600)
+        res = client.post("/api/v1/auth/reset-password", json={"access_token": token, "new_password": "NewPassword456!"})
+        assert res.status_code == 200, res.text
+        assert client.get("/api/v1/reports", headers=user["headers"]).status_code == 401
+
+    def test_other_users_are_unaffected(self):
+        a = _account("revoke_a@example.com")
+        b = _account("revoke_b@example.com")
+        client.post("/api/v1/auth/logout-all", headers=a["headers"])
+        assert client.get("/api/v1/reports", headers=b["headers"]).status_code == 200
+
+    def test_a_failed_lookup_does_not_sign_everyone_out(self, monkeypatch):
+        from app.core import local_db
+
+        user = _account("revoke_lookup_down@example.com")
+
+        def boom(_):
+            raise RuntimeError("database is down")
+
+        monkeypatch.setattr(local_db, "get_revoked_before", boom)
+        assert client.get("/api/v1/reports", headers=user["headers"]).status_code == 200
+
+    def test_revocation_works_on_the_supabase_path(self, fake_db):
+        from app.core.security import create_access_token
+        from app.services import sessions
+
+        uid = "supabase-user-1"
+        headers = {"Authorization": f"Bearer {create_access_token({'sub': uid, 'email': 's@example.com'})}"}
+        assert client.get("/api/v1/billing/usage", headers=headers).status_code == 200
+        sessions.revoke_all(fake_db, uid)
+        sessions.clear_cache()
+        assert fake_db.tables["session_revocations"][0]["user_id"] == uid
+        # The token from before the revocation is refused; one minted after
+        # it — even within the same second — is accepted.
+        assert client.get("/api/v1/billing/usage", headers=headers).status_code == 401
+        fresh = {"Authorization": f"Bearer {create_access_token({'sub': uid, 'email': 's@example.com'})}"}
+        assert client.get("/api/v1/billing/usage", headers=fresh).status_code == 200
+
+
+class TestRateLimiterUnderConcurrency:
+    def test_parallel_attempts_cannot_exceed_the_limit(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from app.core.rate_limit import check_rate_limit
+        from app.core.exceptions import RateLimitExceeded
+
+        allowed = []
+
+        def attempt(_):
+            try:
+                check_rate_limit(None, "parallel-key", 10, window_seconds=60)
+                allowed.append(1)
+            except RateLimitExceeded:
+                pass
+
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            list(pool.map(attempt, range(200)))
+        assert len(allowed) == 10

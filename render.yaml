@@ -109,12 +109,21 @@ services:
       - key: UPGRADE_URL
         sync: false
       # Model names, so a provider retiring one is a config change.
+      # GEMINI_MODEL is an ordered fallback list; all three are free-tier models.
       - key: GEMINI_MODEL
-        value: gemini-2.5-flash
+        value: gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite
       - key: GROQ_MODEL
-        value: llama-3.3-70b-versatile
+        value: openai/gpt-oss-120b
       - key: ANTHROPIC_MODEL
         value: claude-sonnet-5-5
+      - key: GEMINI_THINKING_LEVEL
+        value: low
+      # Which provider sees resumes first. Gemini's FREE tier may use content
+      # to improve Google's products; Groq does not train on API data. Use
+      # groq,gemini,anthropic until Gemini billing is enabled. See
+      # docs/DEPLOYMENT.md, "Candidate data and free AI tiers".
+      - key: LLM_PROVIDER_ORDER
+        value: gemini,groq,anthropic
       # Must stay at 1 unless REDIS_URL is set — see the Dockerfile CMD
       # comment and job_store.py for why.
       - key: WEB_CONCURRENCY

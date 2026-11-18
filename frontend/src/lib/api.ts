@@ -389,6 +389,10 @@ export const authAPI = {
       body: JSON.stringify(data),
     }),
 
+  /** End every session for this account, on every device, this one included. */
+  logoutAll: (token: string) =>
+    req<{ status: string; message: string }>("/api/v1/auth/logout-all", { method: "POST", token }),
+
   me: (token: string) =>
     req<{ id: string; email: string }>("/api/v1/auth/me", { token }),
 

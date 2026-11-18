@@ -14,6 +14,7 @@ here shouldn't take down login for everyone.
 """
 
 import ipaddress
+import threading
 import time
 import logging
 from fastapi import Request
@@ -24,23 +25,29 @@ logger = logging.getLogger("hirelens")
 
 
 _mem_rate_limit: dict[str, list[float]] = {}
+# Synchronous routes run on a thread pool, so two sign-in attempts can check
+# the same key at once. Without the lock both read the same count and both
+# pass, which lets a parallel burst exceed the limit.
+_mem_lock = threading.Lock()
 
 
 def _check_in_memory_rate_limit(key: str, limit: int, window_seconds: int = 60) -> None:
     now = time.time()
     cutoff = now - window_seconds
-    timestamps = _mem_rate_limit.get(key, [])
-    valid_ts = [t for t in timestamps if t > cutoff]
-    if len(valid_ts) >= limit:
-        raise RateLimitExceeded(retry_after=window_seconds)
-    valid_ts.append(now)
-    _mem_rate_limit[key] = valid_ts
-    
-    # Bounded cleanup if memory store grows
-    if len(_mem_rate_limit) > 2000:
-        stale = [k for k, v in _mem_rate_limit.items() if not any(t > cutoff for t in v)]
-        for k in stale:
-            _mem_rate_limit.pop(k, None)
+    with _mem_lock:
+        timestamps = _mem_rate_limit.get(key, [])
+        valid_ts = [t for t in timestamps if t > cutoff]
+        if len(valid_ts) >= limit:
+            oldest = min(valid_ts)
+            raise RateLimitExceeded(retry_after=max(1, int(oldest + window_seconds - now) + 1))
+        valid_ts.append(now)
+        _mem_rate_limit[key] = valid_ts
+
+        # Bounded cleanup if memory store grows
+        if len(_mem_rate_limit) > 2000:
+            stale = [k for k, v in _mem_rate_limit.items() if not any(t > cutoff for t in v)]
+            for k in stale:
+                _mem_rate_limit.pop(k, None)
 
 
 def _looks_like_an_address(value: str) -> bool:

@@ -29,6 +29,7 @@ error.
 | 5 | `backend/sql/005_saved_job_descriptions.sql` | `saved_jds`, so a role's description is written once and reused |
 | 6 | `backend/sql/006_index_and_policy_tuning.sql` | indexes and policy rewrites the Supabase advisors flag |
 | 7 | `backend/sql/007_billing_and_usage.sql` | `subscriptions` and the `usage_events` ledger behind plan quotas — writable only by the API |
+| 8 | `backend/sql/008_sessions_and_invite_fk.sql` | `session_revocations` (password reset and "sign out of all devices" end old sessions), and a fix that let a user who had sent a team invite be deleted |
 
 **002 must come after 001** — it adds a column to `reports` and foreign-keys
 four tables to it.
@@ -38,8 +39,8 @@ Verify from the SQL Editor:
 ```sql
 select table_name from information_schema.tables
 where table_schema = 'public' order by table_name;
--- profiles, report_comments, report_votes, reports, saved_jds, subscriptions,
--- team_invites, team_members, teams, usage_events
+-- profiles, report_comments, report_votes, reports, saved_jds, session_revocations,
+-- subscriptions, team_invites, team_members, teams, usage_events
 ```
 
 ### Why `profiles` exists
@@ -139,7 +140,11 @@ than showing one that fails at the verification step.
 | `SMTP_FROM_EMAIL` | ➖ | Sender address. **Required with Resend**: it must be on a domain you have verified there, or every send is rejected |
 | `FREE_MONTHLY_ANALYSES` / `PRO_…` / `TEAM_…` | ➖ | Completed analyses per calendar month on each plan. `0` (default) = unlimited — see *Plans and quotas* below |
 | `UPGRADE_URL` | ➖ | Where the in-app **Upgrade** button goes: a payment link, a pricing page, or a `mailto:` |
-| `GEMINI_MODEL` / `GROQ_MODEL` / `ANTHROPIC_MODEL` | ➖ | Model names. A retired model fails every call with a 404 that names the variable to change |
+| `GEMINI_MODEL` | ➖ | Ordered fallback list, default `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` — all three free of charge on the free tier, none with a shutdown date. `gemini-4-hydrogen` is also free but six days old at the time of writing; test it with your key before putting it first. Do not use `gemini-2.5-*`: since September 2026 Google serves those only to projects that already used them, so a new project gets a 404 on every call |
+| `GROQ_MODEL` | ➖ | Default `openai/gpt-oss-120b`. `llama-3.3-70b-versatile` was shut down for free and developer keys on 16 Aug 2026 |
+| `ANTHROPIC_MODEL` | ➖ | Default `claude-sonnet-5-5` |
+| `GEMINI_THINKING_LEVEL` | ➖ | Gemini 3.x reasoning depth: `minimal`, `low` (default), `medium`, `high`, or empty for the model default. A model that rejects the level is retried with its default |
+| `LLM_PROVIDER_ORDER` | ➖ | Which provider is asked first, default `gemini,groq,anthropic`. **Read *Candidate data and free AI tiers* below** |
 | `MAX_REGISTERED_USERS` | ➖ | Hard ceiling on accounts (default 5000). `0` = none |
 | `REDIS_URL` | ➖ | Shared rate limits and batches across instances |
 
@@ -174,6 +179,44 @@ uncomment the `disk:` block. **Adding that block while `plan: free` is set
 makes the deploy fail** — disks are not available on the free plan.
 
 ---
+
+### Candidate data and free AI tiers
+
+Every resume is a candidate's personal data, and it is sent to an AI provider
+to be analysed. The providers' data terms differ, and the difference matters
+for India's DPDP Act, GDPR and your customers' contracts:
+
+| Provider | Uses API content to improve its models? |
+|---|---|
+| Gemini API, **free tier** (outside EEA/UK/Switzerland) | **Yes** — Google may use it to improve products, and human reviewers may read it. Google advises against sending personal information |
+| Gemini API, **paid tier** (billing enabled on the project) | No |
+| Groq | No, and nothing is retained by default |
+| Anthropic API | No |
+
+Before taking real customers, either **enable billing on the Gemini project**
+(Flash-Lite costs well under a cent per resume) or set
+`LLM_PROVIDER_ORDER=groq,gemini,anthropic` so Groq handles resumes and Gemini's
+free tier is only a fallback. The privacy policy at `/privacy` names these
+sub-processors.
+
+### Legal pages
+
+The frontend serves `/privacy`, `/terms`, `/refunds` and `/contact`, linked
+from sign-in, sign-up and the account menu. Payment providers (Stripe,
+Razorpay) require these before activating an account. Set on **Vercel**:
+
+```env
+NEXT_PUBLIC_COMPANY_NAME=Your Company Pvt Ltd
+NEXT_PUBLIC_CONTACT_EMAIL=support@yourcompany.com
+NEXT_PUBLIC_COMPANY_ADDRESS=Registered address
+NEXT_PUBLIC_GOVERNING_LAW=the laws of India, courts of <city>
+NEXT_PUBLIC_REFUND_WINDOW_DAYS=14
+NEXT_PUBLIC_LEGAL_EFFECTIVE_DATE=1 December 2026
+```
+
+Until the name and email are set, each page shows a "Template — not yet in
+force" banner. The text describes what the code actually does with data, but
+it is a starting point: have it reviewed by a lawyer for your jurisdiction.
 
 ### Plans and quotas
 
@@ -509,3 +552,19 @@ the plan's behaviour, not a fault, but three things reduce it:
 
 A paid instance, or any external uptime pinger, removes the idle sleep
 entirely.
+
+
+---
+
+## Validating against a real database
+
+The Supabase-path tests normally run against an in-repo fake. To run them
+against the real servers — Postgres 16 with every migration applied twice
+(proving each is re-runnable), and PostgREST, the server Supabase uses:
+
+```bash
+./scripts/postgrest_e2e.sh
+```
+
+Needs Docker. CI runs this on every push, alongside a job that builds the
+production image, boots it in production mode and checks the healthcheck.

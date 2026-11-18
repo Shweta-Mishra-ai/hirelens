@@ -1252,7 +1252,43 @@ def count_usage_since(user_id: str, since_iso: str, kind: str = "analysis") -> i
         return 0
 
 
+def init_session_table() -> None:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS session_revocations ("
+                "user_id TEXT PRIMARY KEY, revoked_before INTEGER NOT NULL)"
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to initialize session table: {e}")
+
+
+def get_revoked_before(user_id: str) -> int:
+    with _get_connection() as conn:
+        row = conn.execute(
+            "SELECT revoked_before FROM session_revocations WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+
+def set_revoked_before(user_id: str, epoch_ms: int) -> bool:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT INTO session_revocations (user_id, revoked_before) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET revoked_before = excluded.revoked_before",
+                (user_id, int(epoch_ms)),
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error storing session revocation in SQLite: {e}")
+        return False
+
+
 init_local_db()
+init_session_table()
 init_collaboration_tables()
 init_team_tables()
 init_password_reset_table()

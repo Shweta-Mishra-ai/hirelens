@@ -385,10 +385,18 @@ class OAuthVerifyRequest(BaseModel):
 
 
 @router.post("/oauth-verify")
-def oauth_verify(body: OAuthVerifyRequest, db=Depends(get_db)):
+def oauth_verify(
+    body: OAuthVerifyRequest,
+    request: Request,
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+):
     """
     Verify Supabase session from frontend OAuth (Google) and return custom JWT.
     """
+    # Each call is a round trip to Supabase on a token the caller chose; an
+    # unlimited endpoint is a free amplifier against it.
+    check_rate_limit(redis, f"oauth-verify:{get_client_ip(request)}", 20, window_seconds=900)
     if db:
         try:
             # Get user details from Supabase using the frontend's access token
@@ -433,6 +441,19 @@ def oauth_verify(body: OAuthVerifyRequest, db=Depends(get_db)):
     # Google sign-in is not available — which the frontend already handles by
     # hiding the button.
     raise AuthError("Google sign-in could not be verified. Sign in with your email and password instead.")
+
+
+@router.post("/logout-all")
+def logout_everywhere(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+    """
+    Sign this account out on every device, this one included. The client
+    drops its own token; every other copy stops working within a minute.
+    """
+    from app.services import sessions
+
+    sessions.revoke_all(db, current_user["id"])
+    logger.info(f"All sessions revoked | user={current_user['id']}")
+    return {"status": "ok", "message": "Signed out on every device."}
 
 
 @router.get("/me")
@@ -589,7 +610,23 @@ def _reset_via_supabase(db, token: str, new_password: str) -> bool:
         )
 
     db.auth.admin.update_user_by_id(str(user.id), {"password": new_password})
+    _end_other_sessions(db, str(user.id))
     return True
+
+
+def _end_other_sessions(db, user_id: str) -> None:
+    """
+    Sign out every session that existed before the password changed. A reset
+    is very often done *because* someone else has the account; leaving their
+    session working for up to seven days defeats the point. The password has
+    already changed, so a failure here is logged rather than raised.
+    """
+    from app.services import sessions
+
+    try:
+        sessions.revoke_all(db, user_id)
+    except Exception as e:
+        logger.error(f"Password changed for {user_id} but old sessions were not revoked: {e}")
 
 
 @router.post("/reset-password")
@@ -625,6 +662,8 @@ def reset_password(body: ResetPasswordRequest, db=Depends(get_db)):
     user = local_db.get_user_by_id(user_id)
     if user and user.get("email") in _mem_users:
         _mem_users[user["email"]]["password_hash"] = hash_password(body.new_password)
+
+    _end_other_sessions(db, user_id)
 
     logger.info(f"Password reset completed for user {user_id}")
     return {"status": "ok", "message": "Password updated. You can sign in with it now."}

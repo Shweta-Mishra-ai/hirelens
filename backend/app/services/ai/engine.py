@@ -1,5 +1,5 @@
 """
-HireLens — AI Engine (Gemini 2.5 Flash primary, Groq and Anthropic behind it)
+HireLens — AI Engine (Gemini primary, Groq and Anthropic behind it)
 
 Two passes over a resume: extract it into structured JSON, then analyse that
 structure into scores, flags and questions.
@@ -77,113 +77,212 @@ def extract_json(raw: str) -> dict:
     raise ValueError(f"Cannot parse JSON from response (len={len(raw)}): {raw[:200]!r}")
 
 
-# ── Gemini 2.5 Flash ──────────────────────────────────────────────────────────
-async def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> str:
+# ── Gemini ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+def gemini_models() -> list[str]:
+    """
+    GEMINI_MODEL as an ordered list: the first is tried first, and each later
+    one takes over when an earlier one is retired, overloaded or
+    rate-limited. A single name still works.
+    """
+    return [m.strip() for m in (settings.GEMINI_MODEL or "").split(",") if m.strip()]
+
+
+def _gemini_thinking_config(model: str) -> dict | None:
+    """
+    How much the model thinks before answering, in the form that model takes.
+
+    Gemini 2.x takes a token budget, and 0 switches thinking off. Gemini 3.x
+    replaced that with a named level (`thinkingLevel`); the docs say the old
+    budget is still accepted for compatibility, that sending both is a 400,
+    and that not every model accepts every level (3.8 Flash has no
+    "minimal"). Extraction and scoring need little deliberation, so the
+    level is configurable and defaults to "low", which the current Flash and
+    Flash-Lite models both accept.
+    """
+    if model.startswith("gemini-2"):
+        return {"thinkingBudget": 0}
+    level = (settings.GEMINI_THINKING_LEVEL or "").strip().lower()
+    return {"thinkingLevel": level} if level else None
+
+
+async def _call_gemini(
+    prompt: str,
+    temperature: float = 0.1,
+    max_tokens: int = 4000,
+    model: str | None = None,
+) -> str:
     import httpx
 
-    model = settings.GEMINI_MODEL
+    model = model or (gemini_models() or ["gemini-3.6-flash"])[0]
     # The key travels in a header, never in the query string. httpx logs every
     # request line at INFO — URL included — so `?key=...` put the production
     # Gemini key into the platform's log stream on every single analysis, where
     # anyone with log access (or a log drain) could read it.
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-            "responseMimeType": "application/json",
-            "thinkingConfig": {
-                "thinkingBudget": 0
-            }
-        },
+    thinking = _gemini_thinking_config(model)
+    generation_config = {
+        "temperature": temperature,
+        # On models that think, reasoning tokens can count against the output
+        # limit; without headroom a long answer is cut off mid-JSON.
+        "maxOutputTokens": max_tokens if model.startswith("gemini-2") else max_tokens + 8192,
+        "responseMimeType": "application/json",
     }
+    if thinking:
+        generation_config["thinkingConfig"] = thinking
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        try:
-            r = await client.post(
+    async def post(config: dict):
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            return await client.post(
                 url,
-                json=payload,
+                json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": config},
                 headers={"x-goog-api-key": settings.GEMINI_API_KEY},
             )
 
-            if r.status_code == 429:
-                raise LLMError("Gemini rate limit hit. Try again in a moment.")
-            if r.status_code == 400:
-                try:
-                    body = r.json()
-                except ValueError:
-                    body = {}
-                raise LLMError(f"Gemini API error: {body.get('error', {}).get('message', 'Bad request')}")
-            if r.status_code == 404:
-                # A retired model name answers 404 on every call. Saying so is
-                # the difference between a config fix and a day of guessing.
-                raise LLMError(
-                    f"Gemini model '{model}' was not found — it may have been "
-                    f"retired. Set GEMINI_MODEL to a current model."
-                )
+    try:
+        r = await post(generation_config)
+        if r.status_code == 400 and "thinkingConfig" in generation_config and "thinking" in r.text.lower():
+            # This model rejects the thinking setting it was sent (a level it
+            # does not support, say). Its own default is better than failing
+            # every analysis on a tuning knob.
+            logger.warning(f"Gemini {model} rejected thinkingConfig; retrying with the model default")
+            generation_config.pop("thinkingConfig")
+            r = await post(generation_config)
+    except httpx.HTTPError as e:
+        error_msg = str(e)
+        if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY in error_msg:
+            error_msg = error_msg.replace(settings.GEMINI_API_KEY, "********")
+        raise LLMError(f"Gemini connection error: {error_msg}")
 
-            if not r.is_success:
-                raise LLMError(f"Gemini API returned status code {r.status_code}")
-
-            data = r.json()
-        except httpx.HTTPError as e:
-            error_msg = str(e)
-            if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY in error_msg:
-                error_msg = error_msg.replace(settings.GEMINI_API_KEY, "********")
-            raise LLMError(f"Gemini connection error: {error_msg}")
-
-        # Safe extraction with helpful error
+    if r.status_code == 429:
+        raise LLMError(f"Gemini rate limit hit on {model}. Try again in a moment.")
+    if r.status_code == 404:
+        # A retired model — or, since September 2026, a 2.5 model on a project
+        # that never used it — answers 404 on every call.
+        raise LLMError(
+            f"Gemini model '{model}' was not found — it may have been "
+            f"retired. Set GEMINI_MODEL to a current model."
+        )
+    if r.status_code in (500, 502, 503, 504):
+        raise LLMError(f"Gemini model '{model}' is unavailable right now (status {r.status_code}, overloaded).")
+    if r.status_code == 400:
         try:
-            candidates = data.get("candidates", [])
-            if not candidates:
-                # Check for safety blocks
-                if data.get("promptFeedback", {}).get("blockReason"):
-                    raise LLMError(f"Gemini blocked the request: {data['promptFeedback']['blockReason']}")
-                raise LLMError("Gemini returned no candidates")
+            body = r.json()
+        except ValueError:
+            body = {}
+        raise LLMError(f"Gemini API error: {body.get('error', {}).get('message', 'Bad request')}")
+    if not r.is_success:
+        raise LLMError(f"Gemini API returned status code {r.status_code}")
 
-            content = candidates[0].get("content", {})
-            parts = content.get("parts", [])
-            if not parts:
-                raise LLMError("Gemini returned empty content parts")
+    try:
+        data = r.json()
+    except ValueError:
+        raise LLMError("Gemini returned a response that is not JSON")
 
-            return parts[0].get("text", "")
-        except (KeyError, IndexError, AttributeError) as e:
-            raise LLMError(f"Unexpected Gemini response structure: {e}. Raw: {str(data)[:200]}")
+    candidates = data.get("candidates") or []
+    if not candidates:
+        if (data.get("promptFeedback") or {}).get("blockReason"):
+            raise LLMError(f"Gemini blocked the request: {data['promptFeedback']['blockReason']}")
+        raise LLMError("Gemini returned no candidates")
+
+    first = candidates[0] if isinstance(candidates[0], dict) else {}
+    parts = (first.get("content") or {}).get("parts") or []
+    if not parts:
+        reason = first.get("finishReason")
+        if reason in ("SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT"):
+            raise LLMError(f"Gemini blocked the response: {reason}")
+        raise LLMError(f"Gemini returned empty content parts (finishReason={reason})")
+
+    # Thinking models can return thought summaries and signatures as extra
+    # parts; only the answer text is the JSON.
+    text = "".join(
+        part.get("text", "")
+        for part in parts
+        if isinstance(part, dict) and not part.get("thought")
+    )
+    if not text.strip():
+        raise LLMError(f"Gemini returned no answer text (finishReason={first.get('finishReason')})")
+    return text
 
 
 # ── Groq fallback ─────────────────────────────────────────────────────────────
 async def _call_groq(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> str:
+    """
+    Groq's OpenAI-compatible chat API in JSON mode.
+
+    The default model, openai/gpt-oss-120b, is a reasoning model: its
+    reasoning comes back in a separate `reasoning` field, and those tokens
+    count against the completion limit, so the limit gets headroom and the
+    effort is kept low for an extraction task. `reasoning_effort` is sent only
+    to the gpt-oss models, which accept it — other models reject unknown
+    values with a 400.
+    """
     import httpx
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    model = settings.GROQ_MODEL
+    reasoning = model.startswith("openai/gpt-oss")
+    wanted = max_tokens + 1024 if reasoning else max_tokens
+    # Keep the whole request inside GROQ_MAX_REQUEST_TOKENS: on the free plan
+    # a request bigger than the per-minute token limit fails every time. The
+    # prompt is estimated at ~3.5 characters per token, conservatively.
+    prompt_tokens = int((len(prompt) + 200) / 3.5)
+    budget = settings.GROQ_MAX_REQUEST_TOKENS - prompt_tokens
+    if budget < 1024:
+        raise LLMError(
+            f"Groq request too large for GROQ_MAX_REQUEST_TOKENS="
+            f"{settings.GROQ_MAX_REQUEST_TOKENS} (prompt ~{prompt_tokens} tokens)."
+        )
+    completion_tokens = min(wanted, budget)
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a resume analysis AI. Always respond with valid JSON only. No markdown, no prose outside JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": temperature,
+        "max_completion_tokens": completion_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    if reasoning:
+        payload["reasoning_effort"] = "low"
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
-            json={
-                "model": settings.GROQ_MODEL,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a resume analysis AI. Always respond with valid JSON only. No markdown, no prose outside JSON.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"},
-            },
+            json=payload,
         )
 
-        if r.status_code == 429:
-            raise LLMError("Groq rate limit hit.")
-        r.raise_for_status()
-
+    if r.status_code == 429:
+        raise LLMError("Groq rate limit hit.")
+    if r.status_code == 413:
+        raise LLMError("Groq request too large for this plan's token limit.")
+    if r.status_code == 404:
+        raise LLMError(
+            f"Groq model '{model}' was not found — it may have been retired. "
+            f"Set GROQ_MODEL to a current model."
+        )
+    if r.status_code in (500, 502, 503, 504):
+        raise LLMError(f"Groq is unavailable right now (status {r.status_code}, overloaded).")
+    if r.status_code == 400:
         try:
-            return r.json()["choices"][0]["message"]["content"]
-        except (KeyError, IndexError) as e:
-            raise LLMError(f"Unexpected Groq response: {e}")
+            message = (r.json().get("error") or {}).get("message") or "Bad request"
+        except ValueError:
+            message = "Bad request"
+        raise LLMError(f"Groq API error: {message}")
+    r.raise_for_status()
+
+    try:
+        choice = r.json()["choices"][0]
+        content = choice["message"].get("content") or ""
+    except (KeyError, IndexError, ValueError, AttributeError) as e:
+        raise LLMError(f"Unexpected Groq response: {e}")
+    if not content.strip():
+        raise LLMError(f"Groq returned no answer text (finish_reason={choice.get('finish_reason')})")
+    return content
 
 
 # ── Anthropic fallback ────────────────────────────────────────────────────────
@@ -273,16 +372,28 @@ async def _call_anthropic(prompt: str, temperature: float = 0.1, max_tokens: int
 async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> dict:
     """
     Call LLM with automatic provider fallback.
-    Priority: Gemini 2.5 Flash → Groq → Anthropic
-    Each provider: 2 attempts with 2s backoff.
+    Priority: each GEMINI_MODEL in order → Groq → Anthropic.
+    Each provider: 2 attempts with 2s backoff, except that a rate limit, a
+    retired model or an overload moves straight to the next provider.
     """
-    providers = []
-    if settings.GEMINI_API_KEY:
-        providers.append((f"gemini:{settings.GEMINI_MODEL}", _call_gemini))
-    if settings.GROQ_API_KEY:
-        providers.append((f"groq:{settings.GROQ_MODEL}", _call_groq))
-    if settings.ANTHROPIC_API_KEY:
-        providers.append((f"anthropic:{settings.ANTHROPIC_MODEL}", _call_anthropic))
+    from functools import partial
+
+    available = {
+        "gemini": [
+            (f"gemini:{model}", partial(_call_gemini, model=model))
+            for model in gemini_models()
+        ] if settings.GEMINI_API_KEY else [],
+        "groq": [(f"groq:{settings.GROQ_MODEL}", _call_groq)] if settings.GROQ_API_KEY else [],
+        "anthropic": (
+            [(f"anthropic:{settings.ANTHROPIC_MODEL}", _call_anthropic)]
+            if settings.ANTHROPIC_API_KEY else []
+        ),
+    }
+    order = [p.strip().lower() for p in (settings.LLM_PROVIDER_ORDER or "").split(",") if p.strip()]
+    # Any configured provider left out of the order still runs, last, so a
+    # typo in the setting cannot silently remove a fallback.
+    order += [name for name in ("gemini", "groq", "anthropic") if name not in order]
+    providers = [entry for name in order for entry in available.get(name, [])]
 
     if not providers:
         raise LLMError(
@@ -312,7 +423,11 @@ async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000
                 # three rate-limited providers held it for six seconds
                 # before failing. Under load that is worker time spent
                 # waiting for nothing.
-                if "rate limit" in str(e).lower():
+                # The same goes for a retired model and an overloaded one:
+                # asking the same model again two seconds later is wasted
+                # time when another model is next in line.
+                lowered = str(e).lower()
+                if any(k in lowered for k in ("rate limit", "not found", "overloaded", "too large")):
                     break
                 if attempt == 0:
                     await asyncio.sleep(2)

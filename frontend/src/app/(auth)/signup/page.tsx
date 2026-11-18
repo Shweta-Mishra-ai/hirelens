@@ -230,6 +230,9 @@ function SignupForm() {
       </form>
 
       <p className="mt-5 text-xs leading-relaxed text-content-faint">
+        By creating an account you agree to the{" "}
+        <Link href="/terms" className="text-content-muted underline underline-offset-2">Terms</Link> and{" "}
+        <Link href="/privacy" className="text-content-muted underline underline-offset-2">Privacy Policy</Link>.
         You are responsible for how you use HireLens output. Scores and flags are
         prompts to investigate, not hiring decisions.
       </p>

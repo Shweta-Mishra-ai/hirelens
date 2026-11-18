@@ -10,7 +10,7 @@ Every score cites the sentence that produced it. Every claim is checked against
 public record. Nothing is decided for you.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Shweta-Mishra-ai/hirelens/ci.yml?branch=main&style=flat-square&label=CI)](../../actions)
-[![Tests](https://img.shields.io/badge/tests-1%2C395%20backend%20·%20165%20frontend-10B981?style=flat-square)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1%2C441%20backend%20·%20165%20frontend-10B981?style=flat-square)](#testing)
 [![Coverage](https://img.shields.io/badge/backend%20coverage-87%25-10B981?style=flat-square)](#testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Next.js](https://img.shields.io/badge/Next.js-16.3-000?style=flat-square&logo=next.js)](https://nextjs.org)
@@ -229,7 +229,7 @@ Every row is covered by a test that fails if the behaviour regresses.
 ```bash
 ./scripts/verify.sh          # everything CI runs, in order, locally
 
-cd backend && python -m pytest tests/ -v           # 1,395 tests
+cd backend && python -m pytest tests/ -v           # 1,418 tests (+23 on a real DB)
 cd frontend && npm test                            # 165 tests
 cd frontend && npm run build                       # types + production build
 ```
@@ -241,9 +241,9 @@ runner ever being assigned — a red tick that says nothing about the code.
 
 | | |
 |---|---|
-| Backend | **1,395** tests · **87%** coverage |
+| Backend | **1,418** tests · **87%** coverage, plus **23** against real Postgres + PostgREST (`scripts/postgrest_e2e.sh`) |
 | Frontend | **165** tests · strict TypeScript · zero lint warnings |
-| CI | pytest · vitest · `pip-audit` · `npm audit` · production build |
+| CI | pytest · real Postgres + PostgREST · production Docker image boot · vitest · `pip-audit` · `npm audit` · production build |
 | Advisories | `pip-audit`: none · `npm audit`: none |
 
 Two things the suite does that a typical one does not:
@@ -286,7 +286,7 @@ dependencies were removed rather than carried.
 **Frontend** — Next.js 16 App Router · React 19 · TypeScript (strict) · Tailwind ·
 Zustand · Vitest + Testing Library
 
-**AI** — Gemini 2.5 Flash, with Groq and Anthropic as fallbacks
+**AI** — Gemini 3.8 Flash → 3.6 Flash → 3.5 Flash-Lite (all on the free tier), then Groq gpt-oss-120b and Anthropic as fallbacks. Model names are configuration
 
 ---
 

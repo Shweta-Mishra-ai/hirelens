@@ -272,6 +272,7 @@ SCHEMA: dict[str, set[str]] = {
         "provider_reference", "current_period_end", "updated_at",
     },
     "usage_events": {"id", "user_id", "kind", "report_id", "created_at"},
+    "session_revocations": {"user_id", "revoked_before"},
 }
 
 

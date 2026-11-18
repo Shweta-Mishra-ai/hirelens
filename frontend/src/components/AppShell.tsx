@@ -15,12 +15,14 @@ import {
   X,
   PanelLeftClose,
   PanelLeftOpen,
+  ShieldOff,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { initials } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { Skeleton } from "@/components/ui/Feedback";
 import { UsageMeter } from "@/components/UsageMeter";
+import { APIError, authAPI } from "@/lib/api";
 
 /**
  * Application chrome: a persistent left sidebar plus a slim top bar.
@@ -117,9 +119,11 @@ function NavList({
 }
 
 function UserMenu({ collapsed }: { collapsed: boolean }) {
-  const { user, logout } = useAuthStore();
+  const { user, token, logout } = useAuthStore();
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [signingOutAll, setSigningOutAll] = useState(false);
+  const [menuError, setMenuError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -197,6 +201,42 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
             <LogOut aria-hidden className="size-4" />
             Sign out
           </button>
+          <button
+            role="menuitem"
+            type="button"
+            disabled={signingOutAll}
+            onClick={async () => {
+              if (!token) return;
+              setSigningOutAll(true);
+              setMenuError(null);
+              try {
+                await authAPI.logoutAll(token);
+                logout();
+                router.replace("/login");
+              } catch (e) {
+                // Stay signed in and say so: claiming every device was signed
+                // out when the server did not record it would be the one
+                // dangerous answer here.
+                setMenuError(e instanceof APIError ? e.message : "Could not sign out other devices.");
+              } finally {
+                setSigningOutAll(false);
+              }
+            }}
+            className="flex w-full items-center gap-2 border-t border-line-subtle px-3 py-2.5 text-sm text-content-muted transition-colors hover:bg-canvas-inset hover:text-content disabled:opacity-60"
+          >
+            <ShieldOff aria-hidden className="size-4" />
+            {signingOutAll ? "Signing out…" : "Sign out of all devices"}
+          </button>
+          <div className="flex gap-3 border-t border-line-subtle px-3 py-2 text-2xs text-content-faint">
+            <Link href="/privacy" className="hover:text-content-muted">Privacy</Link>
+            <Link href="/terms" className="hover:text-content-muted">Terms</Link>
+            <Link href="/contact" className="hover:text-content-muted">Contact</Link>
+          </div>
+          {menuError && (
+            <p role="alert" className="px-3 pb-2.5 text-xs text-critical">
+              {menuError}
+            </p>
+          )}
         </div>
       )}
     </div>

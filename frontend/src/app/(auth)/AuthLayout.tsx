@@ -98,6 +98,13 @@ export function AuthLayout({
           <div className="mt-8">{children}</div>
 
           <div className="mt-8 text-sm text-content-faint">{footer}</div>
+
+          <nav aria-label="Legal" className="mt-10 flex flex-wrap gap-x-4 gap-y-1 text-xs text-content-faint">
+            <Link href="/privacy" className="hover:text-content-muted">Privacy</Link>
+            <Link href="/terms" className="hover:text-content-muted">Terms</Link>
+            <Link href="/refunds" className="hover:text-content-muted">Refunds</Link>
+            <Link href="/contact" className="hover:text-content-muted">Contact</Link>
+          </nav>
         </div>
       </main>
     </div>

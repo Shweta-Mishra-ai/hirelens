@@ -311,10 +311,13 @@ def reset_clients() -> None:
 
 
 # ── Auth dependency ───────────────────────────────────────────────────────────
-async def get_current_user(authorization: str = Header(default="")) -> dict:
+async def get_current_user(
+    authorization: str = Header(default=""),
+    db=Depends(get_db),
+) -> dict:
     """
     Validates Bearer JWT token from Authorization header.
-    Raises AuthError (401) if missing, invalid, or expired.
+    Raises AuthError (401) if missing, invalid, expired, or revoked.
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise AuthError("Authorization header missing or invalid. Format: 'Bearer <token>'")
@@ -329,6 +332,14 @@ async def get_current_user(authorization: str = Header(default="")) -> dict:
     if not user_id:
         raise AuthError("Token missing user ID.")
     
+    # A password reset or "sign out everywhere" ends sessions issued before
+    # it. The lookup is cached, and runs on the threadpool when it is not.
+    from starlette.concurrency import run_in_threadpool
+    from app.services import sessions
+
+    if await run_in_threadpool(sessions.is_revoked, db, str(user_id), payload):
+        raise AuthError("This session has been signed out. Please sign in again.")
+
     email = payload.get("email", "")
     return {"id": str(user_id), "email": email}
 
@@ -355,9 +366,12 @@ async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
     return current_user
 
 
-async def get_optional_user(authorization: str = Header(default="")) -> dict | None:
+async def get_optional_user(
+    authorization: str = Header(default=""),
+    db=Depends(get_db),
+) -> dict | None:
     """Returns user dict or None — for public endpoints."""
     try:
-        return await get_current_user(authorization)
+        return await get_current_user(authorization, db)
     except AuthError:
         return None

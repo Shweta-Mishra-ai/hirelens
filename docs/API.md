@@ -373,3 +373,12 @@ read or queued:
 | 503 | `storage_write_failed` | A write did not reach durable storage. Nothing was changed; retry |
 
 `/docs`, `/redoc` and `/openapi.json` are served in development only.
+
+## Sessions
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/v1/auth/logout-all` | Ends every session for this account, on every device, this one included. Other copies of the token stop working within a minute (each instance caches the check for 60s) |
+
+A password reset also ends every session issued before it. A revoked token
+gets `401` with `"This session has been signed out. Please sign in again."`
