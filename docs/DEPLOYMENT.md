@@ -1,19 +1,41 @@
 # Deployment
 
 Three services, one afternoon. Supabase holds the data and the accounts,
-Render runs the API, and a static host serves the frontend — Cloudflare Pages
-is the recommended free one (see section 3). Every piece can start on a free
-plan; **[Running at ₹0](#5--running-at-0)** says exactly what each free plan
-gives you and where it runs out.
+Render runs the API, and Vercel serves the frontend (any static host works —
+see section 3). Every piece can start on a free plan; **[Running at
+₹0](#5--running-at-0)** says exactly what each free plan gives you and where it
+runs out.
 
 ```mermaid
 flowchart LR
-    U["Recruiter"] -->|HTTPS| V["Static host<br/>(Cloudflare Pages)"]
+    U["Recruiter"] -->|HTTPS| V["Vercel<br/>(static site)"]
     V -->|"Bearer JWT"| R["Render<br/>FastAPI"]
     R --> S[("Supabase<br/>Postgres + Auth")]
     R --> G["Gemini"]
     M["UptimeRobot"] -.->|"keeps the free tier awake"| R
 ```
+
+### Launch checklist — Render + Vercel
+
+Production deploys from `main` on both services, so a change does nothing
+until it is merged there. Then, in this order:
+
+1. **Supabase** — run every file in `backend/sql` that has not been run yet
+   (section 1). Files are idempotent; re-running one is harmless.
+2. **Render** (the API service → *Environment*) — check these are set:
+   `ADMIN_EMAILS` (your sign-in email), `LLM_PROVIDER_ORDER=groq,gemini,anthropic`
+   if you are on Gemini's free tier, `GROQ_API_KEY`, `FREE_MONTHLY_ANALYSES`
+   (e.g. `20`), `BACKEND_URL` (the service's own URL). The model names have
+   working defaults; only set `GEMINI_MODEL` / `GROQ_MODEL` to override them.
+3. **Vercel** (project → *Settings → Environment Variables*) — the legal-page
+   variables (section 2, *Legal pages*), including
+   `NEXT_PUBLIC_WEBSITE_HOST=Vercel`. `NEXT_PUBLIC_API_URL` is already there.
+   Then redeploy: these are baked into the build.
+4. **Verify** — `curl https://<api>.onrender.com/api/v1/health` must show
+   `"database": "ok"` and `"schema": "ok"`. `"missing_migrations"` means step
+   1 is incomplete; the Render log line starting `DATABASE IS MISSING
+   MIGRATIONS` names the files. Then walk the app once (end of *Verifying the
+   deployment*).
 
 ---
 
@@ -37,7 +59,15 @@ error.
 **002 must come after 001** — it adds a column to `reports` and foreign-keys
 four tables to it.
 
-Verify from the SQL Editor:
+The API checks this itself: at startup it probes every table and column it
+uses and, if any is missing, logs `DATABASE IS MISSING MIGRATIONS` at CRITICAL
+with the file to run and what stops working without it (without `007`, for
+instance, usage is not recorded and plan limits are not enforced). `/health`
+reports the result as `services.schema`. Files `004`, `006` and the
+foreign-key part of `008` change data, indexes or constraints, which cannot be
+seen this way — run them anyway.
+
+Or verify from the SQL Editor:
 
 ```sql
 select table_name from information_schema.tables
@@ -283,7 +313,20 @@ Then put the site's URL in `ALLOWED_ORIGINS` **and** `FRONTEND_URL` on Render
 and redeploy the API. Anything named `NEXT_PUBLIC_*` ships to the browser, so
 nothing secret goes here.
 
-### Cloudflare Pages (recommended for ₹0)
+### Vercel
+
+The project needs **Root Directory** `frontend` and the Next.js framework
+preset — nothing else; Vercel recognises the static export by itself.
+`frontend/vercel.json` adds the security headers. Production deploys from
+`main`; every other branch gets a preview deployment.
+
+**Vercel's free Hobby plan is for non-commercial use only.** Running a paid
+product on it is against Vercel's terms and risks the project being
+suspended. Before you take payments, either move to Vercel Pro or move the
+frontend to Cloudflare Pages (free, below) — the same build works on both,
+so switching is a settings change, not a code change.
+
+### Cloudflare Pages (free)
 
 Workers & Pages → Create → Pages → *Import an existing Git repository*:
 
@@ -380,12 +423,6 @@ sync would otherwise create it for everyone, and its build fails until
         sync: false
 ```
 
-### Vercel
-
-`frontend/vercel.json` carries the same headers, but **Vercel's free Hobby
-plan is for non-commercial use only** — do not run a paid product on it. On a
-paid Vercel plan, set the project's Root Directory to `frontend`.
-
 ### Links into the app
 
 A report's address is `/report/?id=<id>` — one page for every report, since a
@@ -434,7 +471,8 @@ check the source before relying on one: Render
 | Piece | Free plan | When it runs out |
 |---|---|---|
 | **API** — Render free web service | 750 instance hours per workspace per month (one always-on service uses ~744). Sleeps after 15 min idle, ~1 min to wake. Container disk erased on every deploy and wake. **Cannot send email over SMTP** (ports 25, 465 and 587 are blocked). The Hobby workspace includes 5 GB of outbound bandwidth a month | Over the bandwidth: billed if a card is on file, otherwise **every free service in the workspace is suspended for the rest of the month** |
-| **Frontend** — Cloudflare Pages | 500 builds a month, 20,000 files per site, no bandwidth limit listed | No new builds for the rest of the month |
+| **Frontend** — Vercel Hobby | **Non-commercial use only** under Vercel's terms; usage limits are on Vercel's pricing page | — move to Pro, or to Cloudflare Pages, before charging customers |
+| **Frontend** — Cloudflare Pages (alternative) | 500 builds a month, 20,000 files per site, no bandwidth limit listed. Whether its free plan allows commercial use is not stated on the Cloudflare pages linked here — check its terms | No new builds for the rest of the month |
 | **Database + sign-in** — Supabase free | Pauses after a week with no activity (the uptime ping in section 4 counts as activity) | Paused projects must be resumed from the dashboard |
 | **AI** — Gemini API free tier | Limits are **per Google Cloud project, not per key**, and daily limits reset at midnight Pacific. Google does not publish fixed numbers for every model: see yours in AI Studio → *Rate limit* | HTTP 429; the API falls through to the next provider in `LLM_PROVIDER_ORDER` |
 | **AI** — Groq free (`openai/gpt-oss-120b`) | 30 requests/min, 1,000/day, 8,000 tokens/min, 200,000 tokens/day | Same: next provider |
@@ -613,7 +651,7 @@ curl -s https://your-api.onrender.com/api/v1/health | jq
 ```json
 {
   "status": "ok",
-  "services": { "database": "ok", "gemini": "configured" },
+  "services": { "database": "ok", "schema": "ok", "groq": "configured" },
   "llm_ready": true,
   "google_auth_ready": true
 }
@@ -622,6 +660,7 @@ curl -s https://your-api.onrender.com/api/v1/health | jq
 | Symptom | Cause |
 |---|---|
 | `"database": "error"` | Service key wrong, or `001` was never run |
+| `"schema": "missing_migrations"` | A file in `backend/sql` has not been run. The Render log line `DATABASE IS MISSING MIGRATIONS` names it; so does `/health/diagnostics` |
 | `"llm_ready": false` | No LLM key set — uploads are refused up front |
 | `"google_auth_ready": false` | `SUPABASE_URL` or `SUPABASE_SERVICE_KEY` missing |
 | CORS error in the browser | Frontend URL not in `ALLOWED_ORIGINS`, or a trailing slash |

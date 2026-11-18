@@ -340,3 +340,30 @@ class TestSessionsAgainstPostgREST:
         sessions.clear_cache()
         assert client.get("/api/v1/billing/usage", headers=headers).status_code == 401
         assert client.get("/api/v1/billing/usage", headers=_headers(stranger)).status_code == 200
+
+
+class TestSchemaCheckAgainstPostgREST:
+    """The migration check, against the error shapes a real PostgREST sends."""
+
+    def test_every_migration_is_detected_as_present(self, db):
+        from app.core import schema_check
+
+        report = schema_check.check(db)
+        assert report.status == "ok", (report.missing, report.errors)
+
+    def test_a_missing_table_and_column_are_classified_as_missing(self, db, monkeypatch):
+        from app.core import schema_check
+
+        monkeypatch.setattr(schema_check, "REQUIREMENTS", (
+            ("009_future.sql", "no_such_table", ("id",)),
+            ("009_future.sql", "reports", ("id", "no_such_column")),
+        ))
+        report = schema_check.check(db)
+        assert report.status == "missing", report.errors
+        assert report.missing == {"009_future.sql": ["no_such_table", "reports.no_such_column"]}
+
+    def test_health_reports_the_schema_as_ok(self, client):
+        from app.core import schema_check
+
+        schema_check.clear_cache()
+        assert client.get("/api/v1/health").json()["services"]["schema"] == "ok"

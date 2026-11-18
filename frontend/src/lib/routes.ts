@@ -21,7 +21,9 @@ const LEGACY_REPORT_PATH =
  * /report/ too (/report/index.txt, /report/__next.*.txt), and a pattern that
  * caught "any segment" would send the router's own requests to a report
  * called "index.txt". It is also why this is not a host redirect rule:
- * Vercel and Cloudflare apply those before checking for a real file.
+ * Cloudflare applies those before checking for a real file, and on Vercel a
+ * UUID-constrained rule in vercel.json was tried and did not fire for this
+ * statically exported project (checked on a preview deployment).
  */
 export function legacyReportId(pathname: string): string | null {
   return LEGACY_REPORT_PATH.exec(pathname)?.[1] ?? null;

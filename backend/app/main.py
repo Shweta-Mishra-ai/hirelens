@@ -215,6 +215,39 @@ async def lifespan(app: FastAPI):
                 "account stats, plan changes) are disabled in production."
             )
 
+        # Render's free web services cannot open outbound connections on
+        # ports 25, 465 or 587, so SMTP there fails on every send — after a
+        # 10-second timeout each, which a recruiter sees as a hung button.
+        # Paid Render instances can use SMTP, so this is a warning naming the
+        # condition rather than a refusal; Resend (HTTPS) works on either.
+        if (
+            os.environ.get("RENDER") == "true"
+            and settings.SMTP_HOST
+            and not settings.RESEND_API_KEY
+            and int(settings.SMTP_PORT) in (25, 465, 587)
+        ):
+            logger.warning(
+                "Email is configured through SMTP (%s:%s) on Render. Render's FREE "
+                "instances block ports 25, 465 and 587, so on the free plan every "
+                "email will time out. Use RESEND_API_KEY instead, or ignore this "
+                "on a paid instance.",
+                settings.SMTP_HOST,
+                settings.SMTP_PORT,
+            )
+
+        # Gemini's free tier may use submitted content to improve Google's
+        # products. Redaction removes contact details, but resumes still go
+        # there first unless the order says otherwise.
+        first_provider = (settings.LLM_PROVIDER_ORDER or "gemini").split(",")[0].strip().lower()
+        if first_provider == "gemini" and settings.GEMINI_API_KEY and settings.GROQ_API_KEY:
+            logger.info(
+                "Resumes go to Gemini first (LLM_PROVIDER_ORDER=%s). On Gemini's free "
+                "tier Google may use them to improve its products; set "
+                "LLM_PROVIDER_ORDER=groq,gemini,anthropic to send them to Groq first. "
+                "See docs/DEPLOYMENT.md, 'Candidate data and free AI tiers'.",
+                settings.LLM_PROVIDER_ORDER,
+            )
+
         logger.info(
             "Config: origins=%s frontend=%s supabase=%s redis=%s",
             origins,
@@ -249,8 +282,32 @@ async def lifespan(app: FastAPI):
         _keep_alive_task = asyncio.create_task(_keep_alive_loop())
         logger.info("Keep-alive self-ping task started (every 10 min)")
 
+    # ── Database schema check ───────────────────────────────────────────────
+    # Migrations are run by hand, so new code can easily meet an old schema —
+    # and the app degrades quietly when it does (plan limits stop being
+    # enforced, for one). Checked off the startup path so a slow Supabase
+    # never delays the port opening; the result is logged, CRITICAL if a
+    # migration is missing, and served on /health.
+    async def _check_schema() -> None:
+        from app.core import schema_check
+        from app.core.dependencies import get_db
+        try:
+            db = await asyncio.to_thread(get_db)
+            if db is None:
+                return
+            report = await asyncio.to_thread(schema_check.cached, db, 0)
+            schema_check.log_report(report)
+        except Exception as e:  # never take the process down over a check
+            logger.warning(f"Schema check could not run: {e}")
+
+    _schema_task = None
+    if settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY:
+        _schema_task = asyncio.create_task(_check_schema())
+
     yield
 
+    if _schema_task and not _schema_task.done():
+        _schema_task.cancel()
     if _keep_alive_task:
         _keep_alive_task.cancel()
     logger.info("HireLens API shutting down")
