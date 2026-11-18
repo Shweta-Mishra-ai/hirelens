@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { company, display } from "@/lib/company";
 
-export const metadata: Metadata = { title: "Contact · HireLens" };
+export const metadata: Metadata = { title: "Contact" };
 
 export default function ContactPage() {
   return (

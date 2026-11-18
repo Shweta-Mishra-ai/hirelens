@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { company, display } from "@/lib/company";
 
-export const metadata: Metadata = { title: "Terms of Service · HireLens" };
+export const metadata: Metadata = { title: "Terms of Service" };
 
 function H({ children }: { children: React.ReactNode }) {
   return <h2 className="pt-4 text-base font-semibold text-content">{children}</h2>;

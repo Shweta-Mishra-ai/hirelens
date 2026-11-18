@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { company, display } from "@/lib/company";
 
-export const metadata: Metadata = { title: "Refund Policy · HireLens" };
+export const metadata: Metadata = { title: "Refund Policy" };
 
 export default function RefundsPage() {
   const email = display(company.email, "billing contact email");

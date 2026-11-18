@@ -230,6 +230,10 @@ class Settings(BaseSettings):
     # without Gemini billing enabled, "groq,gemini,anthropic" keeps them off
     # Google's free tier unless Groq is unavailable.
     LLM_PROVIDER_ORDER: str = "gemini,groq,anthropic"
+    # Replace emails, phone numbers, links and the candidate's name with
+    # placeholders before any text reaches an AI provider, and restore them
+    # in the finished report. On by default; essential on free AI tiers.
+    REDACT_PII_FOR_LLM: bool = True
     # llama-3.3-70b-versatile was shut down for free and developer keys on
     # 16 August 2026; gpt-oss-120b is the replacement Groq recommends.
     GROQ_MODEL: str = "openai/gpt-oss-120b"

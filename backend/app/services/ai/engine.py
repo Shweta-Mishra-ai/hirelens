@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.core.exceptions import LLMError, AnalysisTimeout
 from app.services.fraud.injection_detection import scan_for_injection
 from app.services.ai.career_trajectory import compute_career_trajectory
+from app.services.ai.redaction import Redaction, redact
 
 logger = logging.getLogger("hirelens")
 
@@ -582,11 +583,21 @@ RULES:
 - Extract information EXACTLY as written — do not interpret, summarize, or add
 - If a field is missing from the resume, use null (not empty string)
 - Include ALL experience entries, even if sparse
-- Metrics must be exact quotes — critical for authenticity check later"""
+- Metrics must be exact quotes — critical for authenticity check later
+- Contact details and the candidate's name may appear as placeholders such as
+  [[EMAIL_1]], [[PHONE_1]], [[URL_1]] and [[CANDIDATE_NAME]]. They are
+  redactions made by the system for privacy, not resume content. Put each
+  placeholder exactly as written in the field it belongs to (for example
+  "email": "[[EMAIL_1]]", "github": "[[URL_2]]" for a GitHub link)."""
 
 
 ANALYSIS_PROMPT = """You are a senior HR consultant with 15 years recruiting for tech companies globally.
 Analyze this extracted resume data and produce a complete credibility assessment.
+
+Contact details and the candidate's name may appear as placeholders such as
+[[EMAIL_1]] or [[CANDIDATE_NAME]]. The system replaced them for privacy before
+analysis. Treat them as present and valid; never flag a placeholder, and never
+count it as missing contact information.
 
 EXTRACTED RESUME DATA:
 {extracted}
@@ -807,12 +818,17 @@ class AnalysisEngine:
                 f"invisible_chars={injection_scan['has_invisible_chars']}"
             )
 
+        redaction = (
+            redact(raw_text) if settings.REDACT_PII_FOR_LLM else Redaction(text=raw_text)
+        )
+
         try:
             async with asyncio.timeout(settings.ANALYSIS_TIMEOUT_SECONDS):
 
-                # Stage 1: Extract
+                # Stage 1: Extract — from text with contact details and the
+                # candidate's name replaced by placeholders (see redaction.py).
                 await progress("extracting", 15)
-                extract_prompt = EXTRACT_PROMPT.format(text=raw_text[:9000])
+                extract_prompt = EXTRACT_PROMPT.format(text=redaction.text[:9000])
                 extracted = await llm_call(extract_prompt, temperature=0.05, max_tokens=3000)
                 logger.info(
                     f"Extracted: "
@@ -830,7 +846,8 @@ class AnalysisEngine:
                 analysis = await llm_call(analysis_prompt, temperature=0.1, max_tokens=4000)
 
                 await progress("complete", 100)
-                return self._merge(extracted, analysis, injection_scan)
+                # Put the real contact details back, on this server.
+                return redaction.restore(self._merge(extracted, analysis, injection_scan))
 
         except asyncio.TimeoutError:
             logger.error(f"Analysis timed out after {settings.ANALYSIS_TIMEOUT_SECONDS}s")
@@ -1041,8 +1058,15 @@ class AnalysisEngine:
 
         Returns: {match_percent, matching_skills, missing_skills, verdict, rationale}
         """
+        # Contact fields are left out: matching skills to a role needs none of
+        # them, and this prompt goes to the same third-party providers.
+        candidate = resume_result.get("candidate") or {}
         candidate_view = {
-            "candidate": resume_result.get("candidate") or {},
+            "candidate": {
+                k: candidate.get(k)
+                for k in ("current_role", "total_experience_years", "location")
+                if isinstance(candidate, dict)
+            },
             "skills": resume_result.get("skills") or {},
             "experience": [
                 {

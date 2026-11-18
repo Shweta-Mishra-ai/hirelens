@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { company, display } from "@/lib/company";
 
-export const metadata: Metadata = { title: "Privacy Policy · HireLens" };
+export const metadata: Metadata = { title: "Privacy Policy" };
 
 function H({ children }: { children: React.ReactNode }) {
   return <h2 className="pt-4 text-base font-semibold text-content">{children}</h2>;
@@ -57,13 +57,19 @@ export default function PrivacyPage() {
       <H>Who else receives data (sub-processors)</H>
       <ul className="list-disc space-y-1 pl-5">
         <li>Supabase — database and sign-in.</li>
-        <li>Render — hosts the API. Vercel — hosts this website.</li>
+        <li>
+          Render — hosts the API. {display(company.websiteHost, "website host, e.g. Netlify")} —
+          hosts this website.
+        </li>
         <li>
           AI providers — resume text is sent to one or more of Google (Gemini API), Groq and
-          Anthropic to be analysed. Their terms differ: when Google&apos;s Gemini API is used without
-          billing enabled, Google&apos;s terms allow it to use submitted content to improve its
-          products, including review by people; its paid tier, Groq and Anthropic do not use API
-          content for training under their published terms.
+          Anthropic to be analysed. Before it is sent, email addresses, phone numbers, web links
+          and — where it can be identified from the resume&apos;s heading — the candidate&apos;s name
+          are replaced with placeholders, and restored only on our servers. Work and education
+          history is sent, because that is what is analysed. The providers&apos; terms differ: when
+          Google&apos;s Gemini API is used without billing enabled, Google&apos;s terms allow it to use
+          submitted content to improve its products, including review by people; its paid tier,
+          Groq and Anthropic do not use API content for training under their published terms.
         </li>
         <li>An email provider (Resend or an SMTP service) — for messages you choose to send.</li>
         <li>
