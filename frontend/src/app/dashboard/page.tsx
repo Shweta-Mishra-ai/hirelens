@@ -32,6 +32,7 @@ import { scoreColor } from "@/lib/design-tokens";
 import { cn } from "@/lib/cn";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { ReportSummary, PoolAnalytics } from "@/types";
+import { reportHref } from "@/lib/routes";
 
 const SORT_OPTIONS = [
   { value: "newest", label: "Newest first" },
@@ -156,7 +157,7 @@ function PoolSummary({
 function ReportRow({ report }: { report: ReportSummary }) {
   return (
     <Link
-      href={`/report/${report.id}`}
+      href={reportHref(report.id)}
       className="group grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-4 px-5 py-3.5 transition-colors hover:bg-canvas-overlay/50 focus-visible:bg-canvas-overlay focus-visible:outline-none sm:grid-cols-[auto_minmax(0,1fr)_auto_auto_auto_auto]"
     >
       <span
@@ -345,6 +346,7 @@ function DashboardContent() {
   }, [token, logout, router, search, sort, recommendation, page]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     if (!checkingOAuth) void loadReports();
   }, [loadReports, checkingOAuth]);
 

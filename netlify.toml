@@ -1,0 +1,20 @@
+# Netlify: the frontend, as a static site. Free plan, commercial use allowed.
+#
+# Set in the Netlify UI (Project configuration > Environment variables), then
+# redeploy — they are baked into the build:
+#   NEXT_PUBLIC_API_URL            the API's public URL (required; the build
+#                                  fails without it rather than ship a site
+#                                  that cannot reach its API)
+#   NEXT_PUBLIC_SUPABASE_URL       optional, for Google sign-in
+#   NEXT_PUBLIC_SUPABASE_ANON_KEY  optional, for Google sign-in
+#
+# Response headers are in frontend/public/_headers, which the build copies
+# into the published folder.
+[build]
+  base = "frontend"
+  command = "npm run build"
+  publish = "out"
+
+[build.environment]
+  # Next.js 16 needs Node 20.9 or newer.
+  NODE_VERSION = "22"

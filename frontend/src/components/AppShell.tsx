@@ -337,6 +337,7 @@ export function AppShell({
   // desync the server-rendered markup from the first client paint.
   useEffect(() => {
     try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- browser storage is only readable after hydration
       setCollapsed(window.localStorage.getItem(COLLAPSE_KEY) === "1");
     } catch {
       // Private mode or blocked storage — the default (expanded) is fine.
@@ -355,8 +356,15 @@ export function AppShell({
     });
   }
 
-  // Close the mobile drawer on navigation, and lock body scroll while open.
-  useEffect(() => setMobileOpen(false), [pathname]);
+  // Close the mobile drawer on navigation. Done while rendering, not in an
+  // effect, so the new page never paints with the old drawer still open.
+  const [drawerPath, setDrawerPath] = useState(pathname);
+  if (drawerPath !== pathname) {
+    setDrawerPath(pathname);
+    setMobileOpen(false);
+  }
+
+  // Lock body scroll while the drawer is open.
   useEffect(() => {
     if (!mobileOpen) return;
     const previous = document.body.style.overflow;

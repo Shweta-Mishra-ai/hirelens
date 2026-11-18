@@ -146,12 +146,30 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      # `next lint` was removed in Next.js 16; this is the ESLint CLI with
+      # Next's rule set (eslint.config.mjs). Any warning fails the job.
+      - name: Lint
+        run: npm run lint
+
       - name: Unit tests
         run: npm test
 
-      - name: Build (lint runs as part of next build)
+      - name: Build the static export
         run: npm run build
         env:
           NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
           NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
           NEXT_PUBLIC_API_URL: http://localhost:8000
+
+      # The frontend ships as plain files. A page that silently stopped being
+      # exported (a server-only API slipped in) would 404 only in production.
+      - name: Static export produced every page
+        run: |
+          for f in index.html 404.html _headers login/index.html signup/index.html \
+                   dashboard/index.html report/index.html analyze/index.html \
+                   bulk/index.html match/index.html teams/index.html \
+                   reset-password/index.html privacy/index.html terms/index.html; do
+            test -f "out/$f" || { echo "::error::missing out/$f"; exit 1; }
+          done
+          grep -q 'http-equiv="Content-Security-Policy"' out/index.html \
+            || { echo "::error::Content-Security-Policy meta tag missing"; exit 1; }

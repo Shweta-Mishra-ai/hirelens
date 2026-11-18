@@ -60,8 +60,9 @@ services:
       # Public anon key; used to sign people in.
       - key: SUPABASE_ANON_KEY
         sync: false
-      # This deployment's frontend origin, e.g. https://your-app.vercel.app.
-      # Invite and password-reset emails link here.
+      # This deployment's frontend origin, e.g. https://hirelens-web.onrender.com
+      # or https://your-site.netlify.app. Invite and password-reset emails
+      # link here. ALLOWED_ORIGINS must list the same origin.
       - key: FRONTEND_URL
         sync: false
       - key: DATABASE_URL
@@ -134,4 +135,71 @@ services:
       # then takes 30-60s while the container wakes, which reads as the
       # server being down.
       - key: BACKEND_URL
+        sync: false
+
+  # ── The frontend, as a static site ─────────────────────────────────────────
+  #
+  # Render static sites are free and do not use the 750 free instance hours
+  # the API above runs on; they count only against the workspace's bandwidth
+  # and build minutes. Netlify (netlify.toml) is the alternative; use one, not
+  # both. Do not use Vercel's Hobby plan for this: it is for non-commercial
+  # use only.
+  #
+  # Paths here are relative to the repository root (staticPublishPath always
+  # is, so no rootDir is set). The NEXT_PUBLIC_* values are baked into the
+  # build, so changing one needs a redeploy.
+  - type: web
+    name: hirelens-web
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: ./frontend/out
+    buildFilter:
+      paths:
+        - frontend/**
+    # Same set as frontend/public/_headers. The Content-Security-Policy
+    # itself is a <meta> tag in every page; only frame-ancestors has to be
+    # a header.
+    headers:
+      - path: /*
+        name: Content-Security-Policy
+        value: frame-ancestors 'none'
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=(), payment=()
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000
+      - path: /_next/static/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      # Reports used to live at /report/<id>. Render applies a rule only
+      # when no file exists at the path, so the report page's own files under
+      # /report/ (index.txt, __next.*.txt) are never redirected. Other hosts
+      # get the same forwarding from the 404 page (LegacyReportRedirect).
+      - type: redirect
+        source: /report/:id
+        destination: /report/?id=:id
+    envVars:
+      # Next.js 16 needs Node 20.9 or newer.
+      - key: NODE_VERSION
+        value: "22"
+      # The API's public URL, e.g. https://hirelens-api.onrender.com.
+      # Required: the build fails without it rather than ship a site that
+      # cannot reach its API.
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+      # Optional, for Google sign-in.
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
         sync: false

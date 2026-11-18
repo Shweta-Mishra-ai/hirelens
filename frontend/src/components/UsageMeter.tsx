@@ -36,6 +36,7 @@ export function UsageMeter({ collapsed }: { collapsed: boolean }) {
   }, [token]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     void load();
   }, [load, pathname]);
 

@@ -24,6 +24,7 @@ import { ScorePill } from "@/components/ui/Score";
 import { formatBytes, pluralize } from "@/lib/format";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { DuplicateCheckResult } from "@/types";
+import { reportHref } from "@/lib/routes";
 
 const MAX_FILES = 50;
 
@@ -325,7 +326,7 @@ function BulkContent() {
                       <VerdictChip verdict={verdictFromRecommendation(c.recommendation)} />
                     </span>
                     <Link
-                      href={`/report/${c.report_id}`}
+                      href={reportHref(c.report_id)}
                       className="shrink-0 text-xs font-medium text-brand-400 underline-offset-4 hover:underline"
                     >
                       <span className="flex items-center gap-1">

@@ -41,7 +41,7 @@ export const API_BASE = BASE;
  * the visitor's own machine. The pages still load, because they are static,
  * and nothing else works at all. next.config.js refuses to produce such a
  * build for a real deployment; this is the second line, for a build made
- * before that guard existed or outside Vercel.
+ * before that guard existed or on a host it does not recognise.
  *
  * Worth naming precisely, because the symptom otherwise reads as "the server
  * is down" and sends someone to check a server that is perfectly healthy.

@@ -114,6 +114,7 @@ function TeamsContent() {
   }, [token, logout, router]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     void loadTeams();
   }, [loadTeams]);
 
@@ -157,6 +158,7 @@ function TeamsContent() {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     void loadMembers();
   }, [loadMembers]);
 

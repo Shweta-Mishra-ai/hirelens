@@ -28,6 +28,7 @@ import { cn } from "@/lib/cn";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { formatBytes, pluralize } from "@/lib/format";
 import type { MatchVerdict, MatchedCandidate } from "@/types";
+import { reportHref } from "@/lib/routes";
 
 const MAX_FILES = 50;
 const JD_MIN_CHARS = 30;
@@ -177,7 +178,7 @@ function CandidateRow({
           </div>
 
           <Link
-            href={`/report/${candidate.report_id}`}
+            href={reportHref(candidate.report_id)}
             className="inline-block text-xs font-medium text-brand-400 underline-offset-4 hover:underline"
           >
             Open full credibility report →
@@ -221,6 +222,7 @@ function MatchContent() {
   }, [token]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     void refreshSavedJds();
   }, [refreshSavedJds]);
 

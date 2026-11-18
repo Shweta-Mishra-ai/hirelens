@@ -1,6 +1,6 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { Suspense, useEffect, useState, useCallback } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -81,13 +81,20 @@ const DEFAULT_SCORECARD: ScorecardItem[] = [
 ];
 
 function ReportContent() {
-  const params = useParams<{ id: string }>();
+  // The id rides in the query string: this page is pre-rendered once and
+  // served for every report. See lib/routes.ts.
+  const searchParams = useSearchParams();
+  const params = { id: searchParams.get("id") ?? "" };
   const router = useRouter();
   const { user, token, logout } = useAuthStore();
 
   const [report, setReport] = useState<Report | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // A link without an id has nothing to load: say so instead of showing the
+  // loading skeleton forever.
+  const [loading, setLoading] = useState(Boolean(params.id));
+  const [error, setError] = useState<string | null>(
+    params.id ? null : "This link doesn't say which report to open.",
+  );
   const [tab, setTab] = useState("overview");
 
   // Decision + candidate notification
@@ -307,6 +314,7 @@ function ReportContent() {
   }, [token, params.id]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     if (tab === "discuss") void loadDiscussData();
   }, [tab, loadDiscussData]);
 
@@ -409,6 +417,7 @@ function ReportContent() {
   }, [token, params.id, report]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     if (tab === "copilot") void loadCopilotData();
   }, [tab, loadCopilotData]);
 
@@ -881,10 +890,25 @@ function ReportContent() {
   );
 }
 
+/**
+ * One ReportContent per report id. With the id in the query string, moving
+ * from one report to another keeps the same page mounted, so without the key
+ * the previous report's decision, comments, verification and open tab would
+ * linger until the new one loaded. Keying by id gives each report fresh
+ * state, as the old /report/[id] route did.
+ */
+function ReportForId() {
+  const id = useSearchParams().get("id") ?? "";
+  return <ReportContent key={id} />;
+}
+
 export default function ReportPage() {
   return (
     <RequireAuth>
-      <ReportContent />
+      {/* useSearchParams needs a Suspense boundary in a statically exported page. */}
+      <Suspense fallback={null}>
+        <ReportForId />
+      </Suspense>
     </RequireAuth>
   );
 }

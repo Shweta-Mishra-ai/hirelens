@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { RecoveryLinkCatcher } from "@/components/RecoveryLinkCatcher";
+import { contentSecurityPolicy } from "@/lib/csp";
 
 /**
  * Typography: one sans for everything, one mono for evidence quotes and
@@ -47,6 +48,18 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${sans.variable} ${mono.variable}`}>
+      <head>
+        {/* Production only: the dev server needs eval() for hot reload. */}
+        {process.env.NODE_ENV === "production" && (
+          <meta
+            httpEquiv="Content-Security-Policy"
+            content={contentSecurityPolicy({
+              apiUrl: process.env.NEXT_PUBLIC_API_URL,
+              supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+            })}
+          />
+        )}
+      </head>
       <body>
         {/* A password recovery link can land on any page, depending on a
             Supabase setting this app does not control. Mounted here so it is
