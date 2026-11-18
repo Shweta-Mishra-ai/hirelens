@@ -14,9 +14,25 @@ from app.api.v1.endpoints.reports import _sanitize_search
 
 # ── SSRF Guard ───────────────────────────────────────────────────────────────
 class TestSSRFGuard:
-    def test_public_domain_allowed(self):
-        # A real, stable public domain — should resolve to a public IP.
+    def test_public_domain_allowed(self, monkeypatch):
+        # Resolution is stubbed to a public address: the test is about the
+        # guard's decision, and must not depend on the CI runner having DNS.
+        import socket
+
+        monkeypatch.setattr(
+            socket, "getaddrinfo",
+            lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.215.14", 0))],
+        )
         assert is_public_http_url("https://example.com/page") is True
+
+    def test_a_public_name_resolving_to_a_private_address_is_blocked(self, monkeypatch):
+        import socket
+
+        monkeypatch.setattr(
+            socket, "getaddrinfo",
+            lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))],
+        )
+        assert is_public_http_url("https://innocent-looking.example/") is False
 
     def test_localhost_blocked(self):
         assert is_public_http_url("http://localhost/admin") is False

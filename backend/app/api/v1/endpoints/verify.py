@@ -20,6 +20,7 @@ import asyncio
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import NotFoundError, ForbiddenError
@@ -179,7 +180,7 @@ async def run_verification(
     the result on the report. Safe to re-run — it overwrites the previous
     verification with a fresh one.
     """
-    report, source = _load_report(report_id, current_user["id"], db)
+    report, source = await run_in_threadpool(_load_report, report_id, current_user["id"], db)
 
     candidate = as_dict(report.get("candidate"))
     skills = as_dict(report.get("skills"))
@@ -222,7 +223,9 @@ async def run_verification(
             f"[verify {report_id}] recommendation downgraded to "
             f"'{top_level_updates['recommendation']}' based on verification evidence"
         )
-    _persist_verification(report_id, current_user["id"], report, source, db, top_level_updates)
+    await run_in_threadpool(
+        _persist_verification, report_id, current_user["id"], report, source, db, top_level_updates
+    )
 
     logger.info(f"Verification run | report={report_id} user={current_user['id']} github_status={verification['github'].get('status')}")
 
@@ -239,7 +242,7 @@ async def run_verification(
 
 
 @router.get("/{report_id}")
-async def get_verification(
+def get_verification(
     report_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),

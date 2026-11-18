@@ -207,15 +207,17 @@ class TestSharedClientKeepsServiceRole:
         self, shared_client, throwaway_clients, monkeypatch
     ):
         """
-        `auth.admin` is handed the same headers dict the listener mutates, so
-        a hijack also silently de-privileges admin.update_user_by_id — the
-        call every password reset depends on.
+        In some supabase-py versions `auth.admin` is handed the same headers
+        dict the listener mutates, so a hijack also silently de-privileges
+        admin.update_user_by_id — the call every password reset depends on.
+        Newer versions give admin its own copy. The assertion below is about
+        behaviour, so it holds on either: whatever the library does, admin
+        must still carry service-role after someone signs in.
         """
         monkeypatch.setattr(
             "app.api.v1.endpoints.auth.accept_pending_invites_for_email",
             lambda *a, **k: 0,
         )
-        assert shared_client.auth.admin._headers is shared_client.auth._headers
 
         with TestClient(app) as client:
             client.post(

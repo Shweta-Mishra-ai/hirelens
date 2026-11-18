@@ -12,9 +12,9 @@ the identity of whoever signs up during the outage.
 
 import logging
 import secrets
-import uuid
 from urllib.parse import quote
 from fastapi import APIRouter, Depends, Request
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, EmailStr, field_validator
 
 from app.core.dependencies import (
@@ -22,6 +22,7 @@ from app.core.dependencies import (
     get_current_user,
     get_redis,
     get_auth_client,
+    require_admin,
 )
 from app.core.security import (
     create_access_token,
@@ -48,10 +49,21 @@ router = APIRouter()
 
 LOGIN_LIMIT_PER_15_MIN = 10   # per IP — brute-force protection
 SIGNUP_LIMIT_PER_HOUR = 8     # per IP — bulk fake-account protection
-MAX_RECRUITERS_CAPACITY = 5000
 
 # In-memory user store for dev/testing when Supabase DB is unconfigured or unreachable
 _mem_users: dict[str, dict] = {}
+
+
+def _registered_user_count(db) -> int | None:
+    """How many accounts exist, or None when it cannot be determined."""
+    if db:
+        try:
+            res = db.table("profiles").select("id", count="exact").limit(1).execute()
+            return int(res.count or 0)
+        except Exception as e:
+            logger.warning(f"Could not count registered users: {e}")
+            return None
+    return max(local_db.count_users(), len(_mem_users))
 
 
 def _accept_invites_quietly(db, user_id: str, email: str) -> None:
@@ -109,7 +121,7 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/signup")
-async def signup(
+def signup(
     body: SignupRequest,
     request: Request,
     db=Depends(get_db),
@@ -123,43 +135,22 @@ async def signup(
     check_rate_limit(redis, f"signup:{get_client_ip(request)}", SIGNUP_LIMIT_PER_HOUR, window_seconds=3600)
     email_str = str(body.email).lower().strip()
 
-    # ── Capacity check: max 5,000 registered recruiters ─────────────────
+    # ── Capacity check ────────────────────────────────────────────────────
     #
-    # Counted as DISTINCT USERS, which is what the limit is about. Counting
-    # rows in the reports table instead would count resumes analysed: five
-    # busy recruiters would close the product to new signups, and five
-    # thousand idle ones would sail through.
+    # Counted as distinct accounts, from `profiles` (one row per auth user,
+    # kept in step by a trigger — see sql/001). This used
+    # `auth.admin.list_users()`, which is paginated and returns 50 users by
+    # default, so the count never exceeded 50 and the ceiling could never
+    # trigger — while still costing an admin API round trip on every signup.
     #
     # A failure to evaluate capacity must not block signup: the check is a
-    # commercial guardrail, not a security control, and an outage in the
-    # count should not take registration down with it.
-    if db:
-        try:
-            res = db.auth.admin.list_users()
-            user_count = len(res) if isinstance(res, list) else len(getattr(res, "users", []) or [])
-            if user_count >= MAX_RECRUITERS_CAPACITY:
-                raise CapacityLimitExceeded()
-        except CapacityLimitExceeded:
-            raise
-        except Exception as e:
-            # Supabase deployments without admin API access land here. Fall
-            # back to the profile table if one exists, then give up quietly.
-            logger.warning(f"Capacity check via admin API failed, trying profiles: {e}")
-            try:
-                res = db.table("profiles").select("id", count="exact").execute()
-                if (res.count or 0) >= MAX_RECRUITERS_CAPACITY:
-                    raise CapacityLimitExceeded()
-            except CapacityLimitExceeded:
-                raise
-            except Exception as e2:
-                logger.warning(f"Capacity check unavailable, allowing signup: {e2}")
-    else:
-        # Local store: count persisted users, not just the ones this process
-        # happens to have in memory. `_mem_users` is cleared on every restart,
-        # so counting it alone made the limit reset itself.
-        local_count = local_db.count_users()
-        if max(local_count, len(_mem_users)) >= MAX_RECRUITERS_CAPACITY:
-            raise CapacityLimitExceeded()
+    # commercial guardrail, not a security control.
+    if settings.MAX_REGISTERED_USERS > 0:
+        user_count = _registered_user_count(db)
+        if user_count is not None and user_count >= settings.MAX_REGISTERED_USERS:
+            raise CapacityLimitExceeded(
+                "New sign-ups are paused while we add capacity. Please try again later."
+            )
 
     if db:
         try:
@@ -283,7 +274,7 @@ async def signup(
 
 
 @router.post("/login")
-async def login(
+def login(
     body: LoginRequest,
     request: Request,
     db=Depends(get_db),
@@ -394,7 +385,7 @@ class OAuthVerifyRequest(BaseModel):
 
 
 @router.post("/oauth-verify")
-async def oauth_verify(body: OAuthVerifyRequest, db=Depends(get_db)):
+def oauth_verify(body: OAuthVerifyRequest, db=Depends(get_db)):
     """
     Verify Supabase session from frontend OAuth (Google) and return custom JWT.
     """
@@ -445,7 +436,7 @@ async def oauth_verify(body: OAuthVerifyRequest, db=Depends(get_db)):
 
 
 @router.get("/me")
-async def get_me(current_user: dict = Depends(get_current_user)):
+def get_me(current_user: dict = Depends(get_current_user)):
     """Get current authenticated user's profile."""
     return current_user
 
@@ -478,13 +469,18 @@ async def _issue_local_reset(email: str) -> None:
     request is identical whatever happens, so that it cannot be used to find
     out which addresses have accounts.
     """
-    local_db.purge_expired_password_resets()
-    user = local_db.get_user_by_email(email)
-    if not user:
-        return
+    def mint() -> str | None:
+        local_db.purge_expired_password_resets()
+        user = local_db.get_user_by_email(email)
+        if not user:
+            return None
+        token = secrets.token_urlsafe(32)
+        if not local_db.create_password_reset(user["id"], token, LOCAL_RESET_TTL_SECONDS):
+            return None
+        return token
 
-    token = secrets.token_urlsafe(32)
-    if not local_db.create_password_reset(user["id"], token, LOCAL_RESET_TTL_SECONDS):
+    token = await run_in_threadpool(mint)
+    if not token:
         return
 
     sent = await send_password_reset_email(
@@ -530,8 +526,8 @@ async def forgot_password(
             # redirect_to is what makes the link land on the reset page. Left
             # out, Supabase sends the recovery token to the project's Site URL,
             # where nothing reads it and the user gets no way to continue.
-            db.auth.reset_password_for_email(
-                email_str, {"redirect_to": _reset_url()}
+            await run_in_threadpool(
+                db.auth.reset_password_for_email, email_str, {"redirect_to": _reset_url()}
             )
         except Exception as e:
             kind, error = classify_auth_error(e, action="reset")
@@ -597,7 +593,7 @@ def _reset_via_supabase(db, token: str, new_password: str) -> bool:
 
 
 @router.post("/reset-password")
-async def reset_password(body: ResetPasswordRequest, db=Depends(get_db)):
+def reset_password(body: ResetPasswordRequest, db=Depends(get_db)):
     """Finish a password reset, using the token from the emailed link."""
     if db:
         try:
@@ -635,21 +631,16 @@ async def reset_password(body: ResetPasswordRequest, db=Depends(get_db)):
 
 
 @router.get("/stats")
-async def auth_stats(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def auth_stats(current_user: dict = Depends(require_admin), db=Depends(get_db)):
     """
-    User management statistics for administrators.
-    """
-    total_users = len(_mem_users)
-    if db:
-        try:
-            res = db.table("reports").select("user_id", count="exact").execute()
-            db_users = res.count if res.count is not None else 0
-            total_users = max(total_users, db_users)
-        except Exception as e:
-            logger.warning(f"auth_stats: could not query report count: {e}")
+    Account totals, for operators listed in ADMIN_EMAILS.
 
+    This counted rows in `reports` — resumes analysed, across every customer —
+    and reported it as "active recruiters" to any signed-in user.
+    """
+    count = _registered_user_count(db)
     return {
         "status": "ok",
-        "total_active_recruiters": max(total_users, 1),
-        "capacity": MAX_RECRUITERS_CAPACITY,
+        "registered_users": count,
+        "capacity": settings.MAX_REGISTERED_USERS or None,
     }

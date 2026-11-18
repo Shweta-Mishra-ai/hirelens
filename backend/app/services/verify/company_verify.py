@@ -12,6 +12,7 @@ map cleanly to a domain. Reported as a "weak signal", never as a red flag.
 """
 
 import re
+import asyncio
 import logging
 import httpx
 from app.core.config import settings
@@ -53,7 +54,7 @@ async def _safe_head(client: httpx.AsyncClient, url: str) -> httpx.Response | No
     """
     current_url = url
     for _ in range(_MAX_REDIRECT_HOPS + 1):
-        if not is_public_http_url(current_url):
+        if not await asyncio.to_thread(is_public_http_url, current_url):
             return None
         try:
             r = await client.head(current_url, follow_redirects=False)
@@ -96,7 +97,7 @@ async def verify_experience_companies(experience: list[dict]) -> list[dict]:
             found = False
             for scheme in ("https://", "http://"):
                 candidate_url = f"{scheme}{domain}"
-                if not is_public_http_url(candidate_url):
+                if not await asyncio.to_thread(is_public_http_url, candidate_url):
                     continue
                 r = await _safe_head(client, candidate_url)
                 if r is not None and r.status_code < 400:

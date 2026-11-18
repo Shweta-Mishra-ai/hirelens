@@ -116,7 +116,7 @@ def _assert_can_access(report_id: str, user_id: str, db) -> None:
 
 
 @router.get("/{report_id}/copilot", tags=["Interview Co-Pilot"])
-async def get_copilot_data(
+def get_copilot_data(
     report_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -153,7 +153,7 @@ async def get_copilot_data(
 
 
 @router.post("/{report_id}/copilot", tags=["Interview Co-Pilot"])
-async def save_copilot_data(
+def save_copilot_data(
     report_id: str,
     body: CoPilotSaveRequest,
     current_user: dict = Depends(get_current_user),

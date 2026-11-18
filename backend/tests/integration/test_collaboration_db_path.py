@@ -169,11 +169,15 @@ class TestComments:
         res = client.delete("/api/v1/reports/rep1/comments/nope", headers=owner["headers"])
         assert res.status_code == 404
 
-    def test_a_listing_failure_degrades_to_empty_rather_than_erroring(self, owner, db):
+    def test_a_listing_failure_is_an_error_not_an_empty_thread(self, owner, db):
+        """
+        An empty list during an outage tells the team nobody has commented —
+        a statement about their discussion that is false. A 503 can be retried.
+        """
         db.fail("report_comments", "select")
         res = client.get("/api/v1/reports/rep1/comments", headers=owner["headers"])
-        assert res.status_code == 200
-        assert res.json()["comments"] == []
+        assert res.status_code == 503
+        assert res.json()["error"] == "database_unavailable"
 
     def test_a_failed_write_is_not_reported_as_posted(self, owner, db):
         db.fail("report_comments", "insert")
@@ -218,11 +222,12 @@ class TestVotes:
         res = client.post("/api/v1/reports/rep1/vote", headers=owner["headers"], json={"vote": "advance"})
         assert res.status_code >= 400
 
-    def test_a_tally_lookup_failure_degrades_rather_than_erroring(self, owner, db):
+    def test_a_tally_lookup_failure_is_an_error_not_a_zero_tally(self, owner, db):
+        """A zeroed tally claims nobody voted."""
         db.fail("report_votes", "select")
-        body = client.get("/api/v1/reports/rep1/votes", headers=owner["headers"]).json()
-        assert body["tally"] == {"advance": 0, "reject": 0, "maybe": 0}
-        assert body["my_vote"] is None
+        res = client.get("/api/v1/reports/rep1/votes", headers=owner["headers"])
+        assert res.status_code == 503
+        assert res.json()["error"] == "database_unavailable"
 
 
 class TestWithoutSupabase:

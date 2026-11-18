@@ -3,7 +3,7 @@
 from contextlib import asynccontextmanager
 import asyncio, os, time, uuid, logging
 
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -11,14 +11,22 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
+from app.core.body_limit import BodySizeLimitMiddleware
 from app.core.exceptions import (
     HireLensException, RateLimitExceeded,
-    FileTooLarge, UnsupportedFileType, AuthError,
+    FileTooLarge, UnsupportedFileType, AuthError, QuotaExceeded,
 )
-from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match, verify, ats, teams, collaboration, copilot, jds
+from app.api.v1.endpoints import analysis, reports, auth, health, bulk, match, verify, ats, teams, collaboration, copilot, jds, billing
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("hirelens")
+
+# HTTP client libraries log every request line — full URL included — at INFO.
+# Any provider that authenticates with a query parameter would have its key
+# written to the platform log on every call, and the request lines are noise
+# besides. Warnings and errors still come through.
+for _noisy in ("httpx", "httpx2", "httpcore", "hpack"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 
 
@@ -177,6 +185,36 @@ async def lifespan(app: FastAPI):
                 "persistent disk, before taking real users."
             )
 
+        # Links in invite and password-reset emails are built from
+        # FRONTEND_URL. Its default is one particular deployment's address,
+        # so any other deployment that leaves it unset sends its users'
+        # reset links to someone else's site.
+        if "FRONTEND_URL" not in settings.model_fields_set:
+            logger.critical(
+                "FRONTEND_URL is not set — invite and password-reset emails "
+                "will link to the built-in default %s. Set FRONTEND_URL to this "
+                "deployment's frontend origin.",
+                settings.FRONTEND_URL,
+            )
+
+        # Resend refuses mail from a domain the account has not verified. The
+        # default sender is not a domain this deployment owns, so every email
+        # would be rejected — logged as a warning per send, easy to miss.
+        if settings.RESEND_API_KEY and "SMTP_FROM_EMAIL" not in settings.model_fields_set:
+            logger.critical(
+                "RESEND_API_KEY is set but SMTP_FROM_EMAIL is not — mail would be "
+                "sent from the default %s, which Resend rejects unless that "
+                "domain is verified on your account. Set SMTP_FROM_EMAIL to an "
+                "address on a domain you have verified with Resend.",
+                settings.SMTP_FROM_EMAIL,
+            )
+
+        if not settings.admin_emails:
+            logger.warning(
+                "ADMIN_EMAILS is not set — operator endpoints (diagnostics, "
+                "account stats, plan changes) are disabled in production."
+            )
+
         logger.info(
             "Config: origins=%s frontend=%s supabase=%s redis=%s",
             origins,
@@ -218,11 +256,18 @@ async def lifespan(app: FastAPI):
     logger.info("HireLens API shutting down")
 
 
+# The interactive docs publish every route, parameter and schema to anyone who
+# asks. Useful on a laptop; in production they are reconnaissance for free.
+_docs_enabled = not settings.is_production
+
 app = FastAPI(
     title="HireLens API",
     description="AI-powered recruiter decision intelligence. Gemini 2.5 Flash backend.",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
 # ── Middleware ────────────────────────────────────────────────────────────────
@@ -259,6 +304,10 @@ async def request_middleware(request: Request, call_next):
             "message": "Unexpected error. Please try again.",
             "request_id": rid,
         })
+
+# Body size limit: inside CORS (so a 413 is readable by the browser), outside
+# everything that parses a body.
+app.add_middleware(BodySizeLimitMiddleware)
 
 # CORS is added LAST so it ends up OUTERMOST: Starlette wraps each new
 # middleware around the ones already added, and the catch-all handler above
@@ -431,6 +480,19 @@ async def unsupported_type_handler(request: Request, exc: UnsupportedFileType):
         "request_id": _request_id(request),
     })
 
+@app.exception_handler(QuotaExceeded)
+async def quota_handler(request: Request, exc: QuotaExceeded):
+    return JSONResponse(status_code=402, content={
+        "error": "quota_exceeded",
+        "message": exc.message,
+        "plan": exc.plan,
+        "limit": exc.limit,
+        "remaining": exc.remaining,
+        "upgrade_url": settings.UPGRADE_URL or None,
+        "request_id": _request_id(request),
+    })
+
+
 @app.exception_handler(AuthError)
 async def auth_handler(request: Request, exc: AuthError):
     return JSONResponse(status_code=401, content={
@@ -449,10 +511,11 @@ app.include_router(jds.router, prefix="/api/v1/job-descriptions", tags=["Saved J
 app.include_router(verify.router, prefix="/api/v1/verify", tags=["Verification"])
 app.include_router(ats.router, prefix="/api/v1/ats", tags=["ATS Import"])
 app.include_router(teams.router, prefix="/api/v1/teams", tags=["Teams"])
+app.include_router(billing.router, prefix="/api/v1/billing", tags=["Billing"])
 app.include_router(reports.router, prefix="/api/v1/reports", tags=["Reports"])
 app.include_router(collaboration.router, prefix="/api/v1/reports", tags=["Collaboration"])
 app.include_router(copilot.router, prefix="/api/v1/reports", tags=["Interview Co-Pilot"])
 
 @app.get("/", include_in_schema=False)
 async def root():
-    return {"product": "HireLens API", "version": "1.0.0", "docs": "/docs"}
+    return {"product": "HireLens API", "version": "1.0.0", "docs": "/docs" if _docs_enabled else None}

@@ -44,7 +44,7 @@ class TestRemoveMemberRevokesAccess:
         try:
             assert get_user_role(None, team_id, member_id) == "member"
 
-            asyncio.run(remove_member(team_id, member_id, current_user={"id": owner_id}, db=None))
+            remove_member(team_id, member_id, current_user={"id": owner_id}, db=None)
 
             # This is the exact assertion that failed before the fix — the
             # role stayed "member" indefinitely because the mutation never
@@ -64,7 +64,7 @@ class TestRemoveMemberRevokesAccess:
         _mem_team_members.append({"team_id": team_id, "user_id": member_id, "role": "member", "joined_at": "now"})
 
         try:
-            asyncio.run(remove_member(team_id, member_id, current_user={"id": owner_id}, db=None))
+            remove_member(team_id, member_id, current_user={"id": owner_id}, db=None)
             assert get_user_role(None, team_id, owner_id) == "owner"
         finally:
             _cleanup(team_id)
@@ -80,7 +80,7 @@ class TestRemoveMemberRevokesAccess:
         _mem_team_members.append({"team_id": team_b, "user_id": member_id, "role": "member", "joined_at": "now"})
 
         try:
-            asyncio.run(remove_member(team_a, member_id, current_user={"id": owner_id}, db=None))
+            remove_member(team_a, member_id, current_user={"id": owner_id}, db=None)
             assert get_user_role(None, team_a, member_id) is None
             assert get_user_role(None, team_b, member_id) == "member"  # untouched
         finally:
@@ -99,7 +99,7 @@ class TestDeleteTeamRevokesAllAccess:
         _mem_team_members.append({"team_id": team_id, "user_id": member_id, "role": "member", "joined_at": "now"})
 
         try:
-            asyncio.run(delete_team(team_id, current_user={"id": owner_id}, db=None))
+            delete_team(team_id, current_user={"id": owner_id}, db=None)
             assert get_user_role(None, team_id, owner_id) is None
             assert get_user_role(None, team_id, member_id) is None
         finally:

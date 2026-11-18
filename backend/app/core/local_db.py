@@ -1166,8 +1166,95 @@ def count_jds(user_id: str) -> int:
         return 0
 
 
+# ── Plans and usage metering (local fallback for sql/007) ─────────────────────
+
+def init_billing_tables() -> None:
+    try:
+        with _get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    user_id TEXT PRIMARY KEY,
+                    plan TEXT NOT NULL DEFAULT 'free',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS usage_events (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'analysis',
+                    report_id TEXT,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_usage_events_user_created "
+                "ON usage_events(user_id, created_at)"
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to initialize billing tables: {e}")
+
+
+def get_subscription(user_id: str) -> dict | None:
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT plan, status FROM subscriptions WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"Error reading subscription from SQLite: {e}")
+        return None
+
+
+def set_subscription(user_id: str, plan: str, status: str = "active") -> bool:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT INTO subscriptions (user_id, plan, status, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan, "
+                "status = excluded.status, updated_at = excluded.updated_at",
+                (user_id, plan, status, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error writing subscription to SQLite: {e}")
+        return False
+
+
+def record_usage(user_id: str, kind: str, report_id: str | None) -> bool:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT INTO usage_events (id, user_id, kind, report_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), user_id, kind, report_id, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error recording usage in SQLite: {e}")
+        return False
+
+
+def count_usage_since(user_id: str, since_iso: str, kind: str = "analysis") -> int:
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM usage_events WHERE user_id = ? AND kind = ? AND created_at >= ?",
+                (user_id, kind, since_iso),
+            ).fetchone()
+            return int(row[0] or 0)
+    except Exception as e:
+        logger.error(f"Error counting usage in SQLite: {e}")
+        return 0
+
+
 init_local_db()
 init_collaboration_tables()
 init_team_tables()
 init_password_reset_table()
 init_saved_jd_table()
+init_billing_tables()

@@ -81,12 +81,12 @@ def extract_json(raw: str) -> dict:
 async def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> str:
     import httpx
 
-    # Use stable model name
-    model = "gemini-2.5-flash"
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={settings.GEMINI_API_KEY}"
-    )
+    model = settings.GEMINI_MODEL
+    # The key travels in a header, never in the query string. httpx logs every
+    # request line at INFO — URL included — so `?key=...` put the production
+    # Gemini key into the platform's log stream on every single analysis, where
+    # anyone with log access (or a log drain) could read it.
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -102,13 +102,27 @@ async def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 
 
     async with httpx.AsyncClient(timeout=90.0) as client:
         try:
-            r = await client.post(url, json=payload)
+            r = await client.post(
+                url,
+                json=payload,
+                headers={"x-goog-api-key": settings.GEMINI_API_KEY},
+            )
 
             if r.status_code == 429:
                 raise LLMError("Gemini rate limit hit. Try again in a moment.")
             if r.status_code == 400:
-                body = r.json()
+                try:
+                    body = r.json()
+                except ValueError:
+                    body = {}
                 raise LLMError(f"Gemini API error: {body.get('error', {}).get('message', 'Bad request')}")
+            if r.status_code == 404:
+                # A retired model name answers 404 on every call. Saying so is
+                # the difference between a config fix and a day of guessing.
+                raise LLMError(
+                    f"Gemini model '{model}' was not found — it may have been "
+                    f"retired. Set GEMINI_MODEL to a current model."
+                )
 
             if not r.is_success:
                 raise LLMError(f"Gemini API returned status code {r.status_code}")
@@ -135,7 +149,7 @@ async def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 
                 raise LLMError("Gemini returned empty content parts")
 
             return parts[0].get("text", "")
-        except (KeyError, IndexError) as e:
+        except (KeyError, IndexError, AttributeError) as e:
             raise LLMError(f"Unexpected Gemini response structure: {e}. Raw: {str(data)[:200]}")
 
 
@@ -148,7 +162,7 @@ async def _call_groq(prompt: str, temperature: float = 0.1, max_tokens: int = 40
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
             json={
-                "model": "llama-3.3-70b-versatile",
+                "model": settings.GROQ_MODEL,
                 "messages": [
                     {
                         "role": "system",
@@ -173,34 +187,86 @@ async def _call_groq(prompt: str, temperature: float = 0.1, max_tokens: int = 40
 
 
 # ── Anthropic fallback ────────────────────────────────────────────────────────
+def _anthropic_client():
+    """
+    The Anthropic client for one call.
+
+    Built through the official SDK rather than a hand-made HTTP request: the
+    SDK owns the API version header and the response envelope, which is
+    exactly what broke here before — the hard-coded model was retired and the
+    first content block is no longer guaranteed to be text.
+
+    Retries are off at this layer because llm_call() already owns the retry
+    and fallback policy; stacking the SDK's own retries on top multiplied the
+    worst-case wait by three. Kept as a factory so tests can substitute a
+    transport.
+    """
+    import anthropic
+
+    return anthropic.AsyncAnthropic(
+        api_key=settings.ANTHROPIC_API_KEY,
+        max_retries=0,
+        timeout=90.0,
+    )
+
+
 async def _call_anthropic(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> str:
-    import httpx
+    """
+    Ask Claude for a JSON answer.
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        r = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": settings.ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "claude-3-5-sonnet-20241022",
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "system": "You are a resume analysis AI. Always respond with valid JSON only. No markdown, no prose.",
-                "messages": [{"role": "user", "content": prompt}],
-            },
+    `temperature` is accepted for signature parity with the other providers
+    and deliberately not sent: current Claude models reject non-default
+    sampling parameters with a 400. Thinking is always on for these models
+    and counts against `max_tokens`, so the budget is raised to leave room for
+    both the reasoning and the JSON, with effort kept at `medium` for what is
+    a structured extraction task.
+    """
+    import anthropic
+
+    client = _anthropic_client()
+    try:
+        response = await client.beta.messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=max(16000, max_tokens),
+            system=(
+                "You are a resume analysis AI. Always respond with valid JSON only. "
+                "No markdown, no prose."
+            ),
+            messages=[{"role": "user", "content": prompt}],
+            output_config={"effort": "medium"},
+            # Server-side refusal fallback: if a safety classifier declines,
+            # the API re-runs the same request on a fallback model inside this
+            # call, routed by refusal category.
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
         )
+    except anthropic.RateLimitError:
+        raise LLMError("Anthropic rate limit hit.")
+    except anthropic.NotFoundError:
+        raise LLMError(
+            f"Anthropic model '{settings.ANTHROPIC_MODEL}' was not found — it may "
+            f"have been retired. Set ANTHROPIC_MODEL to a current model."
+        )
+    except anthropic.APIStatusError as e:
+        raise LLMError(f"Anthropic API error {e.status_code}: {e.message}")
+    except anthropic.APIConnectionError as e:
+        raise LLMError(f"Anthropic connection error: {e}")
+    finally:
+        await client.close()
 
-        if r.status_code == 429:
-            raise LLMError("Anthropic rate limit hit.")
-        r.raise_for_status()
+    if response.stop_reason == "refusal":
+        raise LLMError("Anthropic blocked the request (refusal).")
 
-        try:
-            return r.json()["content"][0]["text"]
-        except (KeyError, IndexError) as e:
-            raise LLMError(f"Unexpected Anthropic response: {e}")
+    text = "".join(
+        getattr(block, "text", "") or ""
+        for block in (response.content or [])
+        if getattr(block, "type", None) == "text"
+    )
+    if not text.strip():
+        raise LLMError(
+            f"Unexpected Anthropic response: no text content (stop_reason={response.stop_reason})"
+        )
+    return text
 
 
 # ── Provider dispatcher with fallback ─────────────────────────────────────────
@@ -212,11 +278,11 @@ async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000
     """
     providers = []
     if settings.GEMINI_API_KEY:
-        providers.append(("gemini-2.5-flash", _call_gemini))
+        providers.append((f"gemini:{settings.GEMINI_MODEL}", _call_gemini))
     if settings.GROQ_API_KEY:
-        providers.append(("groq-gpt-oss-120b", _call_groq))
+        providers.append((f"groq:{settings.GROQ_MODEL}", _call_groq))
     if settings.ANTHROPIC_API_KEY:
-        providers.append(("claude-sonnet", _call_anthropic))
+        providers.append((f"anthropic:{settings.ANTHROPIC_MODEL}", _call_anthropic))
 
     if not providers:
         raise LLMError(
@@ -273,6 +339,54 @@ async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000
         f"Last error: {last_error}. "
         "Check your API keys and network connectivity."
     )
+
+
+# ── Prompt input helpers ──────────────────────────────────────────────────────
+
+# How much of the extracted structure the analysis and JD-match prompts carry.
+ANALYSIS_INPUT_CHARS = 12_000
+
+
+def _compact_json(data, limit: int) -> str:
+    """
+    Serialise for a prompt without wasting the budget on whitespace.
+
+    This used to be `json.dumps(data, indent=2)[:6000]`. Indentation is a
+    third or more of that output, and a hard slice cuts the JSON wherever the
+    limit falls — so for anyone with a long work history, education, projects
+    and certifications (which come last) never reached the model at all, and
+    it then dutifully flagged them as missing. Compact separators fit roughly
+    twice the content in the same space; the limit is a backstop, not a cut
+    that routinely lands.
+    """
+    text = json.dumps(data, separators=(",", ":"), ensure_ascii=False, default=str)
+    if len(text) > limit:
+        logger.warning(f"Prompt input truncated from {len(text)} to {limit} chars")
+        return text[:limit]
+    return text
+
+
+def _skill_list(value) -> list[str]:
+    """
+    A list of skill names from whatever shape the model answered with.
+
+    `list(value)` on a string answer — "Python, Go" — produces one entry per
+    character, which is how a candidate card ends up showing P, y, t, h, o, n
+    as six missing skills.
+    """
+    if isinstance(value, str):
+        parts = re.split(r"[,;\n]", value)
+    elif isinstance(value, (list, tuple)):
+        parts = value
+    else:
+        return []
+    out = []
+    for item in parts:
+        if isinstance(item, (str, int, float)):
+            text = str(item).strip()
+            if text:
+                out.append(text)
+    return out
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -596,7 +710,7 @@ class AnalysisEngine:
 
                 # Stage 2: Full analysis
                 analysis_prompt = ANALYSIS_PROMPT.format(
-                    extracted=json.dumps(extracted, indent=2)[:6000]
+                    extracted=_compact_json(extracted, ANALYSIS_INPUT_CHARS)
                 )
                 analysis = await llm_call(analysis_prompt, temperature=0.1, max_tokens=4000)
 
@@ -834,11 +948,18 @@ class AnalysisEngine:
         }
 
         prompt = JD_MATCH_PROMPT.format(
-            candidate_json=json.dumps(candidate_view, indent=2)[:6000],
+            candidate_json=_compact_json(candidate_view, ANALYSIS_INPUT_CHARS),
             jd_text=jd_text[:5000],
         )
 
-        raw = await llm_call(prompt, temperature=0.1, max_tokens=1500)
+        # Bounded like the main analysis. Without it, three providers x two
+        # attempts x a 90s timeout could hold a batch concurrency slot for
+        # nine minutes on one candidate.
+        try:
+            async with asyncio.timeout(settings.ANALYSIS_TIMEOUT_SECONDS):
+                raw = await llm_call(prompt, temperature=0.1, max_tokens=1500)
+        except asyncio.TimeoutError:
+            raise AnalysisTimeout()
         return self._merge_jd_match(raw)
 
     def _merge_jd_match(self, raw: dict) -> dict:
@@ -859,8 +980,8 @@ class AnalysisEngine:
 
         return {
             "match_percent": pct,
-            "matching_skills": list(raw.get("matching_skills") or [])[:25],
-            "missing_skills": list(raw.get("missing_skills") or [])[:25],
+            "matching_skills": _skill_list(raw.get("matching_skills"))[:25],
+            "missing_skills": _skill_list(raw.get("missing_skills"))[:25],
             "verdict": verdict,
             "rationale": str(raw.get("rationale") or ""),
         }

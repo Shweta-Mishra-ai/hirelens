@@ -106,18 +106,42 @@ class TestGemini:
             await engine._call_gemini("prompt")
 
     @pytest.mark.asyncio
-    async def test_a_connection_failure_never_leaks_the_api_key(self, transport):
-        """The key is in the query string, so httpx puts it in the error
-        text. It must not reach a log line or an error surfaced to a user."""
+    async def test_the_key_is_sent_in_a_header_never_in_the_url(self, transport):
+        """
+        httpx logs every request line, URL included, at INFO. A key in the
+        query string therefore reached the platform log on every analysis.
+        """
+        transport["handler"] = lambda r: httpx.Response(200, json=gemini_body("{}"))
+        await engine._call_gemini("prompt")
+        sent = transport["requests"][0]
+        assert "gemini-key-abc123" not in str(sent.url)
+        assert "key=" not in str(sent.url)
+        assert sent.headers["x-goog-api-key"] == "gemini-key-abc123"
 
+    @pytest.mark.asyncio
+    async def test_the_model_comes_from_configuration(self, transport, monkeypatch):
+        monkeypatch.setattr(settings, "GEMINI_MODEL", "gemini-test-model")
+        transport["handler"] = lambda r: httpx.Response(200, json=gemini_body("{}"))
+        await engine._call_gemini("prompt")
+        assert "/models/gemini-test-model:generateContent" in str(transport["requests"][0].url)
+
+    @pytest.mark.asyncio
+    async def test_a_retired_model_is_named_in_the_error(self, transport):
+        transport["handler"] = lambda r: httpx.Response(404)
+        with pytest.raises(LLMError, match="GEMINI_MODEL"):
+            await engine._call_gemini("prompt")
+
+    @pytest.mark.asyncio
+    async def test_a_connection_failure_never_leaks_the_api_key(self, transport):
         def boom(request):
-            raise httpx.ConnectError(f"failed connecting to {request.url}", request=request)
+            raise httpx.ConnectError(
+                f"failed connecting to {request.url} with {request.headers}", request=request
+            )
 
         transport["handler"] = boom
         with pytest.raises(LLMError) as err:
             await engine._call_gemini("prompt")
         assert "gemini-key-abc123" not in str(err.value)
-        assert "********" in str(err.value)
 
 
 class TestGroq:
@@ -158,31 +182,123 @@ class TestGroq:
             await engine._call_groq("prompt")
 
 
+@pytest.fixture
+def claude(monkeypatch):
+    """
+    Serve the Anthropic SDK from a handler the test controls.
+
+    The SDK runs on httpx2, so the httpx fixture above cannot see it; the
+    client factory is swapped for one whose transport is a MockTransport.
+    """
+    import anthropic
+    import httpx2
+
+    state = {"handler": None, "requests": []}
+
+    def handler(request):
+        state["requests"].append(request)
+        return state["handler"](request)
+
+    def factory():
+        return anthropic.AsyncAnthropic(
+            api_key=settings.ANTHROPIC_API_KEY,
+            max_retries=0,
+            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+        )
+
+    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "anthropic-key-abc123")
+    monkeypatch.setattr(engine, "_anthropic_client", factory)
+    state["httpx2"] = httpx2
+    return state
+
+
+def claude_message(content, stop_reason="end_turn"):
+    return {
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "model": settings.ANTHROPIC_MODEL,
+        "content": content,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {"input_tokens": 10, "output_tokens": 10},
+    }
+
+
 class TestAnthropic:
     @pytest.mark.asyncio
-    async def test_a_normal_answer_is_returned(self, transport):
-        transport["handler"] = lambda r: httpx.Response(
-            200, json={"content": [{"text": '{"ok": true}'}]}
+    async def test_a_normal_answer_is_returned(self, claude):
+        h = claude["httpx2"]
+        claude["handler"] = lambda r: h.Response(
+            200, json=claude_message([{"type": "text", "text": '{"ok": true}'}])
         )
         assert await engine._call_anthropic("prompt") == '{"ok": true}'
 
     @pytest.mark.asyncio
-    async def test_the_request_carries_the_key_and_api_version(self, transport):
-        transport["handler"] = lambda r: httpx.Response(200, json={"content": [{"text": "{}"}]})
-        await engine._call_anthropic("prompt")
-        sent = transport["requests"][0]
-        assert sent.headers["x-api-key"] == "anthropic-key-abc123"
-        assert sent.headers["anthropic-version"]
+    async def test_a_thinking_block_first_does_not_hide_the_answer(self, claude):
+        """Current models think before answering; content[0] is not the text."""
+        h = claude["httpx2"]
+        claude["handler"] = lambda r: h.Response(
+            200,
+            json=claude_message([
+                {"type": "thinking", "thinking": "", "signature": "sig"},
+                {"type": "text", "text": '{"ok": true}'},
+            ]),
+        )
+        assert await engine._call_anthropic("prompt") == '{"ok": true}'
 
     @pytest.mark.asyncio
-    async def test_a_rate_limit_says_so(self, transport):
-        transport["handler"] = lambda r: httpx.Response(429)
+    async def test_the_request_uses_the_configured_model_and_no_sampling_params(self, claude, monkeypatch):
+        import json as _json
+
+        monkeypatch.setattr(settings, "ANTHROPIC_MODEL", "claude-test-model")
+        h = claude["httpx2"]
+        claude["handler"] = lambda r: h.Response(
+            200, json=claude_message([{"type": "text", "text": "{}"}])
+        )
+        await engine._call_anthropic("prompt", temperature=0.3)
+        sent = claude["requests"][0]
+        body = _json.loads(sent.content)
+        assert "anthropic-key-abc123" in (
+            sent.headers.get("authorization", "") + sent.headers.get("x-api-key", "")
+        )
+        assert sent.headers["anthropic-version"]
+        assert body["model"] == "claude-test-model"
+        # Current models answer a non-default temperature with a 400.
+        assert "temperature" not in body
+        assert body["max_tokens"] >= 16000
+
+    @pytest.mark.asyncio
+    async def test_a_rate_limit_says_so(self, claude):
+        h = claude["httpx2"]
+        claude["handler"] = lambda r: h.Response(
+            429, json={"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}}
+        )
         with pytest.raises(LLMError, match="rate limit"):
             await engine._call_anthropic("prompt")
 
     @pytest.mark.asyncio
-    async def test_an_unexpected_envelope_is_an_error(self, transport):
-        transport["handler"] = lambda r: httpx.Response(200, json={"content": []})
+    async def test_a_retired_model_is_named_in_the_error(self, claude):
+        h = claude["httpx2"]
+        claude["handler"] = lambda r: h.Response(
+            404, json={"type": "error", "error": {"type": "not_found_error", "message": "model"}}
+        )
+        with pytest.raises(LLMError, match="ANTHROPIC_MODEL"):
+            await engine._call_anthropic("prompt")
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_is_an_error_not_an_empty_report(self, claude):
+        h = claude["httpx2"]
+        claude["handler"] = lambda r: h.Response(
+            200, json=claude_message([], stop_reason="refusal")
+        )
+        with pytest.raises(LLMError, match="refusal"):
+            await engine._call_anthropic("prompt")
+
+    @pytest.mark.asyncio
+    async def test_an_answer_with_no_text_is_an_error(self, claude):
+        h = claude["httpx2"]
+        claude["handler"] = lambda r: h.Response(200, json=claude_message([]))
         with pytest.raises(LLMError, match="Unexpected Anthropic response"):
             await engine._call_anthropic("prompt")
 

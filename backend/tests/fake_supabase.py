@@ -51,11 +51,13 @@ class _Query:
         self.payload: dict | None = None
         self.json_path_rejected: str | None = None
         self.on_conflict: list[str] = []
+        self.columns: str = "*"
 
     # ── builder ────────────────────────────────────────────────────────────
     def select(self, _columns="*", count=None):
         self.op = "select"
         self.count_mode = count
+        self.columns = _columns or "*"
         return self
 
     def update(self, payload: dict):
@@ -79,6 +81,10 @@ class _Query:
     def in_(self, column: str, values):
         wanted = list(values)
         self.filters.append(lambda row, c=column, v=wanted: row.get(c) in v)
+        return self
+
+    def gte(self, column: str, value):
+        self.filters.append(lambda row, c=column, v=value: row.get(c) is not None and row.get(c) >= v)
         return self
 
     def neq(self, column: str, value):
@@ -189,12 +195,52 @@ class _Query:
             matched = matched[: self.limit_]
 
         if self.single:
-            return Result(dict(matched[0]) if matched else None)
+            return Result(_project(matched[0], self.columns) if matched else None)
 
         return Result(
-            [dict(r) for r in matched],
+            [_project(r, self.columns) for r in matched],
             count=total if self.count_mode == "exact" else None,
         )
+
+
+def _project(row: dict, columns: str) -> dict:
+    """
+    Return only the columns a select() asked for, the way PostgREST does.
+
+    Returning the whole row regardless let code that selected too little pass
+    every test and then read None in production. Supports what this codebase
+    writes: `*`, plain columns, `alias:column`, and JSON paths such as
+    `skills:report_data->skills->all_claimed` (`->` keeps JSON, `->>` gives
+    text). A path with no alias is keyed by its last segment, as in PostgREST.
+    """
+    import json as _json
+
+    spec = (columns or "*").strip()
+    if spec == "*":
+        return dict(row)
+
+    out: dict = {}
+    for token in (t.strip() for t in spec.split(",")):
+        if not token:
+            continue
+        if token == "*":
+            out.update(row)
+            continue
+        alias, _, expr = token.partition(":")
+        if not expr:
+            alias, expr = "", alias
+        if "->" not in expr:
+            out[alias or expr] = row.get(expr)
+            continue
+        as_text = "->>" in expr
+        parts = [p for p in expr.replace("->>", "->").split("->") if p]
+        value = row.get(parts[0])
+        for key in parts[1:]:
+            value = value.get(key) if isinstance(value, dict) else None
+        if as_text and value is not None and not isinstance(value, str):
+            value = _json.dumps(value)
+        out[alias or parts[-1]] = value
+    return out
 
 
 # The real column list for each table, from backend/sql/*.sql. A write naming
@@ -221,6 +267,11 @@ SCHEMA: dict[str, set[str]] = {
     "saved_jds": {
         "id", "user_id", "name", "jd_text", "created_at", "updated_at", "last_used_at",
     },
+    "subscriptions": {
+        "user_id", "plan", "status", "provider", "provider_customer",
+        "provider_reference", "current_period_end", "updated_at",
+    },
+    "usage_events": {"id", "user_id", "kind", "report_id", "created_at"},
 }
 
 

@@ -1,4 +1,6 @@
-FROM python:3.11-slim
+# 3.12, the version CI tests against. This read 3.11, so production ran an
+# interpreter no test had ever run on.
+FROM python:3.12-slim
 
 # Set working directory
 WORKDIR /app
@@ -13,9 +15,9 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install Python dependencies first (layer caching)
-COPY requirements.txt .
+COPY requirements.txt constraints.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt -c constraints.txt
 
 # Copy application code
 COPY . .
@@ -53,4 +55,5 @@ CMD ["uvicorn", "app.main:app", \
      "--port", "8000", \
      "--workers", "1", \
      "--log-level", "info", \
+     "--timeout-graceful-shutdown", "20", \
      "--access-log"]

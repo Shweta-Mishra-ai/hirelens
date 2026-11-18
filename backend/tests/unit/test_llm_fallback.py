@@ -129,16 +129,24 @@ class TestProviderModelNamesAreCurrent:
     (a provider's hardcoded model string silently becoming invalid/deprecated)."""
 
     def test_groq_model_is_not_the_known_deprecated_one(self):
-        import inspect
-        from app.services.ai import engine
-        source = inspect.getsource(engine._call_groq)
-        assert "llama-3.1-70b-versatile" not in source, (
+        from app.core.config import settings
+        assert settings.GROQ_MODEL != "llama-3.1-70b-versatile", (
             "llama-3.1-70b-versatile was deprecated by Groq in Jan 2025 — "
             "using it makes the Groq fallback silently fail on every call."
         )
 
-    def test_anthropic_model_string_is_set(self):
+    def test_anthropic_model_is_not_a_retired_one(self):
+        from app.core.config import settings
+        assert settings.ANTHROPIC_MODEL
+        assert not settings.ANTHROPIC_MODEL.startswith("claude-3"), (
+            "Claude 3.x models are retired; the Anthropic fallback would 404 on every call."
+        )
+
+    def test_model_names_are_configuration_not_code(self):
         import inspect
         from app.services.ai import engine
-        source = inspect.getsource(engine._call_anthropic)
-        assert '"model":' in source
+        for fn in (engine._call_gemini, engine._call_groq, engine._call_anthropic):
+            source = inspect.getsource(fn)
+            assert "gemini-2.5-flash" not in source
+            assert "llama-3.3-70b-versatile" not in source
+            assert "claude-sonnet" not in source

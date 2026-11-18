@@ -3,7 +3,7 @@
 import logging
 from fastapi import APIRouter, Depends
 from app.core.config import settings
-from app.core.dependencies import get_db, get_redis, get_current_user
+from app.core.dependencies import get_db, get_redis, require_admin
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
@@ -87,7 +87,7 @@ def _snapshot(db, redis) -> dict:
 
 
 @router.get("/health", tags=["Health"])
-async def health(db=Depends(get_db), redis=Depends(get_redis)):
+def health(db=Depends(get_db), redis=Depends(get_redis)):
     """
     Public health check, used by Render and by uptime monitors.
 
@@ -102,13 +102,15 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
 
 
 @router.get("/health/diagnostics", tags=["Health"])
-async def diagnostics(
-    current_user: dict = Depends(get_current_user),
+def diagnostics(
+    current_user: dict = Depends(require_admin),
     db=Depends(get_db),
     redis=Depends(get_redis),
 ):
     """
     Detailed system diagnostics & load health metrics.
+
+    Operators only (ADMIN_EMAILS): this returns raw provider error text.
     Returns metrics on job queues, system limits, and process capacity.
 
     Requires authentication — this exposes internal process memory, active
@@ -133,7 +135,7 @@ async def diagnostics(
     return {
         "health": h,
         "capacity": {
-            "max_supported_users": 5000,
+            "max_supported_users": settings.MAX_REGISTERED_USERS,
             "bulk_concurrency": settings.BULK_CONCURRENCY,
             "rate_limit_per_minute": settings.RATE_LIMIT_PER_MINUTE,
             "max_file_size_mb": settings.MAX_FILE_SIZE_MB,

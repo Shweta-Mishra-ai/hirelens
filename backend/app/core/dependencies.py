@@ -97,6 +97,12 @@ def _guard_service_role(client) -> None:
         )
         client.options.headers["Authorization"] = service_header
         client.auth._headers["Authorization"] = service_header
+        # Older supabase-py versions hand auth.admin the same dict as
+        # auth._headers; newer ones give it its own copy. Restore both, so the
+        # guard holds whichever version a deploy resolved to.
+        admin_headers = getattr(getattr(client.auth, "admin", None), "_headers", None)
+        if isinstance(admin_headers, dict):
+            admin_headers["Authorization"] = service_header
         # The listener dropped these so they would be rebuilt with the user's
         # token; drop them again so they are rebuilt with the right key.
         client._postgrest = None
@@ -325,6 +331,28 @@ async def get_current_user(authorization: str = Header(default="")) -> dict:
     
     email = payload.get("email", "")
     return {"id": str(user_id), "email": email}
+
+
+async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    """
+    The caller, if they are an operator listed in ADMIN_EMAILS.
+
+    Production with ADMIN_EMAILS unset admits nobody: failing closed is the
+    only safe default for routes that expose internal error text. Development
+    admits any signed-in user, so local debugging needs no setup.
+    """
+    from app.core.exceptions import ForbiddenError
+
+    admins = settings.admin_emails
+    if not admins:
+        if settings.is_production:
+            raise ForbiddenError(
+                "This operator endpoint is disabled until ADMIN_EMAILS is configured."
+            )
+        return current_user
+    if (current_user.get("email") or "").strip().lower() not in admins:
+        raise ForbiddenError("This endpoint is for operators only.")
+    return current_user
 
 
 async def get_optional_user(authorization: str = Header(default="")) -> dict | None:

@@ -39,5 +39,10 @@ PyJWT>=2.8.0,<3.0.0
 # in security.py.
 bcrypt>=4.1.0,<6.0.0
 
+# ── LLM ───────────────────────────────────────────────────────────────────────
+# Official SDK for the Claude fallback provider. 2.x sends the current API
+# version and no longer accepts sampling parameters current models reject.
+anthropic>=2.10.0,<3.0.0
+
 # ── Utilities ─────────────────────────────────────────────────────────────────
 python-dateutil>=2.9.0,<3.0.0

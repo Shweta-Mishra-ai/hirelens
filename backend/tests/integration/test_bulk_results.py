@@ -185,7 +185,7 @@ class TestNotifyAll:
     def mailer(self, monkeypatch):
         sent = []
 
-        async def fake_send(to_email, subject, body):
+        async def fake_send(to_email, subject, body, reply_to=None):
             sent.append({"to": to_email, "subject": subject, "body": body})
             return True
 
@@ -263,7 +263,7 @@ class TestNotifyAll:
         assert mailer == []
 
     def test_a_provider_failure_is_reported_per_candidate(self, owner, batch, monkeypatch):
-        async def fails(to_email, subject, body):
+        async def fails(to_email, subject, body, reply_to=None):
             return False
 
         import app.services.email.sender as sender

@@ -3,7 +3,7 @@ import os
 import secrets
 from pathlib import Path
 from typing import List
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
@@ -206,6 +206,12 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+    # Model names are configuration, not code. Providers retire models on a
+    # schedule, and a retired name fails every call with a 404 — with the
+    # name in an env var that is a dashboard change, not a redeploy of code.
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    ANTHROPIC_MODEL: str = "claude-sonnet-5-5"
 
     # Limits
     MAX_FILE_SIZE_MB: int = 10
@@ -237,6 +243,28 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "https://hirelens-theta.vercel.app"
     # Your Render backend URL — set this in Render env vars to enable keep-alive pings
     BACKEND_URL: str = ""
+
+    # Operators allowed to read /health/diagnostics and /auth/stats, as a
+    # comma-separated list of sign-in emails. Those routes expose raw database
+    # error text and account totals; with open sign-up, "any signed-in user"
+    # means anyone on the internet. In production nobody gets them until this
+    # is set; in development any signed-in user does.
+    ADMIN_EMAILS: str = ""
+
+    # Hard ceiling on registered accounts, as a guard for a small deployment.
+    # 0 means no ceiling.
+    MAX_REGISTERED_USERS: int = 5000
+
+    # ── Plans and quotas ──────────────────────────────────────────────────
+    # Completed analyses per calendar month on each plan. 0 = unlimited, and
+    # every plan defaults to 0 so that deploying the meter changes nothing
+    # until these are set. See app/services/billing.py.
+    FREE_MONTHLY_ANALYSES: int = 0
+    PRO_MONTHLY_ANALYSES: int = 0
+    TEAM_MONTHLY_ANALYSES: int = 0
+    # Where "Upgrade" sends people: a payment link (Stripe, Razorpay, ...),
+    # a pricing page, or a mailto:. Empty hides the button.
+    UPGRADE_URL: str = ""
 
     # Bulk upload (Feature 1)
     BULK_MAX_FILES: int = 50
@@ -275,6 +303,14 @@ class Settings(BaseSettings):
         in the app, because getting it wrong produces no error anywhere.
         """
         return parse_origins(self.ALLOWED_ORIGINS)
+
+    @property
+    def admin_emails(self) -> set[str]:
+        return {
+            e.strip().lower()
+            for e in (self.ADMIN_EMAILS or "").replace(";", ",").split(",")
+            if e.strip()
+        }
 
     @property
     def is_production(self) -> bool:

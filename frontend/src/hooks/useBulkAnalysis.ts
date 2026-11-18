@@ -26,6 +26,7 @@ export function useBulkAnalysis() {
   const [exportError, setExportError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
+  const uploadInFlightRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -114,6 +115,10 @@ export function useBulkAnalysis() {
 
   const upload = useCallback(
     async (files: File[]) => {
+      // One upload at a time: a second click (or a second Enter) while the
+      // first request is still in flight would start a duplicate batch —
+      // and spend the customer's monthly quota twice.
+      if (uploadInFlightRef.current) return;
       if (!token) {
         safeSetState({ phase: "error", message: "Please log in to upload resumes." });
         return;
@@ -128,13 +133,17 @@ export function useBulkAnalysis() {
 
       let uploadRes: BulkUploadResponse;
       try {
+        uploadInFlightRef.current = true;
         uploadRes = await bulkAPI.upload(files, token);
       } catch (e) {
+        uploadInFlightRef.current = false;
         const message =
           e instanceof APIError ? e.message : "Upload failed. Please try again.";
         safeSetState({ phase: "error", message });
         return;
       }
+
+      uploadInFlightRef.current = false;
 
       await pollBatch(uploadRes.batch_id);
     },

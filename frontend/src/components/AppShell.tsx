@@ -20,6 +20,7 @@ import { useAuthStore } from "@/store/auth";
 import { initials } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { Skeleton } from "@/components/ui/Feedback";
+import { UsageMeter } from "@/components/UsageMeter";
 
 /**
  * Application chrome: a persistent left sidebar plus a slim top bar.
@@ -248,6 +249,7 @@ function SidebarBody({
       )}
 
       <NavList collapsed={collapsed} onNavigate={onNavigate} />
+      <UsageMeter collapsed={collapsed} />
       <UserMenu collapsed={collapsed} />
     </>
   );

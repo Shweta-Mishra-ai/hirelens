@@ -17,17 +17,20 @@ HireLens — Bulk CV Upload & Ranking API (Feature 1)
 
 import io
 import csv
+import time
 import uuid
 import asyncio
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File, Request
 from pydantic import BaseModel, Field
 from typing import Literal
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
-from app.core import local_db
-from app.services import directory
-from app.core.shapes import as_dict, as_str, normalize_report, report_summary_row
+from app.services import billing, directory, report_lookup
+from app.core.csv_safety import safe_row
+from app.core.shapes import as_dict, as_str, as_score
 from app.core.config import settings
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.rate_limit import check_rate_limit
@@ -76,6 +79,8 @@ async def bulk_upload(
     # One rate-limit tick per batch (not per file) — a batch is one action.
     require_analysis_available()
     _check_rate_limit(redis, user_id)
+    # Every file in the batch must fit in this month's quota.
+    await run_in_threadpool(billing.ensure_quota, db, user_id, len(files), _jobs)
 
     # ── Reject an oversized batch before reading anything ─────────────────
     # Content-Length is advisory (a client can lie, and it includes multipart
@@ -137,7 +142,7 @@ async def bulk_upload(
                 "status": "failed", "stage": "failed", "progress": 0,
                 "file_name": filename, "report_id": None,
                 "error": f"Rejected: {message}",
-                "created_at": __import__("time").time(),
+                "created_at": time.time(),
             }
             continue
 
@@ -145,7 +150,7 @@ async def bulk_upload(
             "id": job_id, "user_id": user_id, "batch_id": None,
             "status": "queued", "stage": "queued", "progress": 0,
             "file_name": filename, "report_id": None, "error": None,
-            "created_at": __import__("time").time(),
+            "created_at": time.time(),
         }
         valid_items.append({
             "job_id": job_id, "bytes": contents,
@@ -205,33 +210,11 @@ async def _run_batch(batch_id: str, user_id: str, valid_items: list[dict], db, r
         logger.info(f"[batch {batch_id}] all jobs finished")
 
 
-def _get_report_summary(report_id: str, db) -> dict | None:
-    """Lightweight report lookup for ranking — DB first, in-memory fallback."""
-    if db:
-        try:
-            res = (
-                db.table("reports")
-                .select("id,file_name,candidate_name,overall_score,recommendation")
-                .eq("id", report_id)
-                .maybe_single()
-                .execute()
-            )
-            if res.data:
-                return res.data
-        except Exception as e:
-            logger.warning(f"Ranking DB lookup failed for {report_id}: {e}")
-
-    data = _jobs.get(f"report_{report_id}")
-    if isinstance(data, dict) and data:
-        return report_summary_row(report_id, data)
-    return None
-
-
 def _build_status_and_ranking(batch: dict, db) -> dict:
     job_ids = batch["job_ids"]
     jobs = []
     counts = {"queued": 0, "running": 0, "complete": 0, "failed": 0}
-    ranking = []
+    completed: list[tuple[str, dict]] = []
 
     for jid in job_ids:
         job = _jobs.get(jid)
@@ -252,15 +235,24 @@ def _build_status_and_ranking(batch: dict, db) -> dict:
         counts[job["status"]] = counts.get(job["status"], 0) + 1
 
         if job["status"] == "complete" and job["report_id"]:
-            summary = _get_report_summary(job["report_id"], db)
-            if summary:
-                ranking.append({
-                    "report_id": job["report_id"],
-                    "file_name": summary.get("file_name") or job["file_name"],
-                    "candidate_name": summary.get("candidate_name") or "Unknown",
-                    "overall_score": int(summary.get("overall_score") or 0),
-                    "recommendation": summary.get("recommendation") or "manual_review",
-                })
+            completed.append((job["report_id"], job))
+
+    # One lookup for every finished report, not one per candidate.
+    summaries = report_lookup.summaries(
+        db, [rid for rid, _ in completed], batch.get("user_id"), _jobs
+    )
+    ranking = []
+    for rid, job in completed:
+        summary = summaries.get(rid)
+        if not summary:
+            continue
+        ranking.append({
+            "report_id": rid,
+            "file_name": as_str(summary.get("file_name")) or job["file_name"],
+            "candidate_name": as_str(summary.get("candidate_name")) or "Unknown",
+            "overall_score": as_score(summary.get("overall_score")),
+            "recommendation": as_str(summary.get("recommendation")) or "manual_review",
+        })
 
     ranking.sort(key=lambda r: r["overall_score"], reverse=True)
     for i, r in enumerate(ranking, start=1):
@@ -283,7 +275,7 @@ def _build_status_and_ranking(batch: dict, db) -> dict:
 
 
 @router.get("/{batch_id}/status")
-async def bulk_status(
+def bulk_status(
     batch_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -300,7 +292,7 @@ async def bulk_status(
 
 
 @router.get("/{batch_id}/export.csv")
-async def bulk_export_csv(
+def bulk_export_csv(
     batch_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -319,10 +311,10 @@ async def bulk_export_csv(
     writer = csv.writer(buf)
     writer.writerow(["Rank", "Candidate Name", "File Name", "Score", "Recommendation", "Report ID"])
     for r in result["ranking"]:
-        writer.writerow([
+        writer.writerow(safe_row([
             r["rank"], r["candidate_name"], r["file_name"],
             r["overall_score"], r["recommendation"], r["report_id"],
-        ])
+        ]))
     buf.seek(0)
 
     filename = f"hirelens_ranking_{batch_id[:8]}.csv"
@@ -331,37 +323,6 @@ async def bulk_export_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-
-def _fetch_full_report(report_id: str, db) -> dict | None:
-    """Fetches file_name/candidate/score + full report_data (needed to build
-    a duplicate-detection fingerprint from experience bullets/projects)."""
-    if db:
-        try:
-            res = (
-                db.table("reports")
-                .select("id,candidate_name,report_data")
-                .eq("id", report_id)
-                .maybe_single()
-                .execute()
-            )
-            if res.data:
-                row = dict(res.data)
-                row["report_data"] = normalize_report(row.get("report_data"))
-                return row
-        except Exception as e:
-            logger.warning(f"Duplicate-detection DB lookup failed for {report_id}: {e}")
-
-    data = _jobs.get(f"report_{report_id}")
-    if isinstance(data, dict) and data:
-        report = normalize_report(data)
-        candidate = as_dict(report.get("candidate"))
-        return {
-            "id": report_id,
-            "candidate_name": as_str(candidate.get("name")) or "Unknown",
-            "report_data": report,
-        }
-    return None
 
 
 class NotifyOverride(BaseModel):
@@ -379,6 +340,10 @@ class BulkNotifyRequest(BaseModel):
     """
     decision: Literal["advance", "schedule_followup", "reject"]
     overrides: dict[str, NotifyOverride] = Field(default_factory=dict, max_length=500)  # report_id -> override
+    # Candidates already sent this same decision are skipped unless this is
+    # set. A double-click, a retry after a slow response, or a second tab
+    # otherwise emailed every candidate in the batch twice.
+    resend: bool = False
 
 
 @router.post("/{batch_id}/notify-all")
@@ -416,21 +381,33 @@ async def bulk_notify_all(
     if batch["user_id"] != current_user["id"]:
         raise ForbiddenError()
 
-    status = _build_status_and_ranking(batch, db)
-    sender_name = directory.get_display_name(
-        db, current_user["id"], current_user.get("email") or "The Hiring Team"
-    )
+    def gather() -> tuple[dict, str, dict]:
+        status = _build_status_and_ranking(batch, db)
+        sender = directory.get_display_name(
+            db, current_user["id"], current_user.get("email") or "The Hiring Team"
+        )
+        contacts = report_lookup.candidate_contacts(
+            db, [r["report_id"] for r in status["ranking"]], current_user["id"], _jobs
+        )
+        return status, sender, contacts
+
+    # All synchronous I/O; kept off the event loop.
+    status, sender_name, contacts = await run_in_threadpool(gather)
 
     results = []
+    newly_notified: list[str] = []
     for r in status["ranking"]:
         report_id = r["report_id"]
-        full = _fetch_full_report(report_id, db)
-        candidate = as_dict(as_dict(full).get("report_data")).get("candidate") if full else None
-        candidate_email = as_dict(candidate).get("email")
-        candidate_name = r.get("candidate_name") or "Candidate"
+        contact = contacts.get(report_id) or {}
+        candidate_email = contact.get("email") or ""
+        candidate_name = r.get("candidate_name") or contact.get("candidate_name") or "Candidate"
 
         if not candidate_email:
             results.append({"report_id": report_id, "candidate_name": candidate_name, "email_sent": False, "reason": "no_email_on_file"})
+            continue
+
+        if not body.resend and contact.get("notified_decision") == body.decision:
+            results.append({"report_id": report_id, "candidate_name": candidate_name, "email_sent": False, "reason": "already_notified"})
             continue
 
         override = body.overrides.get(report_id)
@@ -440,32 +417,48 @@ async def bulk_notify_all(
             draft = build_decision_email(body.decision, candidate_name, sender_name, "HireLens")
             subject, msg_body = draft["subject"], draft["body"]
 
-        sent = await send_candidate_decision_email(to_email=str(candidate_email), subject=subject, body=msg_body)
+        sent = await send_candidate_decision_email(
+            to_email=str(candidate_email),
+            subject=subject,
+            body=msg_body,
+            reply_to=current_user.get("email") or None,
+        )
         results.append({"report_id": report_id, "candidate_name": candidate_name, "email_sent": sent, "reason": None if sent else "provider_unavailable"})
+        if sent:
+            newly_notified.append(report_id)
 
-        if db:
+    # Recorded only for messages a provider accepted, and in one write.
+    if newly_notified and db:
+        def record() -> None:
             try:
                 db.table("reports").update({
-                    "candidate_notified_at": "now()",
+                    "candidate_notified_at": datetime.now(timezone.utc).isoformat(),
                     "candidate_notified_decision": body.decision,
-                }).eq("id", report_id).execute()
+                }).in_("id", newly_notified).eq("user_id", current_user["id"]).execute()
             except Exception as e:
-                logger.warning(f"Could not record bulk notification timestamp for {report_id}: {e}")
+                logger.warning(f"Could not record bulk notification for batch {batch_id}: {e}")
+
+        await run_in_threadpool(record)
 
     sent_count = sum(1 for x in results if x["email_sent"])
-    logger.info(f"Bulk notify | batch={batch_id} decision={body.decision} sent={sent_count}/{len(results)}")
+    skipped = sum(1 for x in results if x["reason"] == "already_notified")
+    logger.info(
+        f"Bulk notify | batch={batch_id} decision={body.decision} "
+        f"sent={sent_count}/{len(results)} already_notified={skipped}"
+    )
 
     return {
         "batch_id": batch_id,
         "decision": body.decision,
         "total_candidates": len(results),
         "emails_sent": sent_count,
+        "already_notified": skipped,
         "results": results,
     }
 
 
 @router.get("/{batch_id}/duplicates")
-async def bulk_duplicate_check(
+def bulk_duplicate_check(
     batch_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -489,9 +482,12 @@ async def bulk_duplicate_check(
         raise ForbiddenError()
 
     status = _build_status_and_ranking(batch, db)
+    fulls = report_lookup.full_reports(
+        db, [r["report_id"] for r in status["ranking"]], current_user["id"], _jobs
+    )
     items = []
     for r in status["ranking"]:
-        full = _fetch_full_report(r["report_id"], db)
+        full = fulls.get(r["report_id"])
         if not full:
             continue
         fingerprint = extract_fingerprint_text(as_dict(full.get("report_data")))

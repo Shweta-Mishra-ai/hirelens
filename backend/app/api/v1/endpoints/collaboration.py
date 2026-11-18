@@ -14,7 +14,9 @@ from pydantic import BaseModel, field_validator
 from typing import Literal
 
 from app.core.dependencies import get_current_user, get_db
-from app.core.exceptions import HireLensException, NotFoundError, ForbiddenError, DBRequiredError
+from app.core.exceptions import (
+    HireLensException, NotFoundError, ForbiddenError, DBRequiredError, DatabaseUnavailable,
+)
 from app.api.v1.endpoints.analysis import _jobs
 from app.core.shapes import as_dict, as_str
 from app.services import directory
@@ -128,7 +130,7 @@ def _local_mode(db) -> bool:
 
 
 @router.post("/{report_id}/share")
-async def share_report(report_id: str, body: ShareRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def share_report(report_id: str, body: ShareRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     """Owner-only: shares a report with a team they belong to."""
     if _local_mode(db):
         # Team membership itself lives in Supabase, so there is no correct
@@ -153,7 +155,7 @@ async def share_report(report_id: str, body: ShareRequest, current_user: dict = 
 
 
 @router.post("/{report_id}/unshare")
-async def unshare_report(report_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def unshare_report(report_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     if _local_mode(db):
         raise DBRequiredError(
             "Team sharing isn't configured on this deployment."
@@ -170,7 +172,7 @@ async def unshare_report(report_id: str, current_user: dict = Depends(get_curren
 
 
 @router.get("/{report_id}/comments")
-async def list_comments(report_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def list_comments(report_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     row = _fetch_report_row(db, report_id)
     if not user_can_access_report(db, row, current_user["id"]):
         raise ForbiddenError()
@@ -183,14 +185,16 @@ async def list_comments(report_id: str, current_user: dict = Depends(get_current
 
     try:
         res = db.table("report_comments").select("*").eq("report_id", report_id).order("created_at").execute()
-        return {"comments": _with_display_names(res.data or [], current_user["id"], db)}
     except Exception as e:
+        # An empty thread here reads as "nobody has said anything", which is a
+        # different and wrong statement about the team's discussion.
         logger.error(f"List comments failed for {report_id}: {e}")
-        return {"comments": []}
+        raise DatabaseUnavailable("The discussion could not be loaded. Please try again.")
+    return {"comments": _with_display_names(res.data or [], current_user["id"], db)}
 
 
 @router.post("/{report_id}/comments")
-async def add_comment(report_id: str, body: CommentRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def add_comment(report_id: str, body: CommentRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     row = _fetch_report_row(db, report_id)
     if not user_can_access_report(db, row, current_user["id"]):
         raise ForbiddenError()
@@ -204,14 +208,19 @@ async def add_comment(report_id: str, body: CommentRequest, current_user: dict =
         res = db.table("report_comments").insert({
             "report_id": report_id, "user_id": current_user["id"], "comment": body.comment,
         }).execute()
-        return res.data[0]
+        created = (res.data or [None])[0]
+        if not created:
+            raise RuntimeError("insert returned no row")
+        # Same shape as the local path and the list endpoint, so the new
+        # comment renders as "You" rather than as a bare id until a reload.
+        return _with_display_names([created], current_user["id"], db)[0]
     except Exception as e:
         logger.error(f"Add comment failed for {report_id}: {e}")
         raise HireLensException("Could not post comment. Please try again.")
 
 
 @router.delete("/{report_id}/comments/{comment_id}")
-async def delete_comment(report_id: str, comment_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def delete_comment(report_id: str, comment_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     if _local_mode(db):
         # Author-only deletion is enforced inside the query.
         if not local_db.delete_comment(comment_id, current_user["id"]):
@@ -236,7 +245,7 @@ async def delete_comment(report_id: str, comment_id: str, current_user: dict = D
 
 
 @router.get("/{report_id}/votes")
-async def list_votes(report_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def list_votes(report_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     row = _fetch_report_row(db, report_id)
     if not user_can_access_report(db, row, current_user["id"]):
         raise ForbiddenError()
@@ -247,8 +256,9 @@ async def list_votes(report_id: str, current_user: dict = Depends(get_current_us
             res = db.table("report_votes").select("*").eq("report_id", report_id).execute()
             votes = res.data or []
         except Exception as e:
+            # A zeroed tally is a claim that nobody voted.
             logger.error(f"List votes failed for {report_id}: {e}")
-            votes = []
+            raise DatabaseUnavailable("The team's votes could not be loaded. Please try again.")
 
     tally = {"advance": 0, "reject": 0, "maybe": 0}
     for v in votes:
@@ -264,7 +274,7 @@ async def list_votes(report_id: str, current_user: dict = Depends(get_current_us
 
 
 @router.post("/{report_id}/vote")
-async def cast_vote(report_id: str, body: VoteRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def cast_vote(report_id: str, body: VoteRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     row = _fetch_report_row(db, report_id)
     if not user_can_access_report(db, row, current_user["id"]):
         raise ForbiddenError()

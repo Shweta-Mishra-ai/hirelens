@@ -29,7 +29,6 @@ from app.core.exceptions import (
     ConflictError,
     NotFoundError,
     StorageWriteFailed,
-    ValidationError,
 )
 
 logger = logging.getLogger("hirelens")
@@ -117,7 +116,7 @@ def _supabase_get(db, jd_id: str, user_id: str) -> dict | None:
 
 # ── Routes ──────────────────────────────────────────────────────────────────
 @router.get("")
-async def list_saved_jds(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def list_saved_jds(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     """Names only — the full text is fetched when one is actually chosen."""
     user_id = current_user["id"]
 
@@ -130,7 +129,7 @@ async def list_saved_jds(current_user: dict = Depends(get_current_user), db=Depe
 
 
 @router.post("", status_code=201)
-async def save_job_description(
+def save_job_description(
     body: SaveJdRequest,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -212,7 +211,7 @@ async def save_job_description(
 
 
 @router.get("/{jd_id}")
-async def get_saved_jd(
+def get_saved_jd(
     jd_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -242,7 +241,7 @@ async def get_saved_jd(
 
 
 @router.delete("/{jd_id}")
-async def delete_saved_jd(
+def delete_saved_jd(
     jd_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),

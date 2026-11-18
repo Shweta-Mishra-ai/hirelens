@@ -14,14 +14,18 @@ Reuses Feature 1's infra almost entirely:
 
 import io
 import csv
+import time
 import uuid
 import asyncio
 import logging
 from functools import partial
 from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
-from app.core.shapes import as_dict, as_list, as_score, as_str, normalize_report
+from app.core.shapes import as_dict, as_list, as_score, as_str
+from app.core.csv_safety import safe_row
+from app.services import billing, report_lookup
 from app.core.config import settings
 from app.core import local_db
 from app.core.dependencies import get_current_user, get_db, get_redis
@@ -56,22 +60,26 @@ async def _resolve_jd_text(
     most specific thing the caller can ask for.
     """
     if saved_jd_id and user_id:
-        record = None
-        if db:
-            try:
-                res = (
-                    db.table("saved_jds")
-                    .select("jd_text")
-                    .eq("id", saved_jd_id)
-                    .eq("user_id", user_id)
-                    .maybe_single()
-                    .execute()
-                )
-                record = (res.data or None) if res else None
-            except Exception as e:
-                logger.warning(f"Saved JD {saved_jd_id} unreadable in Supabase: {e}")
-        if not record:
-            record = local_db.get_jd(saved_jd_id, user_id)
+        def lookup():
+            record = None
+            if db:
+                try:
+                    res = (
+                        db.table("saved_jds")
+                        .select("jd_text")
+                        .eq("id", saved_jd_id)
+                        .eq("user_id", user_id)
+                        .maybe_single()
+                        .execute()
+                    )
+                    record = (res.data or None) if res else None
+                except Exception as e:
+                    logger.warning(f"Saved JD {saved_jd_id} unreadable in Supabase: {e}")
+            if not record:
+                record = local_db.get_jd(saved_jd_id, user_id)
+            return record
+
+        record = await run_in_threadpool(lookup)
         if not record or not (record.get("jd_text") or "").strip():
             # Deliberately not a silent fall-through to whatever else was sent.
             # Ranking a shortlist against the wrong description produces a
@@ -79,7 +87,7 @@ async def _resolve_jd_text(
             raise NotFoundError(
                 "That saved job description could not be found. Pick another, or paste the text."
             )
-        local_db.touch_jd(saved_jd_id, user_id)
+        await run_in_threadpool(local_db.touch_jd, saved_jd_id, user_id)
         text = (record["jd_text"] or "").strip()
     elif jd_text and jd_text.strip():
         text = jd_text.strip()
@@ -93,7 +101,8 @@ async def _resolve_jd_text(
             text = contents.decode("utf-8", errors="ignore").strip()
         else:
             try:
-                text = extract_text(contents, mime, filename).strip()
+                # PDF parsing is CPU-bound and can take seconds.
+                text = (await run_in_threadpool(extract_text, contents, mime, filename)).strip()
             except Exception as e:
                 raise InvalidJobDescription() from e
     else:
@@ -138,6 +147,7 @@ async def match_upload(
 
     require_analysis_available()
     _check_rate_limit(redis, user_id)
+    await run_in_threadpool(billing.ensure_quota, db, user_id, len(files), _jobs)
 
     # See bulk.py for why the cap is enforced during the read rather than
     # after it: checking the total once every file is already buffered means
@@ -178,7 +188,7 @@ async def match_upload(
                 "status": "failed", "stage": "failed", "progress": 0,
                 "file_name": filename, "report_id": None,
                 "error": f"Rejected: {message}",
-                "created_at": __import__("time").time(),
+                "created_at": time.time(),
             }
             continue
 
@@ -186,7 +196,7 @@ async def match_upload(
             "id": job_id, "user_id": user_id, "batch_id": None,
             "status": "queued", "stage": "queued", "progress": 0,
             "file_name": filename, "report_id": None, "error": None,
-            "created_at": __import__("time").time(),
+            "created_at": time.time(),
         }
         valid_items.append({
             "job_id": job_id, "bytes": contents,
@@ -257,38 +267,37 @@ async def _run_match_batch(batch_id: str, user_id: str, valid_items: list[dict],
         logger.info(f"[match batch {batch_id}] all jobs finished")
 
 
-def _get_report_full(report_id: str, db) -> dict | None:
-    """Fetches file_name/candidate/score + the full report_data JSON (needed for jd_match)."""
-    if db:
-        try:
-            res = (
-                db.table("reports")
-                .select("id,file_name,candidate_name,overall_score,recommendation,report_data")
-                .eq("id", report_id)
-                .maybe_single()
-                .execute()
-            )
-            if res.data:
-                row = dict(res.data)
-                row["report_data"] = normalize_report(row.get("report_data"))
-                return row
-        except Exception as e:
-            logger.warning(f"Match ranking DB lookup failed for {report_id}: {e}")
+def _match_rows(report_ids: list[str], owner_id: str | None, db) -> dict[str, dict]:
+    """
+    The ranking fields plus jd_match for every finished report, in one query.
 
-    data = _jobs.get(f"report_{report_id}")
-    if isinstance(data, dict) and data:
-        data = normalize_report(data)
-        cred = as_dict(data.get("credibility"))
-        cand = as_dict(data.get("candidate"))
-        return {
-            "id": report_id,
-            "file_name": data.get("file_name"),
-            "candidate_name": cand.get("name") or "Unknown",
-            "overall_score": cred.get("overall", 0),
-            "recommendation": cred.get("recommendation", "manual_review"),
-            "report_data": data,
-        }
-    return None
+    Only the jd_match JSON path is selected — the old per-report lookup pulled
+    each complete report blob to read that one field, once per candidate, on
+    every status poll.
+    """
+    rows, _ = report_lookup.fetch_rows(
+        db,
+        report_ids,
+        "id,file_name,candidate_name,overall_score,recommendation,"
+        "jd_match:report_data->jd_match",
+    )
+    out = dict(rows)
+    for rid in report_ids:
+        if rid in out:
+            continue
+        report = report_lookup.local_report(rid, owner_id, _jobs)
+        if report:
+            cred = as_dict(report.get("credibility"))
+            cand = as_dict(report.get("candidate"))
+            out[rid] = {
+                "id": rid,
+                "file_name": report.get("file_name"),
+                "candidate_name": cand.get("name") or "Unknown",
+                "overall_score": cred.get("overall", 0),
+                "recommendation": cred.get("recommendation", "manual_review"),
+                "jd_match": report.get("jd_match"),
+            }
+    return out
 
 
 def _build_match_status(batch: dict, db) -> dict:
@@ -296,6 +305,7 @@ def _build_match_status(batch: dict, db) -> dict:
     jobs = []
     counts = {"queued": 0, "running": 0, "complete": 0, "failed": 0}
     ranking = []
+    completed: list[tuple[str, dict]] = []
 
     for jid in job_ids:
         job = _jobs.get(jid)
@@ -316,28 +326,30 @@ def _build_match_status(batch: dict, db) -> dict:
         counts[job["status"]] = counts.get(job["status"], 0) + 1
 
         if job["status"] == "complete" and job["report_id"]:
-            full = _get_report_full(job["report_id"], db)
-            if full:
-                # Every field here comes out of a stored blob, so none of it
-                # can be trusted to have the type it should. int("seventy")
-                # raises, and `list("python")` quietly becomes six
-                # single-letter skills on the candidate's card — the same
-                # string-explosion the engine was fixed for. See
-                # app/core/shapes.py.
-                rd = as_dict(full.get("report_data"))
-                jd = as_dict(rd.get("jd_match"))
-                ranking.append({
-                    "report_id": job["report_id"],
-                    "file_name": as_str(full.get("file_name")) or job["file_name"],
-                    "candidate_name": as_str(full.get("candidate_name")) or "Unknown",
-                    "overall_score": as_score(full.get("overall_score")),
-                    "recommendation": as_str(full.get("recommendation")) or "manual_review",
-                    "match_percent": as_score(jd.get("match_percent")),
-                    "matching_skills": as_list(jd.get("matching_skills")),
-                    "missing_skills": as_list(jd.get("missing_skills")),
-                    "verdict": as_str(jd.get("verdict")) or "unknown",
-                    "rationale": as_str(jd.get("rationale")),
-                })
+            completed.append((job["report_id"], job))
+
+    rows = _match_rows([rid for rid, _ in completed], batch.get("user_id"), db)
+    for rid, job in completed:
+        full = rows.get(rid)
+        if not full:
+            continue
+        # Every field here comes out of a stored blob, so none of it can be
+        # trusted to have the type it should. int("seventy") raises, and
+        # `list("python")` quietly becomes six single-letter skills on the
+        # candidate's card. See app/core/shapes.py.
+        jd = as_dict(full.get("jd_match"))
+        ranking.append({
+            "report_id": rid,
+            "file_name": as_str(full.get("file_name")) or job["file_name"],
+            "candidate_name": as_str(full.get("candidate_name")) or "Unknown",
+            "overall_score": as_score(full.get("overall_score")),
+            "recommendation": as_str(full.get("recommendation")) or "manual_review",
+            "match_percent": as_score(jd.get("match_percent")),
+            "matching_skills": as_list(jd.get("matching_skills")),
+            "missing_skills": as_list(jd.get("missing_skills")),
+            "verdict": as_str(jd.get("verdict")) or "unknown",
+            "rationale": as_str(jd.get("rationale")),
+        })
 
     ranking.sort(key=lambda r: r["match_percent"], reverse=True)
     for i, r in enumerate(ranking, start=1):
@@ -361,7 +373,7 @@ def _build_match_status(batch: dict, db) -> dict:
 
 
 @router.get("/{batch_id}/status")
-async def match_status(
+def match_status(
     batch_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -377,7 +389,7 @@ async def match_status(
 
 
 @router.get("/{batch_id}/export.csv")
-async def match_export_csv(
+def match_export_csv(
     batch_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -398,10 +410,10 @@ async def match_export_csv(
         "Overall Credibility Score", "Missing Skills", "Report ID",
     ])
     for r in result["ranking"]:
-        writer.writerow([
+        writer.writerow(safe_row([
             r["rank"], r["candidate_name"], r["file_name"], r["match_percent"],
-            r["verdict"], r["overall_score"], "; ".join(r["missing_skills"]), r["report_id"],
-        ])
+            r["verdict"], r["overall_score"], "; ".join(str(x) for x in r["missing_skills"]), r["report_id"],
+        ]))
     buf.seek(0)
 
     filename = f"hirelens_jd_match_{batch_id[:8]}.csv"

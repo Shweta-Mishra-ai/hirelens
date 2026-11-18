@@ -16,7 +16,7 @@ flowchart LR
 
 ## 1 · Supabase
 
-Create a project, then run these three files in the **SQL Editor**, in order.
+Create a project, then run these files in the **SQL Editor**, in order.
 Every statement is idempotent, so re-running the set is a no-op rather than an
 error.
 
@@ -27,6 +27,8 @@ error.
 | 3 | `backend/sql/003_candidate_notifications.sql` | the `candidate_notified_*` columns |
 | 4 | `backend/sql/004_normalize_invite_emails.sql` | one spelling for an invited address, so an invite always matches the person who was invited |
 | 5 | `backend/sql/005_saved_job_descriptions.sql` | `saved_jds`, so a role's description is written once and reused |
+| 6 | `backend/sql/006_index_and_policy_tuning.sql` | indexes and policy rewrites the Supabase advisors flag |
+| 7 | `backend/sql/007_billing_and_usage.sql` | `subscriptions` and the `usage_events` ledger behind plan quotas — writable only by the API |
 
 **002 must come after 001** — it adds a column to `reports` and foreign-keys
 four tables to it.
@@ -36,7 +38,8 @@ Verify from the SQL Editor:
 ```sql
 select table_name from information_schema.tables
 where table_schema = 'public' order by table_name;
--- profiles, report_comments, report_votes, reports, team_invites, team_members, teams
+-- profiles, report_comments, report_votes, reports, saved_jds, subscriptions,
+-- team_invites, team_members, teams, usage_events
 ```
 
 ### Why `profiles` exists
@@ -124,6 +127,8 @@ than showing one that fails at the verification step.
 | `SUPABASE_URL` | ✅ | `https://<ref>.supabase.co` |
 | `SUPABASE_SERVICE_KEY` | ✅ | **service_role**, never the anon key. Server-side only |
 | `SUPABASE_ANON_KEY` | ✅ | Public key, used for the OAuth round trip |
+| `FRONTEND_URL` | ✅ | Your Vercel URL. Invite and password-reset emails link here; unset, they link to a built-in default that is not your site (logged at CRITICAL on boot) |
+| `ADMIN_EMAILS` | ✅ | Comma-separated sign-in emails of operators. Only they can read `/health/diagnostics` and `/auth/stats` and change a customer's plan; in production nobody can until this is set |
 | `ALLOWED_ORIGINS` | ✅ | Your Vercel URL, comma-separated for several |
 | `APP_ENV` | ✅ | `production` |
 | `TRUSTED_PROXY_HOPS` | ➖ | Proxies in front of the app. `1` (the default) is right for Render; `2` behind Cloudflare; `0` with no proxy |
@@ -131,6 +136,11 @@ than showing one that fails at the verification step.
 | `GROQ_API_KEY` | ➖ | Second LLM provider |
 | `ANTHROPIC_API_KEY` | ➖ | Third LLM provider |
 | `RESEND_API_KEY` | ➖ | Candidate and invite emails |
+| `SMTP_FROM_EMAIL` | ➖ | Sender address. **Required with Resend**: it must be on a domain you have verified there, or every send is rejected |
+| `FREE_MONTHLY_ANALYSES` / `PRO_…` / `TEAM_…` | ➖ | Completed analyses per calendar month on each plan. `0` (default) = unlimited — see *Plans and quotas* below |
+| `UPGRADE_URL` | ➖ | Where the in-app **Upgrade** button goes: a payment link, a pricing page, or a `mailto:` |
+| `GEMINI_MODEL` / `GROQ_MODEL` / `ANTHROPIC_MODEL` | ➖ | Model names. A retired model fails every call with a 404 that names the variable to change |
+| `MAX_REGISTERED_USERS` | ➖ | Hard ceiling on accounts (default 5000). `0` = none |
 | `REDIS_URL` | ➖ | Shared rate limits and batches across instances |
 
 > **Get `TRUSTED_PROXY_HOPS` right.** Rate limits are keyed on the caller's
@@ -162,6 +172,46 @@ along with every account and report in it.
 For a persistent disk instead, change `plan: free` to `plan: starter` and
 uncomment the `disk:` block. **Adding that block while `plan: free` is set
 makes the deploy fail** — disks are not available on the free plan.
+
+---
+
+### Plans and quotas
+
+Every resume that produces a report is one **analysis**, whichever page it came
+from. A failed analysis is never counted. Usage is recorded in an append-only
+ledger (`usage_events`) that no user-reachable path can delete from — deleting
+reports does not hand quota back.
+
+Quotas are **off by default** (`0` = unlimited), so deploying this changes
+nothing. To turn them on, set the limits and redeploy:
+
+```env
+FREE_MONTHLY_ANALYSES=25
+PRO_MONTHLY_ANALYSES=500
+TEAM_MONTHLY_ANALYSES=2500
+UPGRADE_URL=https://buy.stripe.com/your-payment-link
+```
+
+(The numbers are examples — pricing is your call.) Customers see their usage in
+the sidebar, and an upload over the limit is refused with HTTP **402** and a
+message saying how many are left. The limit resets on the 1st of each month, UTC.
+
+**Upgrading a customer after they pay.** Payment collection is not wired to a
+provider yet, so an operator listed in `ADMIN_EMAILS` records the upgrade:
+
+```bash
+API=https://<your-api>.onrender.com
+# Sign in as an operator (an address listed in ADMIN_EMAILS) to get a token:
+TOKEN=$(curl -s -X POST $API/api/v1/auth/login -H "Content-Type: application/json" \
+  -d '{"email": "you@yourcompany.com", "password": "…"}' | jq -r .access_token)
+
+curl -X POST $API/api/v1/billing/admin/plan \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "customer@company.com", "plan": "pro"}'
+```
+
+It takes effect on the customer's next upload. To downgrade, send `"free"`.
 
 ---
 

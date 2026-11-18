@@ -16,6 +16,7 @@ module still adds real value in two ways:
 """
 
 import re
+import asyncio
 import logging
 import httpx
 from app.core.config import settings
@@ -101,7 +102,7 @@ async def _safe_fetch(client: httpx.AsyncClient, url: str) -> httpx.Response | N
     hop, since a URL that's safe can still redirect to an internal address."""
     current_url = url
     for _ in range(MAX_REDIRECT_HOPS + 1):
-        if not is_public_http_url(current_url):
+        if not await asyncio.to_thread(is_public_http_url, current_url):
             logger.warning(f"Blocked unsafe/internal URL during cert verification: {current_url}")
             return None
         try:
@@ -137,7 +138,7 @@ async def verify_certifications(certifications: list, candidate_name: str | None
                 })
                 continue
 
-            if not is_public_http_url(url):
+            if not await asyncio.to_thread(is_public_http_url, url):
                 results.append({
                     "name": name, "url": url, "status": "link_unreachable",
                     "note": "This link points to a non-public address and was not fetched for safety reasons.",

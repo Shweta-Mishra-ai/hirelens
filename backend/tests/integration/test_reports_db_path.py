@@ -243,10 +243,20 @@ class TestCsvExport:
         assert len(lines) == 2
         assert "Divya Nair" in res.text
 
-    def test_an_export_during_an_outage_is_still_a_valid_csv(self, auth, db):
+    def test_an_export_during_an_outage_is_an_error_not_an_empty_file(self, auth, db):
+        """
+        A header-only CSV during an outage is a file a recruiter opens, sees
+        no candidates in, and believes.
+        """
         db.fail("reports", "select")
         res = client.get("/api/v1/reports/export.csv", headers=auth["headers"])
-        assert res.status_code == 200
+        assert res.status_code == 503
+        assert res.json()["error"] == "database_unavailable"
+
+    def test_a_skill_search_the_database_rejects_falls_back_to_name_and_file(self, auth, db):
+        db.reject_json_path = True
+        res = client.get("/api/v1/reports/export.csv?search=a", headers=auth["headers"])
+        assert res.status_code == 200, res.text
         assert res.text.strip().startswith("Candidate Name,")
 
 
@@ -260,13 +270,12 @@ class TestAnalytics:
         assert body["distribution"]["manual_review"] == 2
         assert body["distribution"]["high_risk"] == 1
 
-    def test_analytics_survives_a_database_error(self, auth, db):
+    def test_a_database_error_is_reported_not_rendered_as_an_empty_pool(self, auth, db):
+        """A dashboard of zeroes during an outage reads as "no candidates"."""
         db.fail("reports", "select")
         res = client.get("/api/v1/reports/analytics", headers=auth["headers"])
-        # Supplementary data: it may degrade, but it must not 500 the page.
-        assert res.status_code in (200, 500)
-        if res.status_code == 200:
-            assert "distribution" in res.json()
+        assert res.status_code == 503
+        assert res.json()["error"] == "database_unavailable"
 
 
 class TestDeletion:

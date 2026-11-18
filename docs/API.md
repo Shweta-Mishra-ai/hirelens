@@ -339,3 +339,37 @@ not get the instance restarted.
 
 Without `REDIS_URL` these are per-process, which is correct for a single
 worker. With it they are shared across instances.
+
+
+---
+
+## Plans and usage
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/v1/billing/usage` | This account's plan, analyses used this month, the limit and what is left. `limit` is `null` and `unlimited` is `true` when no quota applies |
+| `POST` | `/api/v1/billing/admin/plan` | Operators only (`ADMIN_EMAILS`). Body `{"email", "plan"}` with plan `free`, `pro` or `team` |
+
+An upload that would exceed the month's quota is refused **before** anything is
+read or queued:
+
+```json
+{
+  "error": "quota_exceeded",
+  "message": "You've used all 25 analyses included in your free plan this month.",
+  "plan": "free", "limit": 25, "remaining": 0,
+  "upgrade_url": "https://…",
+  "request_id": "a1b2c3d4"
+}
+```
+
+## Status codes worth handling
+
+| Status | `error` | Meaning |
+|---|---|---|
+| 402 | `quota_exceeded` | The plan's monthly analyses are used up — upgrade, or wait for the 1st |
+| 413 | `payload_too_large` | The request body is over the limit for that route; refused before it is read |
+| 503 | `database_unavailable` | The database did not answer. Nothing was changed or lost; retry. Never returned as an empty list, an empty CSV or a 404 |
+| 503 | `storage_write_failed` | A write did not reach durable storage. Nothing was changed; retry |
+
+`/docs`, `/redoc` and `/openapi.json` are served in development only.

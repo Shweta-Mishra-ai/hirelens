@@ -50,3 +50,4 @@ def is_public_http_url(url: str) -> bool:
             return False
 
     return True
+

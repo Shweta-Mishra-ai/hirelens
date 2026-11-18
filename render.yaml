@@ -57,6 +57,13 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
+      # Public anon key; used to sign people in.
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      # This deployment's frontend origin, e.g. https://your-app.vercel.app.
+      # Invite and password-reset emails link here.
+      - key: FRONTEND_URL
+        sync: false
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
@@ -79,6 +86,35 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      # Email: candidate decisions, team invites, password resets (when not
+      # using Supabase's own mailer). SMTP_FROM_EMAIL must be on a domain you
+      # have verified with Resend.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      # Sign-in emails of the operators allowed to read diagnostics and
+      # change customers' plans. Comma-separated.
+      - key: ADMIN_EMAILS
+        sync: false
+      # Monthly analyses per plan; 0 = unlimited. Set these to turn the
+      # meter on. UPGRADE_URL is where the "Upgrade" button goes (a payment
+      # link, pricing page or mailto:).
+      - key: FREE_MONTHLY_ANALYSES
+        value: "0"
+      - key: PRO_MONTHLY_ANALYSES
+        value: "0"
+      - key: TEAM_MONTHLY_ANALYSES
+        value: "0"
+      - key: UPGRADE_URL
+        sync: false
+      # Model names, so a provider retiring one is a config change.
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-5-5
       # Must stay at 1 unless REDIS_URL is set — see the Dockerfile CMD
       # comment and job_store.py for why.
       - key: WEB_CONCURRENCY

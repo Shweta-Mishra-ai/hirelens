@@ -31,6 +31,7 @@ jobs:
           cache: "pip"
           cache-dependency-path: |
             backend/requirements.txt
+            backend/constraints.txt
             backend/requirements-dev.txt
 
       - name: Upgrade pip
@@ -38,7 +39,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements.txt -c constraints.txt
           pip install -r requirements-dev.txt
 
       - name: Run tests
@@ -69,7 +70,7 @@ jobs:
         run: pip install pip-audit
 
       - name: Audit dependencies for known CVEs
-        run: pip-audit -r requirements.txt --desc || true
+        run: pip-audit -r constraints.txt --desc || true
         # `|| true` — surfaces findings in the log without hard-failing CI on
         # every transitive advisory; tighten this once the project has a
         # process for triaging/patching flagged dependencies.
