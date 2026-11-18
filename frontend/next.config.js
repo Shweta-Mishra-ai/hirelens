@@ -48,7 +48,8 @@ if (isRealDeployment) {
 // What a static build cannot do, and where it went instead:
 //   • dynamic routes  → a report is /report/?id=…, see src/lib/routes.ts;
 //   • response headers → public/_headers (Netlify, Cloudflare Pages),
-//     vercel.json and render.yaml carry the same set;
+//     vercel.json and the Render snippet in docs/DEPLOYMENT.md carry the
+//     same set;
 //   • Content-Security-Policy → a <meta> tag built in src/lib/csp.ts, so it
 //     holds on any host. frame-ancestors cannot be set by a meta tag, so the
 //     anti-framing rule lives in the header files above.

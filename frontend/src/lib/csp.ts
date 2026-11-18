@@ -13,7 +13,8 @@
  * styles need it without a nonce pipeline, which a static export cannot have.
  *
  * Not settable from a meta tag, so set by the host instead (public/_headers,
- * vercel.json, render.yaml): frame-ancestors, the anti-clickjacking rule.
+ * vercel.json, the Render snippet in docs/DEPLOYMENT.md): frame-ancestors,
+ * the anti-clickjacking rule.
  */
 function originOf(url: string | undefined): string | null {
   if (!url) return null;

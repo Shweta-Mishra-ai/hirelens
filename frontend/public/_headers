@@ -1,5 +1,6 @@
 # Response headers for Netlify and Cloudflare Pages, which both read this file
-# from the published folder. vercel.json and render.yaml carry the same set.
+# from the published folder. vercel.json and the Render static-site snippet in
+# docs/DEPLOYMENT.md carry the same set.
 # The Content-Security-Policy itself is a <meta> tag in every page (see
 # src/lib/csp.ts); only frame-ancestors has to be a header, because a meta tag
 # cannot set it.

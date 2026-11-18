@@ -275,7 +275,7 @@ build** — they are baked into the pages, so changing one needs a redeploy:
 | Variable | Required | Notes |
 |---|:--:|---|
 | `NEXT_PUBLIC_API_URL` | ✅ | The API's public URL, e.g. `https://hirelens-api.onrender.com`. On Cloudflare Pages, Netlify, Render and Vercel the build **fails** without it, rather than ship a site that calls the visitor's own computer |
-| `NODE_VERSION` | ✅ | `22`. Next.js 16 needs Node 20.9 or newer. Already set in `netlify.toml` and `render.yaml`; set it yourself on Cloudflare Pages |
+| `NODE_VERSION` | ✅ | `22`. Next.js 16 needs Node 20.9 or newer. Already set in `netlify.toml` and the Render snippet below; set it yourself on Cloudflare Pages |
 | `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ➖ | Only for Google sign-in |
 | `NEXT_PUBLIC_COMPANY_NAME` … `NEXT_PUBLIC_WEBSITE_HOST` | ➖ | The legal pages — see *Legal pages* above |
 
@@ -313,13 +313,72 @@ branch is a deploy — twenty pushes in a month use the whole allowance.
 
 ### Render static site
 
-`render.yaml` defines `hirelens-web` next to the API, with the same headers.
-Static sites are free and do not use the API's instance hours, but on the free
-(Hobby) workspace they **share the API's 5 GB a month of bandwidth**. Fine to
-start with; move the frontend to Cloudflare Pages if the dashboard shows
-bandwidth climbing. If you deploy the frontend elsewhere, delete
-`hirelens-web` from `render.yaml` before syncing the blueprint, or Render
-creates it too.
+Static sites on Render are free and do not use the API's instance hours, but
+on the free (Hobby) workspace they **share the API's 5 GB a month of
+bandwidth**. Fine to start with; move to Cloudflare Pages if the dashboard
+shows bandwidth climbing. It is not in `render.yaml` by default — a blueprint
+sync would otherwise create it for everyone, and its build fails until
+`NEXT_PUBLIC_API_URL` is set. To use it, append this under `services:` in
+`render.yaml` (paths are relative to the repository root, which is what
+`staticPublishPath` always is):
+
+```yaml
+  - type: web
+    name: hirelens-web
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: ./frontend/out
+    buildFilter:
+      paths:
+        - frontend/**
+    # Same set as frontend/public/_headers. The Content-Security-Policy
+    # itself is a <meta> tag in every page; only frame-ancestors has to be
+    # a header.
+    headers:
+      - path: /*
+        name: Content-Security-Policy
+        value: frame-ancestors 'none'
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=(), payment=()
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000
+      - path: /_next/static/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      # Reports used to live at /report/<id>. Render applies a rule only
+      # when no file exists at the path, so the report page's own files under
+      # /report/ (index.txt, __next.*.txt) are never redirected. Other hosts
+      # get the same forwarding from the 404 page (LegacyReportRedirect).
+      - type: redirect
+        source: /report/:id
+        destination: /report/?id=:id
+    envVars:
+      # Next.js 16 needs Node 20.9 or newer.
+      - key: NODE_VERSION
+        value: "22"
+      # The API's public URL, e.g. https://hirelens-api.onrender.com.
+      # Required: the build fails without it rather than ship a site that
+      # cannot reach its API.
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+      # Optional, for Google sign-in.
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+```
 
 ### Vercel
 
@@ -532,8 +591,8 @@ blueprint, set **Root Directory** to `backend` in the service settings.
 
 The Next app is in `frontend/`, not at the repository root: the host needs
 its root (or base) directory set to `frontend` and its output directory to
-`out`. `netlify.toml` and `render.yaml` already say so; on Cloudflare Pages
-and Vercel it is a project setting. A build that stops with
+`out`. `netlify.toml` and the Render snippet in section 3 already say so; on
+Cloudflare Pages and Vercel it is a project setting. A build that stops with
 *"NEXT_PUBLIC_API_URL is not set"* is the guard in `next.config.js` doing its
 job — set the variable and redeploy.
 
