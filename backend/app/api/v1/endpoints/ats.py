@@ -16,11 +16,14 @@ zero extra code, since it's the same batch_store + job runner underneath.
 
 import uuid
 import time
+import asyncio
 import logging
+from starlette.concurrency import run_in_threadpool
 import httpx
 from fastapi import APIRouter, Depends, BackgroundTasks, UploadFile, File
 
 from app.core.config import settings
+from app.services import billing
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import EmptyBatch, TooManyBatches, HireLensException, AllResumesUnreachable
 from app.api.v1.endpoints.analysis import (
@@ -74,7 +77,7 @@ async def _download_resume(client: httpx.AsyncClient, url: str) -> bytes:
     max_bytes = MAX_DOWNLOAD_MB * 1024 * 1024
 
     for _ in range(_MAX_REDIRECT_HOPS + 1):
-        if not is_public_http_url(current_url):
+        if not await asyncio.to_thread(is_public_http_url, current_url):
             raise ResumeDownloadError(f"Refusing to fetch a non-public/unsafe URL: {current_url[:80]}")
 
         async with client.stream("GET", current_url, follow_redirects=False) as r:
@@ -98,10 +101,21 @@ async def _download_resume(client: httpx.AsyncClient, url: str) -> bytes:
     raise ResumeDownloadError(f"Too many redirects (max {_MAX_REDIRECT_HOPS}) fetching resume URL")
 
 
-def _filename_for_row(row: dict) -> str:
+# Downloads in flight at once. Enough to make a fifty-row import take seconds
+# rather than minutes, few enough to be polite to the ATS's file host.
+DOWNLOAD_CONCURRENCY = 5
+
+
+def _filename_for_row(row: dict, content: bytes = b"") -> str:
+    """
+    A display file name for a downloaded resume, with the extension the bytes
+    actually have. Every download used to be named `.pdf`, so a DOCX link was
+    validated as a PDF and rejected for lacking a %PDF header.
+    """
     base = (row.get("name") or f"candidate_row{row['row_num']}").strip()
     safe = "".join(c for c in base if c.isalnum() or c in " -_").strip() or f"candidate_row{row['row_num']}"
-    return f"{safe}.pdf"
+    ext = "docx" if content.startswith(b"PK\x03\x04") else "pdf"
+    return f"{safe}.{ext}"
 
 
 @router.post("/import")
@@ -138,40 +152,69 @@ async def ats_import(
     if active >= settings.BULK_MAX_CONCURRENT_BATCHES_PER_USER:
         raise TooManyBatches(settings.BULK_MAX_CONCURRENT_BATCHES_PER_USER)
 
+    # The same per-batch ceiling every other upload path enforces. The CSV
+    # parser accepts up to 200 rows, and this endpoint used to download and
+    # analyse every one of them — four times the bulk limit, from one click.
+    rows = parsed["rows"][: settings.BULK_MAX_FILES]
+    await run_in_threadpool(billing.ensure_quota, db, user_id, len(rows), _jobs)
+    over_cap = [
+        {"row_num": row["row_num"], "reason": f"Over the {settings.BULK_MAX_FILES}-resume limit for one import — split the CSV."}
+        for row in parsed["rows"][settings.BULK_MAX_FILES:]
+    ]
+
+    max_total_bytes = settings.BULK_MAX_TOTAL_MB * 1024 * 1024
+    gate = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
+
+    async def fetch(client, row):
+        async with gate:
+            try:
+                content = await _download_resume(client, row["resume_url"])
+                filename = _filename_for_row(row, content)
+                effective_mime = validate_upload(content, filename, "")
+                return row, filename, content, effective_mime, None
+            except Exception as e:
+                return row, _filename_for_row(row), None, None, getattr(e, "message", str(e))
+
+    async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
+        # Concurrent, not one after another: fifty sequential downloads at up
+        # to 15s each could hold this request open for over ten minutes.
+        fetched = await asyncio.gather(*(fetch(client, row) for row in rows))
+
     download_results = []
     valid_items = []
     job_ids = []
+    total_bytes = 0
 
-    async with httpx.AsyncClient(timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
-        for row in parsed["rows"]:
-            job_id = str(uuid.uuid4())
-            filename = _filename_for_row(row)
+    for row, filename, content, effective_mime, error in fetched:
+        job_id = str(uuid.uuid4())
+        job_ids.append(job_id)
 
-            try:
-                content = await _download_resume(client, row["resume_url"])
-                effective_mime = validate_upload(content, filename, "application/pdf")
-            except Exception as e:
-                message = getattr(e, "message", str(e))
-                job_ids.append(job_id)
-                _jobs[job_id] = {
-                    "id": job_id, "user_id": user_id, "batch_id": None,
-                    "status": "failed", "stage": "failed", "progress": 0,
-                    "file_name": filename, "report_id": None,
-                    "error": f"Row {row['row_num']}: {message}",
-                    "created_at": time.time(),
-                }
-                download_results.append({"row_num": row["row_num"], "status": "failed", "reason": message})
-                continue
+        if error is None and total_bytes + len(content) > max_total_bytes:
+            # The total cap bulk upload enforces. Without it, fifty 10MB
+            # downloads sat in memory together on a 512MB instance.
+            error = f"Import is over the {settings.BULK_MAX_TOTAL_MB}MB total limit — split the CSV."
+            content = None
 
-            job_ids.append(job_id)
+        if error is not None:
             _jobs[job_id] = {
                 "id": job_id, "user_id": user_id, "batch_id": None,
-                "status": "queued", "stage": "queued", "progress": 0,
-                "file_name": filename, "report_id": None, "error": None,
+                "status": "failed", "stage": "failed", "progress": 0,
+                "file_name": filename, "report_id": None,
+                "error": f"Row {row['row_num']}: {error}",
                 "created_at": time.time(),
             }
-            valid_items.append({"job_id": job_id, "bytes": content, "mime": effective_mime, "filename": filename})
-            download_results.append({"row_num": row["row_num"], "status": "queued"})
+            download_results.append({"row_num": row["row_num"], "status": "failed", "reason": error})
+            continue
+
+        total_bytes += len(content)
+        _jobs[job_id] = {
+            "id": job_id, "user_id": user_id, "batch_id": None,
+            "status": "queued", "stage": "queued", "progress": 0,
+            "file_name": filename, "report_id": None, "error": None,
+            "created_at": time.time(),
+        }
+        valid_items.append({"job_id": job_id, "bytes": content, "mime": effective_mime, "filename": filename})
+        download_results.append({"row_num": row["row_num"], "status": "queued"})
 
     if not valid_items:
         for jid in job_ids:
@@ -200,7 +243,7 @@ async def ats_import(
         "detected_columns": parsed["detected_columns"],
         "total_rows": len(parsed["rows"]) + len(parsed["skipped"]),
         "queued": len(valid_items),
-        "skipped_at_parse": parsed["skipped"],
+        "skipped_at_parse": parsed["skipped"] + over_cap,
         "skipped_at_download": [r for r in download_results if r["status"] == "failed"],
         "message": (
             f"Queued {len(valid_items)} resumes from this CSV. Poll "

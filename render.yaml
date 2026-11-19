@@ -57,6 +57,14 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
+      # Public anon key; used to sign people in.
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      # This deployment's frontend origin, e.g. https://your-site.pages.dev
+      # (Cloudflare Pages). Invite and password-reset emails
+      # link here. ALLOWED_ORIGINS must list the same origin.
+      - key: FRONTEND_URL
+        sync: false
       - key: DATABASE_URL
         sync: false
       - key: REDIS_URL
@@ -79,6 +87,57 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      # Email: candidate decisions, team invites, password resets (when not
+      # using Supabase's own mailer). SMTP_FROM_EMAIL must be on a domain you
+      # have verified with Resend.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      # Sign-in emails of the operators allowed to read diagnostics and
+      # change customers' plans. Comma-separated.
+      - key: ADMIN_EMAILS
+        sync: false
+      # Monthly analyses per plan; 0 = unlimited. Set these to turn the
+      # meter on. UPGRADE_URL is where the "Upgrade" button goes (a payment
+      # link, pricing page or mailto:).
+      - key: FREE_MONTHLY_ANALYSES
+        value: "0"
+      - key: PRO_MONTHLY_ANALYSES
+        value: "0"
+      - key: TEAM_MONTHLY_ANALYSES
+        value: "0"
+      - key: UPGRADE_URL
+        sync: false
+      # UPI payments verified by an operator (sql/010, docs/DEPLOYMENT.md
+      # "Getting paid with UPI"). Off while PAYMENT_UPI_ID is empty; a plan
+      # is for sale only when its price (whole rupees) is above 0.
+      - key: PAYMENT_UPI_ID
+        sync: false
+      - key: PAYMENT_PAYEE_NAME
+        sync: false
+      - key: PRO_PRICE_INR
+        value: "0"
+      - key: TEAM_PRICE_INR
+        value: "0"
+      - key: PLAN_PERIOD_DAYS
+        value: "30"
+      # Model names, so a provider retiring one is a config change.
+      # GEMINI_MODEL is an ordered fallback list; all three are free-tier models.
+      - key: GEMINI_MODEL
+        value: gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      - key: ANTHROPIC_MODEL
+        value: claude-sonnet-5-5
+      - key: GEMINI_THINKING_LEVEL
+        value: low
+      # Which provider sees resumes first. Gemini's FREE tier may use content
+      # to improve Google's products; Groq does not train on API data. Use
+      # groq,gemini,anthropic until Gemini billing is enabled. See
+      # docs/DEPLOYMENT.md, "Candidate data and free AI tiers".
+      - key: LLM_PROVIDER_ORDER
+        value: gemini,groq,anthropic
       # Must stay at 1 unless REDIS_URL is set — see the Dockerfile CMD
       # comment and job_store.py for why.
       - key: WEB_CONCURRENCY

@@ -1,0 +1,17 @@
+# Response headers for Netlify and Cloudflare Pages, which both read this file
+# from the published folder. vercel.json and the Render static-site snippet in
+# docs/DEPLOYMENT.md carry the same set.
+# The Content-Security-Policy itself is a <meta> tag in every page (see
+# src/lib/csp.ts); only frame-ancestors has to be a header, because a meta tag
+# cannot set it.
+/*
+  Content-Security-Policy: frame-ancestors 'none'
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Strict-Transport-Security: max-age=31536000
+
+# Hashed build assets never change under the same name.
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable

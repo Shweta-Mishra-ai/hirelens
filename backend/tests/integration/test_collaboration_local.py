@@ -177,22 +177,19 @@ class TestVotesWithoutSupabase:
         assert res.status_code == 422
 
 
-class TestSharingExplainsItself:
-    def test_team_sharing_names_the_missing_dependency(self, owner):
+class TestSharingWithoutSupabase:
+    def test_sharing_with_a_team_you_are_not_in_is_refused_with_a_reason(self, owner):
         """
-        Team membership genuinely lives in Supabase, so there is no correct
-        local answer — but the response should say that rather than return a
-        bare 503.
+        Sharing works on the local store now (test_local_team_sharing.py has
+        the whole loop). A team the owner isn't in is a 403 that says why —
+        not the 503 "needs the shared database" this used to answer.
         """
         rid = _report_for(owner)
         res = client.post(
             f"/api/v1/reports/{rid}/share", headers=owner["headers"], json={"team_id": "t1"}
         )
-        assert res.status_code == 503
-        assert res.json()["error"] == "database_required"
-        message = res.json()["message"].lower()
-        assert "team" in message
-        assert "comments and votes still work" in message
+        assert res.status_code == 403
+        assert "member of the team" in res.json()["message"]
 
 
 class TestCopilotAccessControl:

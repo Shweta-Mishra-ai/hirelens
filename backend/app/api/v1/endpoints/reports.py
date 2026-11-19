@@ -12,15 +12,18 @@ retry rather than an empty list that reads as "your candidates are gone".
 
 import re
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Query
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 
 from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import (
     NotFoundError, ForbiddenError, HireLensException, ValidationError,
-    StorageWriteFailed,
+    StorageWriteFailed, DatabaseUnavailable,
 )
+from app.core.csv_safety import safe_row
 from app.core.rate_limit import check_rate_limit
 from app.core.config import settings
 from app.core import local_db
@@ -58,7 +61,13 @@ class NotifyRequest(BaseModel):
         return v
 
 
-SEARCH_UNSAFE_CHARS = re.compile(r"[^a-zA-Z0-9 ._+#@\-]")
+# \w is Unicode-aware in Python 3, so names like José, Müller and Ołeksandr
+# survive. The previous ASCII-only class silently stripped every accented
+# letter — "José" was searched as "Jos" and "Müller" as "Mller", which matches
+# nobody, so recruiters with international candidates got empty results.
+# Nothing \w admits is PostgREST filter syntax (comma, parentheses, colon,
+# quote, backslash and * all stay out).
+SEARCH_UNSAFE_CHARS = re.compile(r"[^\w ._+#@\-]", re.UNICODE)
 
 
 def _sanitize_search(raw: str) -> str:
@@ -74,6 +83,9 @@ def _sanitize_search(raw: str) -> str:
     """
     return SEARCH_UNSAFE_CHARS.sub("", raw).strip()[:100]
 
+
+# Analytics aggregates over at most this many of the most recent reports.
+ANALYTICS_SAMPLE = 500
 
 SORT_MAP = {
     "newest":     ("created_at", True),
@@ -171,7 +183,7 @@ def _mem_reports_for_user(user_id: str) -> list[dict]:
 
 
 @router.get("")
-async def list_reports(
+def list_reports(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     recommendation: str | None = Query(None),
@@ -290,7 +302,7 @@ async def list_reports(
 
 
 @router.get("/analytics")
-async def get_talent_analytics(
+def get_talent_analytics(
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
@@ -303,25 +315,37 @@ async def get_talent_analytics(
     - Average candidate credibility score
     """
     items = []
+    total_count: int | None = None
     if db:
         try:
+            # Only the three fields the aggregation reads, not the whole
+            # report blob. Selecting report_data pulled up to 500 complete
+            # reports (tens of KB each) on every dashboard load.
             res = (
                 db.table("reports")
-                .select("id,overall_score,recommendation,report_data")
+                .select(
+                    "id,overall_score,recommendation,"
+                    "all_claimed:report_data->skills->all_claimed,"
+                    "flags:report_data->flags",
+                    count="exact",
+                )
                 .eq("user_id", current_user["id"])
-                .limit(500)
+                .order("created_at", desc=True)
+                .limit(ANALYTICS_SAMPLE)
                 .execute()
             )
             items = res.data or []
+            total_count = res.count
         except Exception as e:
-            logger.warning(f"Analytics DB query warning for {current_user['id']}: {e}")
-
-    if not items:
-        # Fallback to in-memory items for user
+            # A database error must not render as a dashboard of zeroes —
+            # that reads as "you have no candidates".
+            logger.error(f"Analytics query failed for {current_user['id']}: {e}")
+            raise DatabaseUnavailable()
+    else:
         items = _local_reports_for_user(current_user["id"])
 
-    total = len(items)
-    if total == 0:
+    total = total_count if total_count is not None else len(items)
+    if total == 0 or not items:
         return {
             "total_candidates": 0,
             "avg_credibility_score": 0,
@@ -330,7 +354,7 @@ async def get_talent_analytics(
             "risk_categories": {},
         }
 
-    scores = [int(i.get("overall_score") or 0) for i in items]
+    scores = [as_score(i.get("overall_score")) for i in items]
     avg_score = round(sum(scores) / len(scores)) if scores else 0
 
     dist = {"recommended": 0, "manual_review": 0, "high_risk": 0}
@@ -338,19 +362,21 @@ async def get_talent_analytics(
     risk_cats: dict[str, int] = {}
 
     for i in items:
-        rec = i.get("recommendation") or "manual_review"
+        rec = as_str(i.get("recommendation")) or "manual_review"
         dist[rec] = dist.get(rec, 0) + 1
 
-        rdata = i.get("report_data") or i
-        sk = as_list(as_dict(rdata.get("skills")).get("all_claimed"))
+        rdata = as_dict(i.get("report_data")) or i
+        sk = as_list(i.get("all_claimed")) if "all_claimed" in i else as_list(
+            as_dict(rdata.get("skills")).get("all_claimed")
+        )
         for s in sk:
             if isinstance(s, str) and s.strip():
                 clean_s = s.strip().title()
                 skill_counts[clean_s] = skill_counts.get(clean_s, 0) + 1
 
-        fl = rdata.get("flags") or []
+        fl = as_list(i.get("flags")) if "flags" in i else as_list(rdata.get("flags"))
         for f in fl:
-            if isinstance(f, dict) and f.get("category"):
+            if isinstance(f, dict) and isinstance(f.get("category"), str) and f["category"].strip():
                 cat = f["category"].lower().strip()
                 risk_cats[cat] = risk_cats.get(cat, 0) + 1
 
@@ -362,6 +388,9 @@ async def get_talent_analytics(
 
     return {
         "total_candidates": total,
+        # The distribution, skills and risk figures describe the most recent
+        # ANALYTICS_SAMPLE reports when there are more than that.
+        "sample_size": len(items),
         "avg_credibility_score": avg_score,
         "distribution": dist,
         "top_skills": top_skills,
@@ -371,7 +400,7 @@ async def get_talent_analytics(
 
 
 @router.get("/export.csv")
-async def export_all_reports_csv(
+def export_all_reports_csv(
     recommendation: str | None = Query(None),
     search: str | None = Query(None),
     sort: str = Query("newest"),
@@ -403,7 +432,7 @@ async def export_all_reports_csv(
         items.sort(key=_sort_key(sort_col), reverse=sort_desc)
         items = items[:CAP]
     else:
-        try:
+        def build(with_skill_path: bool):
             query = (
                 db.table("reports")
                 .select("id,file_name,candidate_name,overall_score,recommendation,created_at,recruiter_decision")
@@ -413,26 +442,42 @@ async def export_all_reports_csv(
                 query = query.eq("recommendation", recommendation)
             if search:
                 s = _sanitize_search(search)
-                try:
+                if with_skill_path:
                     query = query.or_(
                         f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%,report_data->skills->>all_claimed.ilike.%{s}%"
                     )
-                except Exception:
+                else:
                     query = query.or_(f"candidate_name.ilike.%{s}%,file_name.ilike.%{s}%")
-            result = query.order(sort_col, desc=sort_desc).limit(CAP).execute()
+            return query.order(sort_col, desc=sort_desc).limit(CAP)
+
+        try:
+            try:
+                result = build(with_skill_path=True).execute()
+            except Exception as e:
+                # .or_() only builds the filter; the JSON-path search fails
+                # here, at execute(). Same fallback as list_reports.
+                if not search:
+                    raise
+                logger.warning(f"Export skill-path search failed, retrying name/file only: {e}")
+                result = build(with_skill_path=False).execute()
             items = result.data or []
         except Exception as e:
+            # Never hand back a header-only CSV for a failed query: a
+            # recruiter opens it, sees no candidates, and believes it.
             logger.error(f"export_all_reports_csv failed for user {current_user['id']}: {e}")
-            items = []
+            raise DatabaseUnavailable(
+                "The export could not be built because the database did not "
+                "answer. Nothing has been lost — please try again."
+            )
 
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Candidate Name", "File Name", "Score", "Recommendation", "Recruiter Decision", "Created At", "Report ID"])
     for r in items:
-        writer.writerow([
+        writer.writerow(safe_row([
             r.get("candidate_name") or "Unknown", r.get("file_name") or "", r.get("overall_score") or 0,
             r.get("recommendation") or "", r.get("recruiter_decision") or "", r.get("created_at") or "", r.get("id") or "",
-        ])
+        ]))
     buf.seek(0)
 
     return StreamingResponse(
@@ -443,7 +488,7 @@ async def export_all_reports_csv(
 
 
 @router.get("/{report_id}")
-async def get_report(
+def get_report(
     report_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -451,6 +496,7 @@ async def get_report(
     """Fetch a complete analysis report by ID — visible to its owner or any
     member of the team it's been shared with."""
     # ── Try Supabase first ────────────────────────────────────────────────────
+    db_failed = False
     if db:
         try:
             result = (
@@ -472,39 +518,56 @@ async def get_report(
                 report["created_at"] = row.get("created_at")
                 report["file_name"] = row.get("file_name") or report.get("file_name", "")
                 report["team_id"] = row.get("team_id")
+                # Decisions, candidate emails, sharing and deletion are the
+                # owner's; the page shows those controls only when this is set.
+                report["is_owner"] = row.get("user_id") == current_user["id"]
                 return report
 
         except ForbiddenError:
             raise
         except Exception as e:
             logger.warning(f"DB fetch failed for report {report_id}: {e}")
+            db_failed = True
             # Fall through to in-memory
 
+    # ── Fallback: durable local store ─────────────────────────────────────────
+    # Where a report lives without Supabase, or when its Supabase write
+    # failed. Read first, ahead of this process's in-memory copy: it is the
+    # copy that knows the decision, who it is shared with and the last
+    # verification, and the only one a teammate it is shared with can be
+    # checked against. Access is decided in the query, so a wrong user and a
+    # missing row are indistinguishable from here.
+    persisted = local_db.get_report_for_viewer(report_id, current_user["id"])
+    if persisted:
+        is_owner = bool(persisted.pop("is_owner", False))
+        report = dict(normalize_report(persisted))
+        report["is_owner"] = is_owner
+        if not is_owner:
+            report.pop("_owner_user_id", None)
+        return report
+
     # ── Fallback: in-memory store ─────────────────────────────────────────────
-    # Same ownership rule as the DB path above: no owner stamp means nobody
-    # can read it here, not "everybody can". See _mem_reports_for_user().
+    # A report whose write to the local store failed when it was analysed.
+    # Same ownership rule as above: no owner stamp means nobody can read it
+    # here, not "everybody can". See _mem_reports_for_user().
     data = _jobs.get(f"report_{report_id}")
     if isinstance(data, dict) and data:
         if data.get("_owner_user_id") != current_user["id"]:
             raise ForbiddenError()
-        return normalize_report(data)
+        report = dict(normalize_report(data))
+        report["is_owner"] = True
+        return report
 
-    # ── Fallback: durable local store ─────────────────────────────────────────
-    # Reached after a restart, when the in-memory copy is gone. Ownership is
-    # part of the query, so a wrong owner and a missing row are
-    # indistinguishable from here.
-    persisted = local_db.get_report(report_id, current_user["id"])
-    if persisted:
-        persisted = normalize_report(persisted)
-        # Warm this process's cache so repeat reads skip the disk.
-        _jobs[f"report_{report_id}"] = persisted
-        return persisted
-
+    if db_failed:
+        # The report most likely lives in Supabase, which did not answer.
+        # "Not found" would send the recruiter to re-upload a candidate they
+        # already have.
+        raise DatabaseUnavailable()
     raise NotFoundError(f"Report '{report_id}' not found.")
 
 
 @router.post("/{report_id}/decision")
-async def submit_decision(
+def submit_decision(
     report_id: str,
     body: DecisionRequest,
     current_user: dict = Depends(get_current_user),
@@ -576,6 +639,20 @@ async def submit_decision(
     }
 
 
+def _require_owner(report: dict) -> None:
+    """
+    Emailing a candidate is the owner's call, like the decision it announces.
+    A teammate the report is shared with could otherwise tell a candidate
+    "not a match" while the owner has advanced them — and the send would not
+    even be recorded, since that write is scoped to the owner.
+    """
+    if not report.get("is_owner"):
+        raise ForbiddenError(
+            "Only the person who added this candidate can email them. "
+            "Leave a comment for them in Discuss instead."
+        )
+
+
 @router.get("/{report_id}/notify/draft")
 async def get_notify_draft(
     report_id: str,
@@ -589,24 +666,31 @@ async def get_notify_draft(
     """
     from app.services.email.sender import build_decision_email
 
-    report = await get_report(report_id, current_user, db)  # reuses access checks + fallback
+    # Reuses get_report's access checks and fallbacks. It is synchronous
+    # (Supabase's client is), so it runs on the threadpool, not the loop.
+    report = await run_in_threadpool(get_report, report_id, current_user, db)
+    _require_owner(report)
     candidate = as_dict(report.get("candidate"))
     candidate_email = candidate.get("email")
-    candidate_name = candidate.get("name") or "Candidate"
+    candidate_name = as_str(candidate.get("name")) or "Candidate"
 
-    sender_name = directory.get_display_name(
-        db, current_user["id"], current_user.get("email") or "The Hiring Team"
-    )
-    team_name = "HireLens"
-    if db:
-        try:
-            team_id = report.get("team_id")
-            if team_id:
-                t = db.table("teams").select("name").eq("id", team_id).maybe_single().execute()
-                if t and t.data:
-                    team_name = t.data.get("name") or team_name
-        except Exception as e:
-            logger.warning(f"notify draft team lookup failed: {e}")
+    def lookups() -> tuple[str, str]:
+        sender = directory.get_display_name(
+            db, current_user["id"], current_user.get("email") or "The Hiring Team"
+        )
+        team = "HireLens"
+        if db:
+            try:
+                team_id = report.get("team_id")
+                if team_id:
+                    t = db.table("teams").select("name").eq("id", team_id).maybe_single().execute()
+                    if t and t.data:
+                        team = t.data.get("name") or team
+            except Exception as e:
+                logger.warning(f"notify draft team lookup failed: {e}")
+        return sender, team
+
+    sender_name, team_name = await run_in_threadpool(lookups)
 
     draft = build_decision_email(decision, candidate_name, sender_name, team_name)
 
@@ -640,9 +724,10 @@ async def notify_candidate(
 
     check_rate_limit(redis, f"notify:{current_user['id']}", settings.NOTIFY_RATE_LIMIT_PER_MINUTE)
 
-    report = await get_report(report_id, current_user, db)
+    report = await run_in_threadpool(get_report, report_id, current_user, db)
+    _require_owner(report)
     candidate = as_dict(report.get("candidate"))
-    candidate_email = candidate.get("email")
+    candidate_email = as_str(candidate.get("email")).strip()
 
     if not candidate_email:
         raise ValidationError(
@@ -651,42 +736,58 @@ async def notify_candidate(
         )
 
     sent = await send_candidate_decision_email(
-        to_email=str(candidate_email),
+        to_email=candidate_email,
         subject=body.subject,
         body=body.body,
+        reply_to=current_user.get("email") or None,
     )
 
-    if db:
-        try:
-            db.table("reports").update({
-                "candidate_notified_at": "now()",
-                "candidate_notified_decision": body.decision,
-            }).eq("id", report_id).eq("user_id", current_user["id"]).execute()
-        except Exception as e:
-            logger.warning(f"Could not record notification timestamp for {report_id}: {e}")
+    # Only a message a provider accepted is recorded as a notification.
+    # Recording it regardless showed "candidate notified" on a candidate who
+    # never received anything, and the recruiter had no reason to send again.
+    if sent and db:
+        def record() -> None:
+            try:
+                db.table("reports").update({
+                    # An explicit UTC timestamp rather than the string "now()",
+                    # which only works because Postgres happens to parse that
+                    # literal; it would not survive a schema or driver change.
+                    "candidate_notified_at": datetime.now(timezone.utc).isoformat(),
+                    "candidate_notified_decision": body.decision,
+                }).eq("id", report_id).eq("user_id", current_user["id"]).execute()
+            except Exception as e:
+                logger.warning(f"Could not record notification timestamp for {report_id}: {e}")
 
-    logger.info(f"Notify | report={report_id} decision={body.decision} email_sent={sent} to={candidate_email}")
+        await run_in_threadpool(record)
+
+    logger.info(f"Notify | report={report_id} decision={body.decision} email_sent={sent}")
 
     return {
-        "status": "sent" if sent else "queued_no_provider",
+        "status": "sent" if sent else "not_sent",
         "email_sent": sent,
         "candidate_email": candidate_email,
         "message": (
             "Email sent to the candidate."
             if sent else
-            "No email provider is configured (RESEND_API_KEY or SMTP), so the message "
-            "was not actually delivered. Configure one to send real emails."
+            "The email was not delivered: no email provider accepted it. Check "
+            "that RESEND_API_KEY or SMTP is configured, then try again."
         ),
     }
 
 
 @router.delete("/{report_id}", status_code=204)
-async def delete_report(
+def delete_report(
     report_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Permanently delete a report. Cannot be undone."""
+    """
+    Permanently delete a report, with its comments and votes. Owner only.
+    Cannot be undone. 204 only when something of the caller's was deleted.
+    """
+    not_yours = ForbiddenError("Only the person who added this candidate can delete their file.")
+    removed = False
+
     if db:
         try:
             # Verify ownership first
@@ -698,13 +799,21 @@ async def delete_report(
                 .execute()
             )
             if check.data and check.data["user_id"] != current_user["id"]:
-                raise ForbiddenError()
+                raise not_yours
 
-            db.table("reports").delete().eq("id", report_id).eq("user_id", current_user["id"]).execute()
+            if check.data:
+                db.table("reports").delete().eq("id", report_id).eq("user_id", current_user["id"]).execute()
+                removed = True
         except ForbiddenError:
             raise
         except Exception as e:
-            logger.warning(f"Delete failed for {report_id}: {e}")
+            # Reporting 204 here told the recruiter a candidate's file was
+            # gone while it stayed in the database — the one outcome a delete
+            # must never have.
+            logger.error(f"Delete failed for {report_id}: {e}")
+            raise StorageWriteFailed(
+                "That report could not be deleted. It is unchanged — please try again."
+            )
 
     # Also remove from in-memory — but only if this user actually owns it.
     # An unconditional pop() here would let any authenticated user delete
@@ -713,13 +822,17 @@ async def delete_report(
     existing = _jobs.get(mem_key)
     if existing is not None:
         if existing.get("_owner_user_id") != current_user["id"]:
-            raise ForbiddenError()
+            raise not_yours
         _jobs.pop(mem_key, None)
+        removed = True
 
     # And from the durable local store, or the report would reappear on the
-    # next restart when the in-memory cache is repopulated from disk.
+    # next restart when the in-memory cache is repopulated from disk. (With
+    # Supabase configured a report can still live only here: the one whose
+    # Supabase write failed when it was analysed.)
     try:
-        local_db.delete_report(report_id, current_user["id"])
+        if local_db.delete_report(report_id, current_user["id"]):
+            removed = True
     except local_db.LocalStoreError:
         # "Deleted" has to mean deleted. Reporting success here leaves the
         # report on the dashboard at the next restart, after the recruiter
@@ -728,5 +841,12 @@ async def delete_report(
         raise StorageWriteFailed(
             "That report could not be deleted. It is unchanged — please try again."
         )
+
+    if not removed:
+        # Answering 204 here told a teammate they had deleted the owner's
+        # file, and anyone that a mistyped id was gone.
+        if local_db.list_reports_any_owner(report_id):
+            raise not_yours
+        raise NotFoundError(f"Report '{report_id}' not found.")
 
     logger.info(f"Report deleted | id={report_id} user={current_user['id']}")

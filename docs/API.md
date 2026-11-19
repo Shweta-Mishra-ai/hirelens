@@ -57,7 +57,7 @@ the `X-Request-ID` header and is what to quote in a bug report.
 | `POST` | `/auth/signup` | `{ email, password, full_name, company? }`. 409 if taken, **503 if the account store is unreachable** — deliberately never a local shadow account |
 | `POST` | `/auth/login` | 10 attempts per 15 minutes per IP |
 | `POST` | `/auth/oauth-verify` | `{ access_token }` from the Supabase Google round trip. No fallback: an unverifiable token is refused, never exchanged |
-| `GET` | `/auth/me` | The caller's id and email |
+| `GET` | `/auth/me` | The caller's id and email, and `is_admin` — whether the interface should offer the operator screen (each operator route checks `ADMIN_EMAILS` itself) |
 | `POST` | `/auth/forgot-password` | `{ email }`. Always 200 with the same body, whether or not the address exists — a different answer would let anyone enumerate the customer list. 5 per 15 min per IP, and 3 per 15 min per address |
 | `POST` | `/auth/reset-password` | `{ access_token, new_password }`. 401 for a link that is expired or already spent, 422 for a password the policy refuses |
 | `GET` | `/auth/stats` | Capacity headroom |
@@ -211,13 +211,18 @@ Returns `detected_columns`, `queued`, `skipped_at_parse` and
 | | Endpoint | Notes |
 |---|---|---|
 | `GET` | `/reports` | `page`, `limit` (≤100), `search`, `sort`, `recommendation` |
-| `GET` | `/reports/{id}` | The full report. Visible to its owner or any member of the team it is shared with |
-| `DELETE` | `/reports/{id}` | |
+| `GET` | `/reports/{id}` | The full report. Visible to its owner or any member of the team it is shared with. `is_owner` says which |
+| `DELETE` | `/reports/{id}` | Owner only. Takes its comments and votes too. `204` only when something was deleted: someone else's file is `403`, an unknown id `404` |
 | `GET` | `/reports/analytics` | Pool distribution, average credibility, top skills |
 | `GET` | `/reports/export.csv` | Everything matching the current filters, 1,000 rows |
 | `POST` | `/reports/{id}/decision` | `advance` · `schedule_followup` · `reject` |
-| `GET` | `/reports/{id}/notify/draft` | A pre-written email for that decision |
-| `POST` | `/reports/{id}/notify` | Sends it |
+| `GET` | `/reports/{id}/notify/draft` | A pre-written email for that decision. Owner only |
+| `POST` | `/reports/{id}/notify` | Sends it. Owner only |
+
+The decision, candidate emails, sharing and deletion belong to whoever added
+the candidate. A teammate the file is shared with can read it, comment, vote
+and use the co-pilot; the page hides the rest when `is_owner` is false, and
+the API refuses them with `403`.
 
 `sort` is `newest` · `oldest` · `score_desc` · `score_asc` · `name_asc`.
 
@@ -302,6 +307,7 @@ the local store — never a raw UUID.
 |---|---|---|
 | `POST` / `GET` | `/teams` | |
 | `GET` | `/teams/{id}/members` | Members only |
+| `GET` | `/teams/{id}/reports` | Members only. The files shared with the team, newest first, with `shared_by` and `is_mine` |
 | `POST` | `/teams/{id}/invite` | Owner or admin. Email-based, so the invitee needs no account yet |
 | `DELETE` | `/teams/{id}/members/{user_id}` | Owner cannot be removed |
 | `DELETE` | `/teams/{id}` | Owner only. Removes membership and pending invites too |
@@ -339,3 +345,55 @@ not get the instance restarted.
 
 Without `REDIS_URL` these are per-process, which is correct for a single
 worker. With it they are shared across instances.
+
+
+---
+
+## Plans and usage
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/v1/billing/usage` | This account's plan, analyses used this month, the limit and what is left. `limit` is `null` and `unlimited` is `true` when no quota applies |
+| `GET` | `/api/v1/billing/plans` | Plans for sale in the app (priced, with `PAYMENT_UPI_ID` set), the UPI ID and payee name, the period length, and this account's usage |
+| `POST` | `/api/v1/billing/payments` | `{ plan, reference }` — "I paid": a UPI transaction reference (letters/digits, 6–35; spaces and dashes removed). 201 pending; 409 if the reference was already used or a claim is already waiting; 422 for a malformed reference or a plan not for sale; 10 per hour per account |
+| `GET` | `/api/v1/billing/payments` | This account's last 20 claims and their status |
+| `GET` | `/api/v1/billing/admin/payments` | Operators only. `?status=pending` (default), `approved`, `rejected` or `all`; each with the customer's email |
+| `POST` | `/api/v1/billing/admin/payments/{id}/approve` | Operators only. Grants the plan for `PLAN_PERIOD_DAYS`, added to paid time left on the same plan. 409 if already decided; if granting fails the claim goes back to pending (503) |
+| `POST` | `/api/v1/billing/admin/payments/{id}/reject` | Operators only. `{ note? }` shown to the customer. 409 if already decided |
+| `GET` | `/api/v1/billing/admin/accounts` | Operators only. Newest accounts first (`?limit=`, default 25, max 100), or those whose email contains `?q=` (case-insensitive; `%` and `_` are literal), each with its plan |
+| `GET` | `/api/v1/billing/admin/account` | Operators only. `?email=` — the account with its plan and this month's usage. 404 if there is none; 503 if the database could not be asked |
+| `POST` | `/api/v1/billing/admin/plan` | Operators only (`ADMIN_EMAILS`). Body `{"email", "plan"}` with plan `free`, `pro` or `team`. 503, not 404, when the lookup fails |
+
+An upload that would exceed the month's quota is refused **before** anything is
+read or queued:
+
+```json
+{
+  "error": "quota_exceeded",
+  "message": "You've used all 25 analyses included in your free plan this month.",
+  "plan": "free", "limit": 25, "remaining": 0,
+  "upgrade_url": "https://…",
+  "request_id": "a1b2c3d4"
+}
+```
+
+## Status codes worth handling
+
+| Status | `error` | Meaning |
+|---|---|---|
+| 402 | `quota_exceeded` | The plan's monthly analyses are used up — upgrade, or wait for the 1st |
+| 413 | `payload_too_large` | The request body is over the limit for that route; refused before it is read |
+| 503 | `database_unavailable` | The database did not answer. Nothing was changed or lost; retry. Never returned as an empty list, an empty CSV or a 404 |
+| 503 | `storage_write_failed` | A write did not reach durable storage. Nothing was changed; retry |
+
+`/docs`, `/redoc` and `/openapi.json` are served in development only.
+
+## Sessions
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/v1/auth/logout-all` | Ends every session for this account, on every device, this one included. Other copies of the token stop working within a minute (each instance caches the check for 60s) |
+| `POST` | `/api/v1/auth/delete-account` | `{ confirm_email }` — must equal the account's email (case and surrounding spaces ignored), else 422. Permanently deletes the account and everything it owns; the account's tokens are refused from then on. 409 while one of its analyses is running; 503 `account_deletion_unavailable`, with nothing deleted, if `sql/009` has not been run |
+
+A password reset also ends every session issued before it. A revoked token
+gets `401` with `"This session has been signed out. Please sign in again."`

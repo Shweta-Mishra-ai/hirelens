@@ -15,6 +15,7 @@ process that ran it.
 
 import uuid
 import time
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Annotated
@@ -34,6 +35,8 @@ from app.services.parser.resume_heuristic import looks_like_resume
 from app.services.ai.engine import engine
 from app.services.queue.job_store import PersistentJobStore
 from app.core import local_db
+from app.services import billing
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
@@ -160,6 +163,9 @@ async def upload_resume(
     # Rate limit check
     _check_rate_limit(redis, current_user["id"])
 
+    # Plan quota, before the file is read or anything is queued.
+    await run_in_threadpool(billing.ensure_quota, db, current_user["id"], 1, _jobs)
+
     # Read file
     contents = await file.read()
     filename = (file.filename or "").strip()
@@ -238,7 +244,7 @@ def _recover_finished_job(job_id: str, user_id: str, db) -> dict | None:
 
 
 @router.get("/{job_id}/status")
-async def get_status(
+def get_status(
     job_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -437,7 +443,10 @@ async def _run_analysis(
 
         # ── Step 1: Parse document ────────────────────────────────────────────
         try:
-            raw_text = extract_text(file_bytes, mime_type, filename)
+            # CPU-bound — up to three PDF strategies over the whole file. On
+            # the event loop it froze every other request (status polls,
+            # sign-ins, health checks) for as long as the parse took.
+            raw_text = await asyncio.to_thread(extract_text, file_bytes, mime_type, filename)
         except Exception as e:
             logger.error(f"[{job_id}] Parse failed: {e}")
             upd(status="failed", stage="failed", error=_parse_failure_message(filename, e))
@@ -472,41 +481,44 @@ async def _run_analysis(
         # ── Step 3: Store in DB ───────────────────────────────────────────────
         report_id = str(uuid.uuid4())
 
+        row = {
+            "id": report_id,
+            "user_id": user_id,
+            "job_id": job_id,
+            "file_name": filename,
+            "candidate_name": (result.get("candidate") or {}).get("name") or "Unknown",
+            "overall_score": int((result.get("credibility") or {}).get("overall") or 0),
+            "recommendation": (result.get("credibility") or {}).get("recommendation") or "manual_review",
+            "report_data": result,
+        }
+
+        stored_remotely = False
         if db:
             try:
-                # Supabase Python v2 — synchronous .execute(), NO await
-                db.table("reports").insert({
-                    "id": report_id,
-                    "user_id": user_id,
-                    "job_id": job_id,
-                    "file_name": filename,
-                    "candidate_name": (result.get("candidate") or {}).get("name") or "Unknown",
-                    "overall_score": int((result.get("credibility") or {}).get("overall") or 0),
-                    "recommendation": (result.get("credibility") or {}).get("recommendation") or "manual_review",
-                    "report_data": result,
-                }).execute()
+                # The client is synchronous; run the write on a worker thread.
+                await asyncio.to_thread(lambda: db.table("reports").insert(row).execute())
+                stored_remotely = True
                 logger.info(f"[{job_id}] Stored report {report_id} in Supabase")
             except Exception as e:
-                logger.warning(f"[{job_id}] DB store failed — using in-memory fallback: {e}")
-                # Store in memory as a fallback so the report is still
-                # reachable. The owner is stamped onto the blob itself: it is
-                # the only thing the in-memory read, list and delete paths in
-                # reports.py can check ownership against, and they fail closed
-                # without it. See _mem_reports_for_user() and get_report().
-                _stamp_report_metadata(result, user_id=user_id, filename=filename, report_id=report_id)
-                _persist_report_locally(
-                result, report_id=report_id, user_id=user_id, filename=filename, job_id=job_id
-            )
-                _jobs[f"report_{report_id}"] = result
-        else:
-            # No DB configured — persist to the local store, and keep a copy
-            # in memory as a read-through cache for this process.
-            logger.info(f"[{job_id}] No Supabase — storing report {report_id} locally")
+                logger.error(f"[{job_id}] Supabase store failed — keeping the report locally: {e}")
+
+        if not stored_remotely:
+            # No Supabase, or it refused the write. Persist to the local store
+            # and keep a copy in memory as a read-through cache for this
+            # process. The owner is stamped onto the blob itself: it is the
+            # only thing the in-memory read, list and delete paths in
+            # reports.py can check ownership against, and they fail closed
+            # without it.
             _stamp_report_metadata(result, user_id=user_id, filename=filename, report_id=report_id)
-            _persist_report_locally(
-                result, report_id=report_id, user_id=user_id, filename=filename, job_id=job_id
+            await asyncio.to_thread(
+                _persist_report_locally,
+                result, report_id=report_id, user_id=user_id, filename=filename, job_id=job_id,
             )
             _jobs[f"report_{report_id}"] = result
+
+        # Metered only now, when the customer has a report. Failures above
+        # return before reaching this line and are never charged.
+        await asyncio.to_thread(billing.record_analysis, db, user_id, report_id)
 
         upd(status="complete", stage="complete", progress=100, report_id=report_id)
         logger.info(

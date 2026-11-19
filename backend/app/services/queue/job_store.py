@@ -50,6 +50,15 @@ class PersistentJobStore(MutableMapping):
         """`get_redis_fn` is passed in (not imported directly) to avoid a
         circular import between this module and app.core.dependencies."""
         self._mem: dict[str, dict] = {}
+        # When each local entry was last written, by this store's own clock.
+        #
+        # Cleanup used to read `created_at` out of the stored VALUE, which is
+        # not this class's to interpret: job records carry a float epoch, but
+        # report blobs carry an ISO-8601 string (see analysis.py's
+        # _stamp_report_metadata). Comparing the two raised TypeError, and
+        # because cleanup runs inside the upload handlers, every upload then
+        # failed with a 500 until the process restarted.
+        self._written_at: dict[str, float] = {}
         self._get_redis = get_redis_fn
 
     def _redis(self):
@@ -72,6 +81,7 @@ class PersistentJobStore(MutableMapping):
                 if raw is not None:
                     val = json.loads(raw)
                     self._mem[k] = val
+                    self._written_at[k] = time.time()
                     return val
             except Exception as e:
                 logger.warning(f"Job store Redis read failed for '{k}': {e}")
@@ -79,6 +89,7 @@ class PersistentJobStore(MutableMapping):
 
     def __setitem__(self, k: str, v: dict) -> None:
         self._mem[k] = v
+        self._written_at[k] = time.time()
         redis = self._redis()
         if redis:
             try:
@@ -88,6 +99,7 @@ class PersistentJobStore(MutableMapping):
 
     def __delitem__(self, k: str) -> None:
         self._mem.pop(k, None)
+        self._written_at.pop(k, None)
         redis = self._redis()
         if redis:
             try:
@@ -124,14 +136,21 @@ class PersistentJobStore(MutableMapping):
         return v
 
     def cleanup_stale(self, max_age_seconds: int = 3600) -> int:
-        """Removes local-memory entries older than max_age_seconds. Redis
-        entries expire on their own via TTL — this only trims the process's
-        local dict so it doesn't grow unbounded during a long-lived process."""
+        """Removes local-memory entries not written for max_age_seconds.
+        Redis entries expire on their own via TTL — this only trims the
+        process's local dict so it doesn't grow unbounded during a
+        long-lived process.
+
+        Age comes from this store's own write clock, never from a field
+        inside the value: values are owned by many callers and do not agree
+        on a timestamp type. An entry still being updated (a running job
+        reporting progress) is never removed from under its writer."""
         cutoff = time.time() - max_age_seconds
         stale = [
-            k for k, v in list(self._mem.items())
-            if isinstance(v, dict) and v.get("created_at", time.time()) < cutoff
+            k for k in list(self._mem)
+            if self._written_at.get(k, 0.0) < cutoff
         ]
         for k in stale:
             self._mem.pop(k, None)
+            self._written_at.pop(k, None)
         return len(stale)

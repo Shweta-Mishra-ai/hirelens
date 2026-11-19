@@ -244,3 +244,34 @@ class TestDeletion:
 
     def test_an_outsider_cannot_delete_the_team(self, outsider, db):
         assert client.delete("/api/v1/teams/t1", headers=outsider["headers"]).status_code == 403
+
+
+class TestSupabaseFailuresAreNotHidden:
+    """
+    With Supabase configured, a failed write used to fall back to the local
+    file — a disk Render wipes at every restart — and a failed read to an
+    empty list. Both looked like success.
+    """
+
+    def test_a_team_that_could_not_be_saved_is_reported(self, owner, db):
+        from app.core import local_db
+
+        db.fail("team_members", "insert")
+        res = client.post("/api/v1/teams", headers=owner["headers"], json={"name": "Ghost Team"})
+        assert res.status_code == 503
+        assert "could not be saved" in res.json()["message"]
+        # Not left half-made in Supabase, and not quietly kept on local disk.
+        assert all(t["name"] != "Ghost Team" for t in db.tables["teams"])
+        assert all(t["name"] != "Ghost Team" for t in local_db.list_teams_for_user(owner["user_id"]))
+
+    def test_an_outage_is_not_shown_as_having_no_teams(self, owner, db):
+        db.fail("team_members", "select")
+        assert client.get("/api/v1/teams", headers=owner["headers"]).status_code == 503
+
+    def test_an_outage_is_not_shown_as_an_empty_roster(self, owner, db):
+        # Membership is checked first (and answers); the roster read fails.
+        from app.services.teams import access
+
+        access._mem_team_members.append({"team_id": "t1", "user_id": owner["user_id"], "role": "owner"})
+        db.fail("team_members", "select")
+        assert client.get("/api/v1/teams/t1/members", headers=owner["headers"]).status_code == 503

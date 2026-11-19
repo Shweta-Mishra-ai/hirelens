@@ -3,7 +3,7 @@ import os
 import secrets
 from pathlib import Path
 from typing import List
-from pydantic import field_validator, model_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
@@ -206,6 +206,43 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GROQ_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
+    # Model names are configuration, not code. Providers retire models on a
+    # schedule, and a retired name fails every call with a 404 — with the
+    # name in an env var that is a dashboard change, not a redeploy of code.
+    #
+    # GEMINI_MODEL is an ordered, comma-separated list: the first is used, and
+    # each later one takes over if an earlier one is retired, overloaded or
+    # rate-limited. All three are "Free of charge" on the Gemini API free
+    # tier (pricing page, Nov 2026), none has a shutdown date, and all accept
+    # thinkingLevel "low": 3.8 Flash is Google's strongest Flash; 3.6 Flash and
+    # 3.5 Flash-Lite cover the 503s free-tier 3.8 traffic sometimes gets.
+    # gemini-2.5-flash is not used: since September 2026 Google serves the 2.5
+    # models only to projects that used them before, so a new deployment gets
+    # a 404 on every call.
+    GEMINI_MODEL: str = "gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite"
+    # Gemini 3.x thinking level: minimal | low | medium | high, or empty for
+    # the model's own default. Ignored for 2.x models (thinking is off there).
+    GEMINI_THINKING_LEVEL: str = "low"
+    # Which provider is asked first. Data terms differ: on Gemini's FREE tier
+    # (outside the EEA/UK/Switzerland) Google may use submitted content to
+    # improve its products and human reviewers may read it; its paid tier and
+    # Groq do not train on API data. Resumes are candidates' personal data, so
+    # without Gemini billing enabled, "groq,gemini,anthropic" keeps them off
+    # Google's free tier unless Groq is unavailable.
+    LLM_PROVIDER_ORDER: str = "gemini,groq,anthropic"
+    # Replace emails, phone numbers, links and the candidate's name with
+    # placeholders before any text reaches an AI provider, and restore them
+    # in the finished report. On by default; essential on free AI tiers.
+    REDACT_PII_FOR_LLM: bool = True
+    # llama-3.3-70b-versatile was shut down for free and developer keys on
+    # 16 August 2026; gpt-oss-120b is the replacement Groq recommends.
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    # Largest single Groq request, prompt plus completion, in tokens. Groq's
+    # FREE plan allows 8,000 tokens per minute on gpt-oss-120b, so one request
+    # above that can never succeed there; the completion budget is trimmed to
+    # fit. Raise it on a paid plan (Developer is 250K TPM).
+    GROQ_MAX_REQUEST_TOKENS: int = 8000
+    ANTHROPIC_MODEL: str = "claude-sonnet-5-5"
 
     # Limits
     MAX_FILE_SIZE_MB: int = 10
@@ -237,6 +274,41 @@ class Settings(BaseSettings):
     FRONTEND_URL: str = "https://hirelens-theta.vercel.app"
     # Your Render backend URL — set this in Render env vars to enable keep-alive pings
     BACKEND_URL: str = ""
+
+    # Operators allowed to read /health/diagnostics and /auth/stats, as a
+    # comma-separated list of sign-in emails. Those routes expose raw database
+    # error text and account totals; with open sign-up, "any signed-in user"
+    # means anyone on the internet. In production nobody gets them until this
+    # is set; in development any signed-in user does.
+    ADMIN_EMAILS: str = ""
+
+    # Hard ceiling on registered accounts, as a guard for a small deployment.
+    # 0 means no ceiling.
+    MAX_REGISTERED_USERS: int = 5000
+
+    # ── Plans and quotas ──────────────────────────────────────────────────
+    # Completed analyses per calendar month on each plan. 0 = unlimited, and
+    # every plan defaults to 0 so that deploying the meter changes nothing
+    # until these are set. See app/services/billing.py.
+    FREE_MONTHLY_ANALYSES: int = 0
+    PRO_MONTHLY_ANALYSES: int = 0
+    TEAM_MONTHLY_ANALYSES: int = 0
+    # Where "Upgrade" sends people: a payment link (Stripe, Razorpay, ...),
+    # a pricing page, or a mailto:. Empty hides the button.
+    UPGRADE_URL: str = ""
+
+    # ── UPI payments, verified by an operator (sql/010) ─────────────────────
+    # No payment gateway needed: the in-app Upgrade page shows this UPI ID and
+    # a QR code for the plan's price; the customer pays from any UPI app and
+    # submits the transaction reference; an operator checks it against the
+    # bank statement and approves it on the operator screen, which grants the
+    # plan for PLAN_PERIOD_DAYS. Off while PAYMENT_UPI_ID is empty. A plan is
+    # offered only when its price is above 0. Prices are whole rupees.
+    PAYMENT_UPI_ID: str = ""
+    PAYMENT_PAYEE_NAME: str = ""
+    PRO_PRICE_INR: int = 0
+    TEAM_PRICE_INR: int = 0
+    PLAN_PERIOD_DAYS: int = 30
 
     # Bulk upload (Feature 1)
     BULK_MAX_FILES: int = 50
@@ -275,6 +347,14 @@ class Settings(BaseSettings):
         in the app, because getting it wrong produces no error anywhere.
         """
         return parse_origins(self.ALLOWED_ORIGINS)
+
+    @property
+    def admin_emails(self) -> set[str]:
+        return {
+            e.strip().lower()
+            for e in (self.ADMIN_EMAILS or "").replace(";", ",").split(",")
+            if e.strip()
+        }
 
     @property
     def is_production(self) -> bool:

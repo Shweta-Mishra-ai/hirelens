@@ -25,8 +25,17 @@ function browserConfigured() {
   return !placeholder(url) && !placeholder(key);
 }
 
+const BROWSER_UNCONFIGURED =
+  "Google sign-in isn't set up for this deployment. Ask your administrator to add the Supabase keys, or sign in with your email below.";
+
 export function useGoogleAuth() {
-  const [state, setState] = useState<GoogleAuthState>({ status: "checking" });
+  // The browser half is fixed at build time, so whether it is missing is
+  // known before the first render, not discovered in an effect.
+  const [state, setState] = useState<GoogleAuthState>(() =>
+    browserConfigured()
+      ? { status: "checking" }
+      : { status: "unconfigured", reason: BROWSER_UNCONFIGURED },
+  );
   const [error, setError] = useState<string | null>(null);
   const [redirecting, setRedirecting] = useState(false);
 
@@ -41,19 +50,16 @@ export function useGoogleAuth() {
     // form is submitted the server is usually already up. It runs before the
     // Supabase check below on purpose: an unconfigured Google button is no
     // reason to leave the API asleep.
-    void healthAPI.check().catch(() => {});
-
+    //
+    // When the browser half is configured, the same request also says
+    // whether the server half is ready — one request, not two.
+    const health = healthAPI.check();
     if (!browserConfigured()) {
-      setState({
-        status: "unconfigured",
-        reason:
-          "Google sign-in isn't set up for this deployment. Ask your administrator to add the Supabase keys, or sign in with your email below.",
-      });
+      health.catch(() => {});
       return;
     }
 
-    healthAPI
-      .check()
+    health
       .then((h) => {
         if (cancelled) return;
         // `undefined` means an older backend that predates this flag — assume

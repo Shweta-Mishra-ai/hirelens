@@ -25,6 +25,7 @@ export function useJdMatch() {
   const [exporting, setExporting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
+  const uploadInFlightRef = useRef(false);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -47,6 +48,10 @@ export function useJdMatch() {
 
   const upload = useCallback(
     async (files: File[], jd: JdInput) => {
+      // One upload at a time: a second click (or a second Enter) while the
+      // first request is still in flight would start a duplicate batch —
+      // and spend the customer's monthly quota twice.
+      if (uploadInFlightRef.current) return;
       if (!token) {
         safeSetState({ phase: "error", message: "Please log in to run a JD match." });
         return;
@@ -71,14 +76,17 @@ export function useJdMatch() {
 
       let uploadRes: BulkUploadResponse;
       try {
+        uploadInFlightRef.current = true;
         uploadRes = await matchAPI.upload(files, jd, token);
       } catch (e) {
+        uploadInFlightRef.current = false;
         const message =
           e instanceof APIError ? e.message : "Upload failed. Please try again.";
         safeSetState({ phase: "error", message });
         return;
       }
 
+      uploadInFlightRef.current = false;
       const { batch_id } = uploadRes;
       let attempts = 0;
       // See useBulkAnalysis: the first poll runs before any interval exists,

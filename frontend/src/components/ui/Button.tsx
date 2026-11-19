@@ -1,5 +1,6 @@
 "use client";
 import { forwardRef } from "react";
+import Link from "next/link";
 import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -43,6 +44,25 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
   fullWidth?: boolean;
 }
 
+/** The classes a Button wears, shared with LinkButton so the two never drift. */
+export function buttonClasses({
+  variant = "secondary",
+  size = "md",
+  fullWidth,
+  className,
+}: { variant?: Variant; size?: Size; fullWidth?: boolean; className?: string } = {}): string {
+  return cn(
+    "inline-flex items-center justify-center font-medium whitespace-nowrap",
+    "transition-colors duration-150 ease-out",
+    "disabled:cursor-not-allowed",
+    "focus-visible:outline-none focus-visible:shadow-focus",
+    variant !== "link" && SIZES[size],
+    VARIANTS[variant],
+    fullWidth && "w-full",
+    className,
+  );
+}
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { variant = "secondary", size = "md", loading, icon, iconRight, fullWidth, className, children, disabled, ...rest },
   ref,
@@ -53,16 +73,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       // A loading button stays focusable but must not fire twice.
       disabled={disabled || loading}
       aria-busy={loading || undefined}
-      className={cn(
-        "inline-flex items-center justify-center font-medium whitespace-nowrap",
-        "transition-colors duration-150 ease-out",
-        "disabled:cursor-not-allowed",
-        "focus-visible:outline-none focus-visible:shadow-focus",
-        variant !== "link" && SIZES[size],
-        VARIANTS[variant],
-        fullWidth && "w-full",
-        className,
-      )}
+      className={buttonClasses({ variant, size, fullWidth, className })}
       {...rest}
     >
       {loading ? (
@@ -75,3 +86,50 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     </button>
   );
 });
+
+export interface LinkButtonProps extends Omit<React.AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
+  href: string;
+  variant?: Variant;
+  size?: Size;
+  icon?: React.ReactNode;
+  fullWidth?: boolean;
+}
+
+/**
+ * A link that looks like a button. Use it instead of wrapping a <Button> in
+ * a link: an <a> holding a <button> is invalid HTML, puts two tab stops on
+ * one control and is announced as "link, button".
+ *
+ * In-app paths go through next/link; anything else (https:, upi:, mailto:)
+ * is a plain anchor.
+ */
+export function LinkButton({
+  href,
+  variant = "secondary",
+  size = "md",
+  icon,
+  fullWidth,
+  className,
+  children,
+  ...rest
+}: LinkButtonProps) {
+  const classes = buttonClasses({ variant, size, fullWidth, className });
+  const content = (
+    <>
+      {icon && <span aria-hidden className="inline-flex shrink-0">{icon}</span>}
+      {children}
+    </>
+  );
+  if (href.startsWith("/") && !href.startsWith("//")) {
+    return (
+      <Link href={href} className={classes} {...rest}>
+        {content}
+      </Link>
+    );
+  }
+  return (
+    <a href={href} className={classes} {...rest}>
+      {content}
+    </a>
+  );
+}

@@ -32,7 +32,7 @@ cd "$ROOT/backend"
 VENV="${VERIFY_VENV:-.venv-verify}"
 [ -d "$VENV" ] || "$PY" -m venv "$VENV"
 "$VENV/bin/python" -m pip install --upgrade pip -q
-if "$VENV/bin/pip" install -q -r requirements.txt -r requirements-dev.txt; then
+if "$VENV/bin/pip" install -q -r requirements.txt -r requirements-dev.txt -c constraints.txt; then
   ok "dependencies installed"
 else
   bad "dependency install"
@@ -51,7 +51,7 @@ fi
 step "Backend — dependency audit"
 "$VENV/bin/pip" install -q pip-audit
 # Reported, not enforced — same as CI, which uses `|| true` here.
-"$VENV/bin/python" -m pip_audit -r requirements.txt --desc --progress-spinner off || true
+"$VENV/bin/python" -m pip_audit -r constraints.txt --desc --progress-spinner off || true
 
 # ── Frontend ────────────────────────────────────────────────────────────────
 cd "$ROOT/frontend"

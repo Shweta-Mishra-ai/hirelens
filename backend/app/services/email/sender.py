@@ -3,6 +3,7 @@ HireLens — Real Email Sender Service
 Supports sending real HTML emails via Resend API, SMTP (Gmail/SES/SendGrid), or Supabase Auth.
 """
 
+import asyncio
 import html
 import smtplib
 import logging
@@ -13,7 +14,36 @@ from app.core.config import settings
 logger = logging.getLogger("hirelens")
 
 
-async def send_raw_email(to_email: str, subject: str, html_content: str, text_fallback: str) -> bool:
+def _send_via_smtp(to_email: str, subject: str, html_content: str, text_fallback: str, reply_to: str | None) -> None:
+    """Blocking SMTP send. Always called on a worker thread, never the loop."""
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = settings.SMTP_FROM_EMAIL
+    msg["To"] = to_email
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    msg.set_content(text_fallback)
+    msg.add_alternative(html_content, subtype="html")
+
+    # 465 is implicit TLS; STARTTLS against it hangs until the timeout.
+    if int(settings.SMTP_PORT) == 465:
+        with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
+            server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
+            server.starttls()
+            server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            server.send_message(msg)
+
+
+async def send_raw_email(
+    to_email: str,
+    subject: str,
+    html_content: str,
+    text_fallback: str,
+    reply_to: str | None = None,
+) -> bool:
     """
     Low-level sender shared by all outbound email helpers.
     Tries Resend first, then SMTP. Returns True only if a provider
@@ -22,6 +52,15 @@ async def send_raw_email(to_email: str, subject: str, html_content: str, text_fa
     """
     if settings.RESEND_API_KEY:
         try:
+            payload = {
+                "from": settings.SMTP_FROM_EMAIL,
+                "to": [to_email],
+                "subject": subject,
+                "html": html_content,
+                "text": text_fallback,
+            }
+            if reply_to:
+                payload["reply_to"] = reply_to
             async with httpx.AsyncClient(timeout=10.0) as client:
                 res = await client.post(
                     "https://api.resend.com/emails",
@@ -29,39 +68,29 @@ async def send_raw_email(to_email: str, subject: str, html_content: str, text_fa
                         "Authorization": f"Bearer {settings.RESEND_API_KEY}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "from": settings.SMTP_FROM_EMAIL,
-                        "to": [to_email],
-                        "subject": subject,
-                        "html": html_content,
-                    },
+                    json=payload,
                 )
                 if res.status_code in (200, 201):
-                    logger.info(f"Email sent via Resend to {to_email}")
+                    logger.info("Email sent via Resend")
                     return True
-                logger.warning(f"Resend email API returned status {res.status_code}: {res.text}")
+                logger.warning(f"Resend email API returned status {res.status_code}: {res.text[:300]}")
         except Exception as e:
             logger.error(f"Resend email dispatch error: {e}")
 
     if settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD:
         try:
-            msg = EmailMessage()
-            msg["Subject"] = subject
-            msg["From"] = settings.SMTP_FROM_EMAIL
-            msg["To"] = to_email
-            msg.set_content(text_fallback)
-            msg.add_alternative(html_content, subtype="html")
-
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
-                server.starttls()
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.send_message(msg)
-            logger.info(f"Email sent via SMTP to {to_email}")
+            # smtplib blocks for the whole connect/TLS/auth/send round trip.
+            # Run inline, a bulk notify to fifty candidates froze every other
+            # request in the process for as long as the sends took.
+            await asyncio.to_thread(
+                _send_via_smtp, to_email, subject, html_content, text_fallback, reply_to
+            )
+            logger.info("Email sent via SMTP")
             return True
         except Exception as e:
             logger.error(f"SMTP email dispatch error: {e}")
 
-    logger.info(f"No active email provider (Resend/SMTP) configured. Would have sent to {to_email}: {subject}")
+    logger.warning("No email provider (Resend/SMTP) accepted the message; nothing was sent.")
     return False
 
 
@@ -214,22 +243,32 @@ def build_decision_email(decision: str, candidate_name: str, sender_name: str, t
     }
 
 
-async def send_candidate_decision_email(to_email: str, subject: str, body: str) -> bool:
+async def send_candidate_decision_email(
+    to_email: str, subject: str, body: str, reply_to: str | None = None
+) -> bool:
     """
     Sends a recruiter-authored (or default-template) decision notification
     to a candidate. `body` is plain text; a light HTML wrapper is applied
     for clients that render HTML, with the exact same text as content.
+
+    The body is escaped before it is wrapped. It contains the candidate's
+    name as the model read it from their resume, so an unescaped body let a
+    resume inject markup — links, hidden text — into an email sent from this
+    product's own domain. `reply_to` is the recruiter, so a candidate's reply
+    reaches a person instead of the no-reply sender.
     """
-    safe_body_html = body.replace("\n", "<br>")
+    safe_body_html = html.escape(body, quote=True).replace("\n", "<br>")
     html_content = f"""
     <!DOCTYPE html>
     <html>
     <body style="background-color: #0B0F17; color: #F8FAFC; font-family: sans-serif; padding: 30px;">
       <div style="max-width: 540px; margin: 0 auto; background: #1E293B; border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 32px;">
         <div style="font-size: 22px; font-weight: 800; color: #F8FAFC; margin-bottom: 20px;">HireLens</div>
-        <div style="font-size: 14px; color: #E2E8F0; line-height: 1.7; white-space: pre-line;">{safe_body_html}</div>
+        <div style="font-size: 14px; color: #E2E8F0; line-height: 1.7;">{safe_body_html}</div>
       </div>
     </body>
     </html>
     """
-    return await send_raw_email(to_email, subject, html_content, text_fallback=body)
+    return await send_raw_email(
+        to_email, subject, html_content, text_fallback=body, reply_to=reply_to
+    )

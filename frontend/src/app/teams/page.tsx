@@ -1,7 +1,8 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { Users, Copy, Check, UserPlus, Plus, Link2 } from "lucide-react";
+import Link from "next/link";
+import { Users, Copy, Check, UserPlus, Plus, Link2, FileText, ChevronRight } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { classifyAuthFailure, signInUrl } from "@/lib/session";
 import { teamsAPI, APIError } from "@/lib/api";
@@ -14,13 +15,89 @@ import { Alert, EmptyState, Skeleton } from "@/components/ui/Feedback";
 import { relativeTime, initials, pluralize } from "@/lib/format";
 import { PersonAvatar, personLabel } from "@/components/ui/Person";
 import { cn } from "@/lib/cn";
-import type { Team, TeamInvite, TeamMember } from "@/types";
+import { reportHref } from "@/lib/routes";
+import { VerdictChip, verdictFromRecommendation } from "@/components/VerdictStamp";
+import type { Team, TeamInvite, TeamMember, TeamReport } from "@/types";
 
 const ROLE_TONE = {
   owner: "brand",
   admin: "info",
   member: "neutral",
 } as const;
+
+/**
+ * The candidate files shared with a team. Without this a teammate could only
+ * open a shared file if its owner also sent them the link.
+ */
+function SharedReports({ teamId, token }: { teamId: string; token: string }) {
+  const [reports, setReports] = useState<TeamReport[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    teamsAPI
+      .reports(teamId, token)
+      .then((res) => !cancelled && setReports(res.reports))
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e instanceof APIError ? e.message : "Could not load the files shared with this team.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [teamId, token]);
+
+  return (
+    <Card>
+      <CardHeader
+        title="Shared with this team"
+        description="Candidate files your teammates have shared. Open one to read it, comment and vote."
+        action={reports ? <Badge tone="neutral">{pluralize(reports.length, "file")}</Badge> : null}
+      />
+      <CardBody>
+        {error ? (
+          <Alert tone="error">{error}</Alert>
+        ) : !reports ? (
+          <div className="space-y-2">
+            <Skeleton className="h-11" />
+            <Skeleton className="h-11" />
+          </div>
+        ) : reports.length === 0 ? (
+          <p className="text-sm text-content-faint">
+            Nothing shared yet. Open a candidate&apos;s file, go to Discuss and choose this team.
+          </p>
+        ) : (
+          <ul className="-mx-2 divide-y divide-line-subtle">
+            {reports.map((r) => (
+              <li key={r.id}>
+                <Link
+                  href={reportHref(r.id)}
+                  className="flex items-center gap-3 rounded-md px-2 py-2.5 transition-colors hover:bg-canvas-overlay focus-visible:outline-none focus-visible:shadow-focus"
+                >
+                  <FileText aria-hidden className="size-4 shrink-0 text-content-faint" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-content">{r.candidate_name}</span>
+                    <span className="block truncate text-xs text-content-faint">
+                      {r.shared_by ? `Shared by ${r.shared_by}` : "Shared"}
+                      {r.created_at ? ` · ${relativeTime(r.created_at)}` : ""}
+                    </span>
+                  </span>
+                  {typeof r.overall_score === "number" && (
+                    <span className="shrink-0 text-sm tabular text-content-muted">{r.overall_score}</span>
+                  )}
+                  <span className="hidden shrink-0 sm:inline">
+                    <VerdictChip verdict={verdictFromRecommendation(r.recommendation)} />
+                  </span>
+                  <ChevronRight aria-hidden className="size-4 shrink-0 text-content-faint" />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
 
 function InviteLink({ url }: { url: string }) {
   const [copied, setCopied] = useState(false);
@@ -114,6 +191,7 @@ function TeamsContent() {
   }, [token, logout, router]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     void loadTeams();
   }, [loadTeams]);
 
@@ -157,6 +235,7 @@ function TeamsContent() {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     void loadMembers();
   }, [loadMembers]);
 
@@ -381,6 +460,8 @@ function TeamsContent() {
                 )}
               </CardBody>
             </Card>
+
+            {token && <SharedReports key={selectedTeam.id} teamId={selectedTeam.id} token={token} />}
 
             <Card>
               <CardHeader

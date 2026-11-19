@@ -11,6 +11,7 @@
  */
 import type {
   TeamInvite,
+  TeamReport,
   Report,
   ReportListResponse,
   PoolAnalytics,
@@ -41,7 +42,7 @@ export const API_BASE = BASE;
  * the visitor's own machine. The pages still load, because they are static,
  * and nothing else works at all. next.config.js refuses to produce such a
  * build for a real deployment; this is the second line, for a build made
- * before that guard existed or outside Vercel.
+ * before that guard existed or on a host it does not recognise.
  *
  * Worth naming precisely, because the symptom otherwise reads as "the server
  * is down" and sends someone to check a server that is perfectly healthy.
@@ -74,18 +75,40 @@ export class APIError extends Error {
     public readonly code: string,
     message: string,
     public readonly requestId?: string,
+    /** Any extra fields the server sent with the error, e.g. upgrade_url. */
+    public readonly details: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = "APIError";
   }
 }
 
+/** The upgrade link a quota error carries, if the operator configured one. */
+export function upgradeUrlOf(err: unknown): string | null {
+  if (!(err instanceof APIError)) return null;
+  const url = err.details["upgrade_url"];
+  return typeof url === "string" && url ? url : null;
+}
+
+// ── Timeouts ──────────────────────────────────────────────────────────────────
+// One 60s timeout for everything aborted large uploads mid-transfer: the
+// browser reported "timed out" while the server had already received the
+// files and started analysing them, so the natural retry created a second,
+// duplicate batch. Each kind of request gets a budget sized to its work.
+const DEFAULT_TIMEOUT_MS = 60_000;
+const SINGLE_UPLOAD_TIMEOUT_MS = 3 * 60_000;
+// Up to 150 MB; at 2 Mbit/s upstream that is ten minutes on the wire.
+const BATCH_UPLOAD_TIMEOUT_MS = 15 * 60_000;
+// The server downloads every resume in the CSV before answering.
+const ATS_IMPORT_TIMEOUT_MS = 5 * 60_000;
+const EXPORT_TIMEOUT_MS = 2 * 60_000;
+
 // ── Core request function ─────────────────────────────────────────────────────
 async function req<T>(
   path: string,
-  init: RequestInit & { token?: string } = {},
+  init: RequestInit & { token?: string; timeoutMs?: number } = {},
 ): Promise<T> {
-  const { token, ...rest } = init;
+  const { token, timeoutMs, ...rest } = init;
 
   const headers: Record<string, string> = {
     ...(rest.headers as Record<string, string>),
@@ -111,8 +134,7 @@ async function req<T>(
     res = await fetch(`${BASE}${path}`, {
       ...rest,
       headers,
-      // 60 second timeout via AbortController
-      signal: rest.signal ?? AbortSignal.timeout(60_000),
+      signal: rest.signal ?? AbortSignal.timeout(timeoutMs ?? DEFAULT_TIMEOUT_MS),
     });
   } catch (e) {
     if (e instanceof Error) {
@@ -144,10 +166,60 @@ async function req<T>(
   }
 
   if (!res.ok) {
-    throw toAPIError(res.status, body);
+    const err = toAPIError(res.status, body);
+    if (err.status === 402) announceUsageChange();
+    throw err;
   }
 
   return body as T;
+}
+
+/**
+ * Tell anything showing plan usage to refresh: after an upload is accepted,
+ * and when the server refuses one for quota. A DOM event rather than shared
+ * state, because the meter lives in the app chrome and the uploads in pages.
+ */
+export const USAGE_CHANGED_EVENT = "hirelens:usage-changed";
+
+export function announceUsageChange(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(USAGE_CHANGED_EVENT));
+  }
+}
+
+/**
+ * GET a file (CSV export) with the auth header, through the same error
+ * handling as every JSON call. These used a bare fetch() that replaced the
+ * server's explanation — "the database did not answer, nothing was lost" —
+ * with a generic "Could not export", and had no timeout at all.
+ */
+async function downloadBlob(path: string, token: string): Promise<Blob> {
+  if (buildIsMissingItsApiUrl()) {
+    throw new APIError(0, API_URL_NOT_CONFIGURED, MISCONFIGURED_MESSAGE);
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(EXPORT_TIMEOUT_MS),
+    });
+  } catch (e) {
+    if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) {
+      throw new APIError(0, "timeout", "The export took too long. Please try again.");
+    }
+    throw new APIError(0, "network_error", "Cannot reach the server. Check your internet connection.");
+  }
+  if (!res.ok) {
+    const contentType = res.headers.get("content-type") || "";
+    const body = contentType.includes("application/json")
+      ? await res.json().catch(() => ({}))
+      : await res.text().catch(() => "");
+    const err = toAPIError(res.status, body);
+    throw err.message
+      ? err
+      : new APIError(res.status, "export_failed", "Could not export CSV. Please try again.");
+  }
+  return res.blob();
 }
 
 /**
@@ -169,6 +241,7 @@ export function toAPIError(status: number, body: unknown): APIError {
       typeof b["error"] === "string" ? b["error"] : "http_error",
       b["message"],
       typeof b["request_id"] === "string" ? b["request_id"] : undefined,
+      b,
     );
   }
 
@@ -317,8 +390,20 @@ export const authAPI = {
       body: JSON.stringify(data),
     }),
 
+  /** End every session for this account, on every device, this one included. */
+  logoutAll: (token: string) =>
+    req<{ status: string; message: string }>("/api/v1/auth/logout-all", { method: "POST", token }),
+
+  /** Permanently delete the account. `confirmEmail` must match the account's email. */
+  deleteAccount: (confirmEmail: string, token: string) =>
+    req<{ status: string; message: string }>("/api/v1/auth/delete-account", {
+      method: "POST",
+      token,
+      body: JSON.stringify({ confirm_email: confirmEmail }),
+    }),
+
   me: (token: string) =>
-    req<{ id: string; email: string }>("/api/v1/auth/me", { token }),
+    req<{ id: string; email: string; is_admin?: boolean }>("/api/v1/auth/me", { token }),
 
   oauthVerify: (accessToken: string) =>
     req<{ access_token: string; user: User }>(
@@ -346,8 +431,11 @@ export const analysisAPI = {
     form.append("file", file);
     return req<{ job_id: string; status: string }>(
       "/api/v1/analysis/upload",
-      { method: "POST", body: form, token },
-    );
+      { method: "POST", body: form, token, timeoutMs: SINGLE_UPLOAD_TIMEOUT_MS },
+    ).then((r) => {
+      announceUsageChange();
+      return r;
+    });
   },
 
   status: (jobId: string, token: string) =>
@@ -363,6 +451,10 @@ export const bulkAPI = {
       method: "POST",
       body: form,
       token,
+      timeoutMs: BATCH_UPLOAD_TIMEOUT_MS,
+    }).then((r) => {
+      announceUsageChange();
+      return r;
     });
   },
 
@@ -383,20 +475,13 @@ export const bulkAPI = {
       skipped_at_parse: { row_num: number; reason: string }[];
       skipped_at_download: { row_num: number; status: string }[];
       message: string;
-    }>("/api/v1/ats/import", { method: "POST", body: form, token });
+    }>("/api/v1/ats/import", { method: "POST", body: form, token, timeoutMs: ATS_IMPORT_TIMEOUT_MS });
   },
 
   // Downloads the ranked-candidate CSV as a Blob (fetched with the auth
   // header, since a plain <a href> link can't attach Authorization).
-  downloadCsv: async (batchId: string, token: string): Promise<Blob> => {
-    const res = await fetch(`${BASE}/api/v1/bulk/${batchId}/export.csv`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      throw new APIError(res.status, "export_failed", "Could not export CSV. Please try again.");
-    }
-    return res.blob();
-  },
+  downloadCsv: (batchId: string, token: string): Promise<Blob> =>
+    downloadBlob(`/api/v1/bulk/${batchId}/export.csv`, token),
 
   // One-click: emails every completed candidate in the batch the default
   // template for `decision`. Pass `overrides` (keyed by report_id) to
@@ -412,6 +497,7 @@ export const bulkAPI = {
       decision: string;
       total_candidates: number;
       emails_sent: number;
+      already_notified: number;
       results: { report_id: string; candidate_name: string; email_sent: boolean; reason: string | null }[];
     }>(`/api/v1/bulk/${batchId}/notify-all`, {
       method: "POST",
@@ -474,21 +560,18 @@ export const matchAPI = {
       method: "POST",
       body: form,
       token,
+      timeoutMs: BATCH_UPLOAD_TIMEOUT_MS,
+    }).then((r) => {
+      announceUsageChange();
+      return r;
     });
   },
 
   status: (batchId: string, token: string) =>
     req<MatchBatchStatus>(`/api/v1/match/${batchId}/status`, { token }),
 
-  downloadCsv: async (batchId: string, token: string): Promise<Blob> => {
-    const res = await fetch(`${BASE}/api/v1/match/${batchId}/export.csv`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      throw new APIError(res.status, "export_failed", "Could not export CSV. Please try again.");
-    }
-    return res.blob();
-  },
+  downloadCsv: (batchId: string, token: string): Promise<Blob> =>
+    downloadBlob(`/api/v1/match/${batchId}/export.csv`, token),
 };
 
 // ── Public Data Verification (Feature 3) ────────────────────────────────────
@@ -537,6 +620,12 @@ export const teamsAPI = {
 
   delete: (teamId: string, token: string) =>
     req<{ status: string }>(`/api/v1/teams/${teamId}`, { method: "DELETE", token }),
+
+  /** Candidate files shared with the team, newest first. Members only. */
+  reports: (teamId: string, token: string) =>
+    req<{ reports: TeamReport[] }>(`/api/v1/teams/${teamId}/reports`, { token }).then(
+      (res): { reports: TeamReport[] } => ({ reports: asArray(res?.reports) }),
+    ),
 };
 
 // ── Report Collaboration (share, comments, votes) ───────────────────────────
@@ -608,13 +697,7 @@ export const reportsAPI = {
     if (params?.recommendation) qs.set("recommendation", params.recommendation);
     if (params?.search) qs.set("search", params.search);
     if (params?.sort) qs.set("sort", params.sort);
-    const res = await fetch(`${BASE}/api/v1/reports/export.csv?${qs.toString()}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) {
-      throw new APIError(res.status, "export_failed", "Could not export CSV. Please try again.");
-    }
-    return res.blob();
+    return downloadBlob(`/api/v1/reports/export.csv?${qs.toString()}`, token);
   },
 
   get: (id: string, token: string) =>
@@ -692,6 +775,113 @@ export const copilotAPI = {
 };
 
 // ── Health ────────────────────────────────────────────────────────────────────
+// ── Plans and usage ─────────────────────────────────────────────────────────
+export interface PlanUsage {
+  plan: "free" | "pro" | "team";
+  period_start: string;
+  period_end: string;
+  used: number;
+  in_progress: number;
+  limit: number | null;
+  remaining: number | null;
+  unlimited: boolean;
+  upgrade_url: string | null;
+  /** When a plan bought for a period lapses back to free; null if it does not. */
+  plan_expires_at?: string | null;
+}
+
+export interface PlanOffer {
+  plan: "pro" | "team";
+  price_inr: number;
+  monthly_analyses: number | null;
+}
+
+export interface PlansInfo {
+  upi_id: string | null;
+  payee_name: string | null;
+  period_days: number;
+  plans: PlanOffer[];
+  usage: PlanUsage;
+}
+
+export interface PaymentClaim {
+  id: string;
+  plan: "pro" | "team";
+  amount_inr: number;
+  method: string;
+  reference: string;
+  status: "pending" | "approved" | "rejected";
+  note: string | null;
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface OperatorPaymentClaim extends PaymentClaim {
+  user_id: string;
+  email: string;
+  decided_by: string | null;
+}
+
+/** An upgrade link the server sent: in-app ("/upgrade") or an outside URL. */
+export function isInAppLink(url: string | null | undefined): boolean {
+  return Boolean(url && url.startsWith("/") && !url.startsWith("//"));
+}
+
+export const billingAPI = {
+  usage: (token: string) => req<PlanUsage>("/api/v1/billing/usage", { token }),
+  plans: (token: string) => req<PlansInfo>("/api/v1/billing/plans", { token }),
+  myPayments: (token: string) => req<{ payments: PaymentClaim[] }>("/api/v1/billing/payments", { token }),
+  submitPayment: (plan: PlanOffer["plan"], reference: string, token: string) =>
+    req<PaymentClaim>("/api/v1/billing/payments", {
+      method: "POST",
+      token,
+      body: JSON.stringify({ plan, reference }),
+    }),
+};
+
+// ── Operator screen (ADMIN_EMAILS only; the server checks every call) ──────
+export interface AdminAccountRow {
+  user_id: string;
+  email: string;
+  full_name: string;
+  company: string;
+  created_at: string | null;
+  plan: PlanUsage["plan"];
+}
+
+export interface AdminAccountDetail extends Omit<AdminAccountRow, "plan"> {
+  usage: PlanUsage;
+}
+
+export const adminAPI = {
+  accounts: (token: string, q?: string) =>
+    req<{ accounts: AdminAccountRow[] }>(
+      `/api/v1/billing/admin/accounts${q ? `?q=${encodeURIComponent(q)}` : ""}`,
+      { token },
+    ),
+  account: (email: string, token: string) =>
+    req<AdminAccountDetail>(`/api/v1/billing/admin/account?email=${encodeURIComponent(email)}`, { token }),
+  payments: (token: string, status: "pending" | "approved" | "rejected" | "all" = "pending") =>
+    req<{ payments: OperatorPaymentClaim[] }>(`/api/v1/billing/admin/payments?status=${status}`, { token }),
+  approvePayment: (id: string, token: string) =>
+    req<{ status: string; plan: string; plan_expires_at: string }>(
+      `/api/v1/billing/admin/payments/${encodeURIComponent(id)}/approve`,
+      { method: "POST", token },
+    ),
+  rejectPayment: (id: string, note: string, token: string) =>
+    req<{ status: string }>(`/api/v1/billing/admin/payments/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      token,
+      body: JSON.stringify({ note: note || null }),
+    }),
+  setPlan: (email: string, plan: PlanUsage["plan"], token: string) =>
+    req<{ status: string; user_id: string; plan: string }>("/api/v1/billing/admin/plan", {
+      method: "POST",
+      token,
+      body: JSON.stringify({ email, plan }),
+    }),
+};
+
 export const healthAPI = {
   check: () =>
     req<{

@@ -8,7 +8,7 @@ import { authAPI, APIError, API_URL_NOT_CONFIGURED } from "@/lib/api";
 import { useGoogleAuth } from "@/hooks/useGoogleAuth";
 import { InviteBanner } from "@/components/InviteBanner";
 import { readInviteParams, withInvite } from "@/lib/invite";
-import { Button } from "@/components/ui/Button";
+import { Button, LinkButton } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Feedback";
 import { AuthLayout, AuthFooterLink, GoogleButton, OrDivider } from "../AuthLayout";
@@ -141,9 +141,9 @@ function SignupForm() {
             <span className="font-medium text-content">{pendingConfirmEmail}</span>. Open it to
             activate your account.
           </p>
-          <Link href="/login" className="mt-5 inline-block">
-            <Button variant="primary">Back to sign in</Button>
-          </Link>
+          <LinkButton href="/login" variant="primary" className="mt-5">
+            Back to sign in
+          </LinkButton>
         </div>
       </AuthLayout>
     );
@@ -230,6 +230,9 @@ function SignupForm() {
       </form>
 
       <p className="mt-5 text-xs leading-relaxed text-content-faint">
+        By creating an account you agree to the{" "}
+        <Link href="/terms" className="text-content-muted underline underline-offset-2">Terms</Link> and{" "}
+        <Link href="/privacy" className="text-content-muted underline underline-offset-2">Privacy Policy</Link>.
         You are responsible for how you use HireLens output. Scores and flags are
         prompts to investigate, not hiring decisions.
       </p>

@@ -39,6 +39,7 @@ export function DiscussPanel({
   comments,
   votes,
   teams,
+  canShare = true,
   sharedTeamId,
   sharing,
   newComment,
@@ -56,6 +57,8 @@ export function DiscussPanel({
   comments: ReportComment[];
   votes: VotesResult | null;
   teams: Team[];
+  /** Only the person who added the candidate shares it; teammates see where it's shared. */
+  canShare?: boolean;
   sharedTeamId: string | null | undefined;
   sharing: boolean;
   newComment: string;
@@ -66,7 +69,8 @@ export function DiscussPanel({
   onPostComment: () => void;
   onDeleteComment: (id: string) => void;
   onVote: (v: Vote) => void;
-  onShare: (teamId: string) => void;
+  /** A team id to share with, or null to stop sharing. */
+  onShare: (teamId: string | null) => void;
 }) {
   const sharedTeam = teams.find((t) => t.id === sharedTeamId);
 
@@ -74,6 +78,18 @@ export function DiscussPanel({
     <div className="space-y-5">
       {error && <Alert tone="error">{error}</Alert>}
 
+      {!canShare ? (
+        <Card>
+          <CardHeader
+            title="Shared with your team"
+            description={
+              sharedTeam
+                ? `Shared with ${sharedTeam.name} by the person who added this candidate. You can comment and vote.`
+                : "Shared with you by the person who added this candidate. You can comment and vote."
+            }
+          />
+        </Card>
+      ) : (
       <Card>
         <CardHeader
           title="Share with a team"
@@ -92,20 +108,21 @@ export function DiscussPanel({
                   label="Team"
                   value={sharedTeamId ?? ""}
                   disabled={sharing}
-                  onChange={(e) => e.target.value && onShare(e.target.value)}
+                  onChange={(e) => onShare(e.target.value || null)}
                   options={[
-                    { value: "", label: "Select a team…" },
+                    { value: "", label: sharedTeamId ? "Not shared" : "Select a team…" },
                     ...teams.map((t) => ({ value: t.id, label: t.name })),
                   ]}
                 />
               </div>
               {sharing && (
-                <span className="pb-2 text-xs text-content-faint">Sharing…</span>
+                <span className="pb-2 text-xs text-content-faint">Saving…</span>
               )}
             </div>
           )}
         </CardBody>
       </Card>
+      )}
 
       <Card>
         <CardHeader

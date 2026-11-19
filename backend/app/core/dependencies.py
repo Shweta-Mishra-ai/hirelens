@@ -97,6 +97,12 @@ def _guard_service_role(client) -> None:
         )
         client.options.headers["Authorization"] = service_header
         client.auth._headers["Authorization"] = service_header
+        # Older supabase-py versions hand auth.admin the same dict as
+        # auth._headers; newer ones give it its own copy. Restore both, so the
+        # guard holds whichever version a deploy resolved to.
+        admin_headers = getattr(getattr(client.auth, "admin", None), "_headers", None)
+        if isinstance(admin_headers, dict):
+            admin_headers["Authorization"] = service_header
         # The listener dropped these so they would be rebuilt with the user's
         # token; drop them again so they are rebuilt with the right key.
         client._postgrest = None
@@ -305,10 +311,13 @@ def reset_clients() -> None:
 
 
 # ── Auth dependency ───────────────────────────────────────────────────────────
-async def get_current_user(authorization: str = Header(default="")) -> dict:
+async def get_current_user(
+    authorization: str = Header(default=""),
+    db=Depends(get_db),
+) -> dict:
     """
     Validates Bearer JWT token from Authorization header.
-    Raises AuthError (401) if missing, invalid, or expired.
+    Raises AuthError (401) if missing, invalid, expired, or revoked.
     """
     if not authorization or not authorization.startswith("Bearer "):
         raise AuthError("Authorization header missing or invalid. Format: 'Bearer <token>'")
@@ -323,13 +332,46 @@ async def get_current_user(authorization: str = Header(default="")) -> dict:
     if not user_id:
         raise AuthError("Token missing user ID.")
     
+    # A password reset or "sign out everywhere" ends sessions issued before
+    # it. The lookup is cached, and runs on the threadpool when it is not.
+    from starlette.concurrency import run_in_threadpool
+    from app.services import sessions
+
+    if await run_in_threadpool(sessions.is_revoked, db, str(user_id), payload):
+        raise AuthError("This session has been signed out. Please sign in again.")
+
     email = payload.get("email", "")
     return {"id": str(user_id), "email": email}
 
 
-async def get_optional_user(authorization: str = Header(default="")) -> dict | None:
+async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
+    """
+    The caller, if they are an operator listed in ADMIN_EMAILS.
+
+    Production with ADMIN_EMAILS unset admits nobody: failing closed is the
+    only safe default for routes that expose internal error text. Development
+    admits any signed-in user, so local debugging needs no setup.
+    """
+    from app.core.exceptions import ForbiddenError
+
+    admins = settings.admin_emails
+    if not admins:
+        if settings.is_production:
+            raise ForbiddenError(
+                "This operator endpoint is disabled until ADMIN_EMAILS is configured."
+            )
+        return current_user
+    if (current_user.get("email") or "").strip().lower() not in admins:
+        raise ForbiddenError("This endpoint is for operators only.")
+    return current_user
+
+
+async def get_optional_user(
+    authorization: str = Header(default=""),
+    db=Depends(get_db),
+) -> dict | None:
     """Returns user dict or None — for public endpoints."""
     try:
-        return await get_current_user(authorization)
+        return await get_current_user(authorization, db)
     except AuthError:
         return None

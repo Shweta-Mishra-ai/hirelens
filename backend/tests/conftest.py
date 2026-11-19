@@ -65,9 +65,11 @@ def isolate_stores():
     from app.api.v1.endpoints.analysis import _jobs
     from app.core.rate_limit import _mem_rate_limit
     from app.services.queue import batch_store
+    from app.services import sessions
 
     def _reset():
         _mem_rate_limit.clear()
+        sessions.clear_cache()
         auth_ep._mem_users.clear()
         # Batches are capped per user (BULK_MAX_CONCURRENT_BATCHES_PER_USER)
         # and nothing marks them finished in a test, so the third upload by
@@ -98,6 +100,8 @@ def fresh_local_db():
         local_db.init_local_db()
         local_db.init_collaboration_tables()
         local_db.init_team_tables()
+        local_db.init_billing_tables()
+        local_db.init_session_table()
         try:
             yield local_db
         finally:

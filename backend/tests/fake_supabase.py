@@ -27,12 +27,20 @@ class Result:
 
 
 def _matches_ilike(value: Any, pattern: str) -> bool:
-    """SQL ILIKE: % is any run of characters, _ is any single one."""
+    """SQL ILIKE: % is any run of characters, _ is any single one, and a
+    backslash makes the next character literal (Postgres's default escape)."""
     if value is None:
         return False
-    regex = "^" + "".join(
-        ".*" if ch == "%" else "." if ch == "_" else re.escape(ch) for ch in pattern
-    ) + "$"
+    parts, i = [], 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < len(pattern):
+            parts.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        parts.append(".*" if ch == "%" else "." if ch == "_" else re.escape(ch))
+        i += 1
+    regex = "^" + "".join(parts) + "$"
     return re.match(regex, str(value), re.IGNORECASE) is not None
 
 
@@ -51,11 +59,13 @@ class _Query:
         self.payload: dict | None = None
         self.json_path_rejected: str | None = None
         self.on_conflict: list[str] = []
+        self.columns: str = "*"
 
     # ── builder ────────────────────────────────────────────────────────────
     def select(self, _columns="*", count=None):
         self.op = "select"
         self.count_mode = count
+        self.columns = _columns or "*"
         return self
 
     def update(self, payload: dict):
@@ -79,6 +89,14 @@ class _Query:
     def in_(self, column: str, values):
         wanted = list(values)
         self.filters.append(lambda row, c=column, v=wanted: row.get(c) in v)
+        return self
+
+    def ilike(self, column: str, pattern: str):
+        self.filters.append(lambda row, c=column, p=pattern: _matches_ilike(row.get(c), p))
+        return self
+
+    def gte(self, column: str, value):
+        self.filters.append(lambda row, c=column, v=value: row.get(c) is not None and row.get(c) >= v)
         return self
 
     def neq(self, column: str, value):
@@ -189,12 +207,52 @@ class _Query:
             matched = matched[: self.limit_]
 
         if self.single:
-            return Result(dict(matched[0]) if matched else None)
+            return Result(_project(matched[0], self.columns) if matched else None)
 
         return Result(
-            [dict(r) for r in matched],
+            [_project(r, self.columns) for r in matched],
             count=total if self.count_mode == "exact" else None,
         )
+
+
+def _project(row: dict, columns: str) -> dict:
+    """
+    Return only the columns a select() asked for, the way PostgREST does.
+
+    Returning the whole row regardless let code that selected too little pass
+    every test and then read None in production. Supports what this codebase
+    writes: `*`, plain columns, `alias:column`, and JSON paths such as
+    `skills:report_data->skills->all_claimed` (`->` keeps JSON, `->>` gives
+    text). A path with no alias is keyed by its last segment, as in PostgREST.
+    """
+    import json as _json
+
+    spec = (columns or "*").strip()
+    if spec == "*":
+        return dict(row)
+
+    out: dict = {}
+    for token in (t.strip() for t in spec.split(",")):
+        if not token:
+            continue
+        if token == "*":
+            out.update(row)
+            continue
+        alias, _, expr = token.partition(":")
+        if not expr:
+            alias, expr = "", alias
+        if "->" not in expr:
+            out[alias or expr] = row.get(expr)
+            continue
+        as_text = "->>" in expr
+        parts = [p for p in expr.replace("->>", "->").split("->") if p]
+        value = row.get(parts[0])
+        for key in parts[1:]:
+            value = value.get(key) if isinstance(value, dict) else None
+        if as_text and value is not None and not isinstance(value, str):
+            value = _json.dumps(value)
+        out[alias or parts[-1]] = value
+    return out
 
 
 # The real column list for each table, from backend/sql/*.sql. A write naming
@@ -220,6 +278,17 @@ SCHEMA: dict[str, set[str]] = {
     "report_votes": {"report_id", "user_id", "vote", "created_at"},
     "saved_jds": {
         "id", "user_id", "name", "jd_text", "created_at", "updated_at", "last_used_at",
+    },
+    "subscriptions": {
+        "user_id", "plan", "status", "provider", "provider_customer",
+        "provider_reference", "current_period_end", "updated_at",
+    },
+    "usage_events": {"id", "user_id", "kind", "report_id", "created_at"},
+    "session_revocations": {"user_id", "revoked_before"},
+    "deleted_accounts": {"user_id", "deleted_at"},
+    "payment_requests": {
+        "id", "user_id", "plan", "amount_inr", "method", "reference", "status",
+        "note", "created_at", "decided_at", "decided_by",
     },
 }
 
@@ -399,3 +468,42 @@ class FakeAuthAdmin:
                 self.auth.users[email] = (new_password, user)
                 return FakeAuthResult(user)
         raise AuthApiError("User not found", status=404, code="user_not_found")
+
+    def delete_user(self, uid: str, should_soft_delete: bool = False):
+        """
+        Deletes the auth user and applies the foreign keys the migrations
+        define (001-008): ON DELETE CASCADE from auth.users, then from the
+        rows that cascaded (teams -> members/invites, reports -> comments and
+        votes), SET NULL for reports.team_id and team_invites.invited_by.
+        Tables with no foreign key to auth.users (saved_jds, deleted_accounts)
+        are left alone, exactly as Postgres would leave them.
+        """
+        self.auth._maybe_raise()
+        self.deleted = getattr(self, "deleted", []) + [uid]
+        found = False
+        for email, (_, user) in list(self.auth.users.items()):
+            if user.id == uid:
+                del self.auth.users[email]
+                found = True
+        if not found:
+            raise AuthApiError("User not found", status=404, code="user_not_found")
+
+        t = self.auth.client.tables
+        teams = {r["id"] for r in t.get("teams", []) if r.get("owner_id") == uid}
+        reports = {r["id"] for r in t.get("reports", []) if r.get("user_id") == uid}
+        for name in ("reports", "profiles", "team_members", "report_comments", "report_votes",
+                     "subscriptions", "usage_events", "session_revocations", "payment_requests"):
+            key = "id" if name == "profiles" else "user_id"
+            t[name] = [r for r in t.get(name, []) if r.get(key) != uid]
+        t["teams"] = [r for r in t.get("teams", []) if r.get("id") not in teams]
+        t["team_members"] = [r for r in t.get("team_members", []) if r.get("team_id") not in teams]
+        t["team_invites"] = [r for r in t.get("team_invites", []) if r.get("team_id") not in teams]
+        for name in ("report_comments", "report_votes"):
+            t[name] = [r for r in t.get(name, []) if r.get("report_id") not in reports]
+        for r in t.get("reports", []):
+            if r.get("team_id") in teams:
+                r["team_id"] = None
+        for r in t.get("team_invites", []):
+            if r.get("invited_by") == uid:
+                r["invited_by"] = None
+        return None

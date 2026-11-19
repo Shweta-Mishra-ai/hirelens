@@ -53,7 +53,7 @@ class TestGetReportOwnership:
         report_id = "test-report-owner-read"
         _jobs[f"report_{report_id}"] = _fake_report(owner_user_id="user-a")
 
-        result = asyncio.run(get_report(report_id, current_user={"id": "user-a"}, db=None))
+        result = get_report(report_id, current_user={"id": "user-a"}, db=None)
         assert result["candidate"]["name"] == "Test Candidate"
 
     def test_other_user_cannot_read_inmemory_report(self):
@@ -63,7 +63,7 @@ class TestGetReportOwnership:
         _jobs[f"report_{report_id}"] = _fake_report(owner_user_id="user-a")
 
         try:
-            asyncio.run(get_report(report_id, current_user={"id": "user-b"}, db=None))
+            get_report(report_id, current_user={"id": "user-b"}, db=None)
             assert False, "expected ForbiddenError, but the report was returned"
         except ForbiddenError:
             pass
@@ -80,7 +80,7 @@ class TestGetReportOwnership:
         _jobs[f"report_{report_id}"] = _fake_report(owner_user_id=None)
 
         try:
-            asyncio.run(get_report(report_id, current_user={"id": "user-a"}, db=None))
+            get_report(report_id, current_user={"id": "user-a"}, db=None)
             assert False, "expected ForbiddenError for an unowned report"
         except ForbiddenError:
             pass
@@ -89,7 +89,7 @@ class TestGetReportOwnership:
         from app.api.v1.endpoints.reports import get_report
 
         try:
-            asyncio.run(get_report("does-not-exist-at-all", current_user={"id": "user-a"}, db=None))
+            get_report("does-not-exist-at-all", current_user={"id": "user-a"}, db=None)
             assert False, "expected NotFoundError"
         except NotFoundError:
             pass
@@ -164,7 +164,7 @@ class TestDeleteReportOwnership:
         report_id = "test-report-owner-delete"
         _jobs[f"report_{report_id}"] = _fake_report(owner_user_id="user-a")
 
-        asyncio.run(delete_report(report_id, current_user={"id": "user-a"}, db=None))
+        delete_report(report_id, current_user={"id": "user-a"}, db=None)
         assert f"report_{report_id}" not in _jobs
 
     def test_other_user_cannot_delete_report_and_it_still_exists(self):
@@ -174,7 +174,7 @@ class TestDeleteReportOwnership:
         _jobs[f"report_{report_id}"] = _fake_report(owner_user_id="user-a")
 
         try:
-            asyncio.run(delete_report(report_id, current_user={"id": "user-b"}, db=None))
+            delete_report(report_id, current_user={"id": "user-b"}, db=None)
             assert False, "expected ForbiddenError"
         except ForbiddenError:
             pass
@@ -205,12 +205,12 @@ class TestSubmitDecisionHonesty:
         report_id = "test-decision-mem"
         _jobs[f"report_{report_id}"] = _fake_report(owner_user_id="user-a")
 
-        result = asyncio.run(submit_decision(
+        result = submit_decision(
             report_id,
             DecisionRequest(decision="advance", notes="looks good"),
             current_user={"id": "user-a"},
             db=None,
-        ))
+        )
 
         assert result["status"] == "ok"
         assert _jobs[f"report_{report_id}"]["recruiter_decision"] == "advance"
@@ -220,12 +220,12 @@ class TestSubmitDecisionHonesty:
         from app.api.v1.endpoints.reports import submit_decision, DecisionRequest
 
         try:
-            asyncio.run(submit_decision(
+            submit_decision(
                 "does-not-exist-decision-test",
                 DecisionRequest(decision="advance", notes=None),
                 current_user={"id": "user-a"},
                 db=None,
-            ))
+            )
             assert False, "expected NotFoundError"
         except NotFoundError:
             pass
@@ -242,12 +242,12 @@ class TestSubmitDecisionHonesty:
         _jobs[f"report_{report_id}"] = _fake_report(owner_user_id="user-a")
 
         try:
-            asyncio.run(submit_decision(
+            submit_decision(
                 report_id,
                 DecisionRequest(decision="reject", notes=None),
                 current_user={"id": "user-b"},
                 db=None,
-            ))
+            )
             assert False, "expected NotFoundError"
         except NotFoundError:
             pass

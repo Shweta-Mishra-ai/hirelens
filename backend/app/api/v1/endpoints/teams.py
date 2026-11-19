@@ -6,6 +6,7 @@ Enhanced with explicit UUID generation & in-memory fallback for demo mode.
 import uuid
 import time
 import logging
+from starlette.concurrency import run_in_threadpool
 from urllib.parse import quote
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, EmailStr, field_validator
@@ -14,7 +15,7 @@ from app.core import local_db
 from app.services import directory
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import (
-    HireLensException, NotFoundError, ForbiddenError, StorageWriteFailed,
+    HireLensException, NotFoundError, ForbiddenError, StorageWriteFailed, DatabaseUnavailable,
 )
 from app.services.teams.access import (
     get_user_role, can_manage_team, normalize_email as directory_normalize_email,
@@ -59,7 +60,7 @@ class InviteRequest(BaseModel):
 
 
 @router.post("")
-async def create_team(body: CreateTeamRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def create_team(body: CreateTeamRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     team_id = str(uuid.uuid4())
     user_id = current_user["id"]
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -90,7 +91,17 @@ async def create_team(body: CreateTeamRequest, current_user: dict = Depends(get_
             _mem_team_members.append({"team_id": team_id, "user_id": user_id, "role": "owner", "joined_at": created_at})
             return team
         except Exception as e:
-            logger.warning(f"DB Team creation failed ({e}) — using in-memory fallback")
+            # With Supabase configured it is the only store teammates and
+            # invites are read from. Falling back to the local file put the
+            # team on a disk Render wipes at every restart: it worked until
+            # then and vanished with no error, as the invite path below
+            # already refuses to do.
+            logger.error(f"Team create failed in Supabase | id={team_id} owner={user_id}: {e}")
+            try:
+                db.table("teams").delete().eq("id", team_id).execute()
+            except Exception:
+                pass  # the insert may not have happened at all
+            raise StorageWriteFailed("That team could not be saved. Please try again.")
 
     # Local fallback — persisted, then mirrored into this process's cache.
     #
@@ -110,7 +121,7 @@ async def create_team(body: CreateTeamRequest, current_user: dict = Depends(get_
 
 
 @router.get("")
-async def list_my_teams(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def list_my_teams(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     user_id = current_user["id"]
     if db:
         try:
@@ -123,8 +134,11 @@ async def list_my_teams(current_user: dict = Depends(get_current_user), db=Depen
                 for t in teams:
                     t["my_role"] = roles_by_team.get(t["id"])
                 return {"teams": teams}
+            return {"teams": []}
         except Exception as e:
-            logger.warning(f"DB list teams failed ({e}) — using in-memory fallback")
+            # An empty list here reads as "you have no teams" during an outage.
+            logger.warning(f"DB list teams failed for {user_id}: {e}")
+            raise DatabaseUnavailable()
 
     # In-memory fallback
     # Durable rows first, then anything this process knows that has not been
@@ -169,7 +183,7 @@ def _with_member_names(rows: list[dict], current_user_id: str, db=None) -> list[
 
 
 @router.get("/{team_id}/members")
-async def list_team_members(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def list_team_members(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     role = get_user_role(db, team_id, current_user["id"])
     if not role:
         raise ForbiddenError("You are not a member of this team.")
@@ -177,10 +191,10 @@ async def list_team_members(team_id: str, current_user: dict = Depends(get_curre
     if db:
         try:
             res = db.table("team_members").select("user_id,role,joined_at").eq("team_id", team_id).execute()
-            if res.data:
-                return {"members": _with_member_names(res.data, current_user["id"], db)}
+            return {"members": _with_member_names(res.data or [], current_user["id"], db)}
         except Exception as e:
-            logger.warning(f"DB list members failed ({e}) — using in-memory fallback")
+            logger.warning(f"DB list members failed for {team_id}: {e}")
+            raise DatabaseUnavailable()
 
     members = local_db.list_team_members(team_id)
     if not members:
@@ -188,16 +202,63 @@ async def list_team_members(team_id: str, current_user: dict = Depends(get_curre
     return {"members": _with_member_names(members, current_user["id"], db)}
 
 
+_TEAM_REPORT_FIELDS = (
+    "id,user_id,file_name,candidate_name,overall_score,recommendation,"
+    "recruiter_decision,created_at"
+)
+
+
+@router.get("/{team_id}/reports")
+def list_team_reports(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+    """
+    The candidate files shared with this team, newest first. Members only.
+
+    Without this a teammate had no way to find a shared report: the
+    dashboard lists your own uploads, and the team page listed people only —
+    so "share with a team" worked only if the owner also sent the link.
+    """
+    if not get_user_role(db, team_id, current_user["id"]):
+        raise ForbiddenError("You are not a member of this team.")
+
+    if db:
+        try:
+            rows = (
+                db.table("reports").select(_TEAM_REPORT_FIELDS)
+                .eq("team_id", team_id).order("created_at", desc=True).limit(100)
+                .execute().data
+            ) or []
+        except Exception as e:
+            # An empty list here would read as "nothing shared yet".
+            logger.warning(f"Team reports lookup failed for {team_id}: {e}")
+            raise DatabaseUnavailable()
+    else:
+        try:
+            rows = local_db.list_team_reports(team_id, limit=100)
+        except local_db.LocalStoreError:
+            raise DatabaseUnavailable()
+
+    owners = _with_member_names(
+        [{"user_id": r.get("user_id")} for r in rows], current_user["id"], db
+    )
+    reports = []
+    for row, owner in zip(rows, owners):
+        reports.append({
+            "id": row.get("id"),
+            "candidate_name": row.get("candidate_name") or "Unknown",
+            "file_name": row.get("file_name") or "",
+            "overall_score": row.get("overall_score"),
+            "recommendation": row.get("recommendation"),
+            "recruiter_decision": row.get("recruiter_decision"),
+            "created_at": row.get("created_at"),
+            "shared_by": owner.get("user_name"),
+            "is_mine": bool(owner.get("is_me")),
+        })
+    return {"reports": reports}
+
+
 @router.post("/{team_id}/invite")
 async def invite_member(team_id: str, body: InviteRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
-    if not can_manage_team(db, team_id, current_user["id"]):
-        raise ForbiddenError("Only team owners or admins can send invites.")
-
-    from app.core.config import settings
     from app.services.email.sender import send_team_invite_email
-
-    invite_id = str(uuid.uuid4())
-    team_name = "HireLens Workspace"
 
     # Every store matches invites on the lowercased address, and so does the
     # acceptance path at signup. Writing whatever spelling the inviter typed
@@ -205,74 +266,91 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
     # side. See access.normalize_email().
     invite_email = directory_normalize_email(body.email)
     invite_url = _invite_url(invite_email, team_id)
+    invite_id = str(uuid.uuid4())
 
-    if db:
-        try:
-            team_data = db.table("teams").select("name").eq("id", team_id).maybe_single().execute()
-            if team_data and team_data.data:
-                team_name = team_data.data.get("name", team_name)
+    def persist() -> dict:
+        """
+        Everything synchronous, on a worker thread: the permission check, the
+        team name, the duplicate check and the durable write.
 
-            existing = (
-                db.table("team_invites")
-                .select("id")
-                .eq("team_id", team_id).eq("status", "pending")
-                .eq("email", invite_email)
-                .execute()
-            )
-            if existing.data:
-                return {"status": "already_invited", "email": invite_email, "invite_url": invite_url}
+        The write happens BEFORE any email goes out. The old order sent the
+        email first and persisted second, so a failed write raised "has not
+        been sent" for an invitation that was already in the invitee's inbox
+        — and could never be accepted.
+        """
+        if not can_manage_team(db, team_id, current_user["id"]):
+            raise ForbiddenError("Only team owners or admins can send invites.")
 
-            db.table("team_invites").insert({
-                "id": invite_id,
-                "team_id": team_id,
-                "email": invite_email,
-                "invited_by": current_user["id"],
-                "status": "pending",
-            }).execute()
-
-            # Attempt Supabase native admin invite email if available
+        team_name = "HireLens Workspace"
+        if db:
             try:
-                if hasattr(db, "auth") and hasattr(db.auth, "admin"):
-                    db.auth.admin.invite_user_by_email(invite_email)
+                team_data = db.table("teams").select("name").eq("id", team_id).maybe_single().execute()
+                if team_data and team_data.data:
+                    team_name = team_data.data.get("name", team_name)
+
+                existing = (
+                    db.table("team_invites")
+                    .select("id")
+                    .eq("team_id", team_id).eq("status", "pending")
+                    .eq("email", invite_email)
+                    .execute()
+                )
+                if existing.data:
+                    return {"already": True}
+
+                db.table("team_invites").insert({
+                    "id": invite_id,
+                    "team_id": team_id,
+                    "email": invite_email,
+                    "invited_by": current_user["id"],
+                    "status": "pending",
+                }).execute()
             except Exception as e:
-                logger.warning(f"Supabase admin invite email skipped: {e}")
+                # With Supabase configured it is the store the signup path
+                # reads. An invite kept only in the local fallback lives on an
+                # ephemeral disk and is lost at the next restart.
+                logger.error(f"Invite insert failed | team={team_id}: {e}")
+                raise StorageWriteFailed(
+                    "That invitation could not be saved, so it has not been sent. Please try again."
+                )
+            # Deliberately NOT calling db.auth.admin.invite_user_by_email. It
+            # creates a password-less account for the address and sends a
+            # second email whose link this app does not handle, after which
+            # the invitee's own sign-up can collide with that account. The
+            # app's invite link below is the one designed flow.
 
-        except Exception as e:
-            logger.warning(f"DB invite insertion error ({e}) — using in-memory store")
+        if team_id in _mem_teams:
+            team_name = _mem_teams[team_id].get("name", team_name)
 
-    if team_id in _mem_teams:
-        team_name = _mem_teams[team_id].get("name", team_name)
+        if not local_db.create_invite(invite_id, team_id, invite_email) and not db:
+            # Without Supabase this row is the invite.
+            logger.error(f"Invite failed to persist | team={team_id}")
+            raise StorageWriteFailed(
+                "That invitation could not be saved, so it has not been sent. Please try again."
+            )
+        _mem_team_invites.append({
+            "id": invite_id,
+            "team_id": team_id,
+            "email": invite_email,
+            "invited_by": current_user["id"],
+            "status": "pending",
+        })
 
-    inviter_name = directory.get_display_name(
-        db, current_user["id"], current_user.get("email") or "A recruiter"
-    )
+        inviter_name = directory.get_display_name(
+            db, current_user["id"], current_user.get("email") or "A recruiter"
+        )
+        return {"already": False, "team_name": team_name, "inviter_name": inviter_name}
 
-    # Send real email via Resend / SMTP
+    outcome = await run_in_threadpool(persist)
+    if outcome["already"]:
+        return {"status": "already_invited", "email": invite_email, "invite_url": invite_url}
+
     email_sent = await send_team_invite_email(
         to_email=invite_email,
-        team_name=team_name,
-        inviter_name=inviter_name,
+        team_name=outcome["team_name"],
+        inviter_name=outcome["inviter_name"],
         invite_url=invite_url,
     )
-
-    # Persist the invite, then mirror it into this process's cache. Without
-    # the durable row an invite sent before a restart could never be
-    # accepted — the invitee would sign up and silently join nothing.
-    if not local_db.create_invite(invite_id, team_id, invite_email) and not db:
-        # Without Supabase this row is the invite. An unchecked failure here
-        # tells the inviter the invitation was sent, and leaves the invitee
-        # able to sign up and join nothing.
-        logger.error(f"Invite failed to persist | team={team_id} email={invite_email}")
-        raise StorageWriteFailed(
-            "That invitation could not be saved, so it has not been sent. Please try again."
-        )
-    _mem_team_invites.append({
-        "id": invite_id,
-        "team_id": team_id,
-        "email": invite_email,
-        "invited_by": current_user["id"],
-        "status": "pending",
-    })
 
     return {
         "status": "invited",
@@ -283,7 +361,7 @@ async def invite_member(team_id: str, body: InviteRequest, current_user: dict = 
 
 
 @router.get("/{team_id}/invites")
-async def list_invites(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def list_invites(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     """
     Invites sent for this team that nobody has accepted yet.
 
@@ -316,7 +394,7 @@ async def list_invites(team_id: str, current_user: dict = Depends(get_current_us
 
 
 @router.delete("/{team_id}/invites/{invite_id}")
-async def revoke_invite(
+def revoke_invite(
     team_id: str,
     invite_id: str,
     current_user: dict = Depends(get_current_user),
@@ -353,7 +431,7 @@ async def revoke_invite(
 
 
 @router.delete("/{team_id}/members/{user_id}")
-async def remove_member(team_id: str, user_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def remove_member(team_id: str, user_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     if not can_manage_team(db, team_id, current_user["id"]):
         raise ForbiddenError()
 
@@ -399,7 +477,7 @@ async def remove_member(team_id: str, user_id: str, current_user: dict = Depends
 
 
 @router.delete("/{team_id}")
-async def delete_team(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+def delete_team(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     if get_user_role(db, team_id, current_user["id"]) != "owner":
         raise ForbiddenError()
 
@@ -413,7 +491,12 @@ async def delete_team(team_id: str, current_user: dict = Depends(get_current_use
             db.table("team_invites").delete().eq("team_id", team_id).execute()
             db.table("teams").delete().eq("id", team_id).execute()
         except Exception as e:
-            logger.warning(f"DB delete team failed: {e}")
+            # Carrying on reported "deleted" for a team still in Supabase,
+            # roster and shared reports intact.
+            logger.error(f"DB delete team failed for {team_id}: {e}")
+            raise StorageWriteFailed(
+                "That team could not be deleted. Please try again."
+            )
 
     # Durable rows too — without this the team was still on disk and came
     # back, roster intact, on the next restart.

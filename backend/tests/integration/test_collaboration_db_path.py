@@ -169,11 +169,15 @@ class TestComments:
         res = client.delete("/api/v1/reports/rep1/comments/nope", headers=owner["headers"])
         assert res.status_code == 404
 
-    def test_a_listing_failure_degrades_to_empty_rather_than_erroring(self, owner, db):
+    def test_a_listing_failure_is_an_error_not_an_empty_thread(self, owner, db):
+        """
+        An empty list during an outage tells the team nobody has commented —
+        a statement about their discussion that is false. A 503 can be retried.
+        """
         db.fail("report_comments", "select")
         res = client.get("/api/v1/reports/rep1/comments", headers=owner["headers"])
-        assert res.status_code == 200
-        assert res.json()["comments"] == []
+        assert res.status_code == 503
+        assert res.json()["error"] == "database_unavailable"
 
     def test_a_failed_write_is_not_reported_as_posted(self, owner, db):
         db.fail("report_comments", "insert")
@@ -218,18 +222,68 @@ class TestVotes:
         res = client.post("/api/v1/reports/rep1/vote", headers=owner["headers"], json={"vote": "advance"})
         assert res.status_code >= 400
 
-    def test_a_tally_lookup_failure_degrades_rather_than_erroring(self, owner, db):
+    def test_a_tally_lookup_failure_is_an_error_not_a_zero_tally(self, owner, db):
+        """A zeroed tally claims nobody voted."""
         db.fail("report_votes", "select")
-        body = client.get("/api/v1/reports/rep1/votes", headers=owner["headers"]).json()
-        assert body["tally"] == {"advance": 0, "reject": 0, "maybe": 0}
-        assert body["my_vote"] is None
+        res = client.get("/api/v1/reports/rep1/votes", headers=owner["headers"])
+        assert res.status_code == 503
+        assert res.json()["error"] == "database_unavailable"
 
 
 class TestWithoutSupabase:
-    """Sharing needs the shared database; the rest of the tab must not."""
+    """Sharing works on the local store too: see test_local_team_sharing.py."""
 
-    def test_sharing_says_why_it_cannot_work(self, owner):
+    def test_sharing_an_unknown_report_is_not_found(self, owner):
         res = client.post("/api/v1/reports/any/share", headers=owner["headers"], json={"team_id": "t1"})
+        assert res.status_code == 404
+
+
+class TestTeamReportsOnSupabase:
+    """A teammate finds shared files on the team, not only by a sent link."""
+
+    def test_members_see_what_is_shared_with_the_team(self, owner, teammate, db):
+        share(db)
+        res = client.get("/api/v1/teams/t1/reports", headers=teammate["headers"])
+        assert res.status_code == 200, res.text
+        rows = res.json()["reports"]
+        assert [r["id"] for r in rows] == ["rep1"]
+        assert rows[0]["candidate_name"] == "Anita Rao"
+        assert rows[0]["shared_by"] == "Owner Olsen"
+        assert rows[0]["is_mine"] is False
+
+    def test_nothing_shared_is_an_empty_list(self, teammate, db):
+        assert client.get("/api/v1/teams/t1/reports", headers=teammate["headers"]).json() == {"reports": []}
+
+    def test_non_members_are_refused(self, outsider, db):
+        assert client.get("/api/v1/teams/t1/reports", headers=outsider["headers"]).status_code == 403
+
+    def test_an_outage_is_not_shown_as_nothing_shared(self, teammate, db):
+        db.fail("reports", "select")
+        res = client.get("/api/v1/teams/t1/reports", headers=teammate["headers"])
         assert res.status_code == 503
-        assert "database" in res.json()["message"].lower()
-        assert "comments and votes still work" in res.json()["message"].lower()
+
+
+class TestOwnerOnlyActionsOnSupabase:
+    def test_the_report_says_who_owns_it(self, owner, teammate, db):
+        share(db)
+        db.tables["reports"][0]["report_data"] = {"candidate": {"name": "Anita Rao", "email": "anita@example.com"}}
+        assert client.get("/api/v1/reports/rep1", headers=owner["headers"]).json()["is_owner"] is True
+        assert client.get("/api/v1/reports/rep1", headers=teammate["headers"]).json()["is_owner"] is False
+
+    def test_a_teammate_cannot_email_the_candidate(self, teammate, db):
+        share(db)
+        db.tables["reports"][0]["report_data"] = {"candidate": {"name": "Anita Rao", "email": "anita@example.com"}}
+        res = client.get("/api/v1/reports/rep1/notify/draft?decision=reject", headers=teammate["headers"])
+        assert res.status_code == 403
+
+    def test_a_teammate_cannot_delete_it(self, teammate, db):
+        share(db)
+        assert client.delete("/api/v1/reports/rep1", headers=teammate["headers"]).status_code == 403
+        assert len(db.tables["reports"]) == 1
+
+    def test_deleting_an_unknown_report_is_a_404_not_a_success(self, owner, db):
+        assert client.delete("/api/v1/reports/no-such-report", headers=owner["headers"]).status_code == 404
+
+    def test_the_owner_deletes_it(self, owner, db):
+        assert client.delete("/api/v1/reports/rep1", headers=owner["headers"]).status_code == 204
+        assert db.tables["reports"] == []

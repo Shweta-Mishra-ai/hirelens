@@ -1,5 +1,5 @@
 """
-HireLens — AI Engine (Gemini 2.5 Flash primary, Groq and Anthropic behind it)
+HireLens — AI Engine (Gemini primary, Groq and Anthropic behind it)
 
 Two passes over a resume: extract it into structured JSON, then analyse that
 structure into scores, flags and questions.
@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.core.exceptions import LLMError, AnalysisTimeout
 from app.services.fraud.injection_detection import scan_for_injection
 from app.services.ai.career_trajectory import compute_career_trajectory
+from app.services.ai.redaction import Redaction, redact
 
 logger = logging.getLogger("hirelens")
 
@@ -77,146 +78,323 @@ def extract_json(raw: str) -> dict:
     raise ValueError(f"Cannot parse JSON from response (len={len(raw)}): {raw[:200]!r}")
 
 
-# ── Gemini 2.5 Flash ──────────────────────────────────────────────────────────
-async def _call_gemini(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> str:
+# ── Gemini ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+def gemini_models() -> list[str]:
+    """
+    GEMINI_MODEL as an ordered list: the first is tried first, and each later
+    one takes over when an earlier one is retired, overloaded or
+    rate-limited. A single name still works.
+    """
+    return [m.strip() for m in (settings.GEMINI_MODEL or "").split(",") if m.strip()]
+
+
+def _gemini_thinking_config(model: str) -> dict | None:
+    """
+    How much the model thinks before answering, in the form that model takes.
+
+    Gemini 2.x takes a token budget, and 0 switches thinking off. Gemini 3.x
+    replaced that with a named level (`thinkingLevel`); the docs say the old
+    budget is still accepted for compatibility, that sending both is a 400,
+    and that not every model accepts every level (3.8 Flash has no
+    "minimal"). Extraction and scoring need little deliberation, so the
+    level is configurable and defaults to "low", which the current Flash and
+    Flash-Lite models both accept.
+    """
+    if model.startswith("gemini-2"):
+        return {"thinkingBudget": 0}
+    level = (settings.GEMINI_THINKING_LEVEL or "").strip().lower()
+    return {"thinkingLevel": level} if level else None
+
+
+async def _call_gemini(
+    prompt: str,
+    temperature: float = 0.1,
+    max_tokens: int = 4000,
+    model: str | None = None,
+) -> str:
     import httpx
 
-    # Use stable model name
-    model = "gemini-2.5-flash"
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={settings.GEMINI_API_KEY}"
-    )
+    model = model or (gemini_models() or ["gemini-3.6-flash"])[0]
+    # The key travels in a header, never in the query string. httpx logs every
+    # request line at INFO — URL included — so `?key=...` put the production
+    # Gemini key into the platform's log stream on every single analysis, where
+    # anyone with log access (or a log drain) could read it.
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-            "responseMimeType": "application/json",
-            "thinkingConfig": {
-                "thinkingBudget": 0
-            }
-        },
+    thinking = _gemini_thinking_config(model)
+    generation_config = {
+        "temperature": temperature,
+        # On models that think, reasoning tokens can count against the output
+        # limit; without headroom a long answer is cut off mid-JSON.
+        "maxOutputTokens": max_tokens if model.startswith("gemini-2") else max_tokens + 8192,
+        "responseMimeType": "application/json",
     }
+    if thinking:
+        generation_config["thinkingConfig"] = thinking
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
+    async def post(config: dict):
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            return await client.post(
+                url,
+                json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": config},
+                headers={"x-goog-api-key": settings.GEMINI_API_KEY},
+            )
+
+    try:
+        r = await post(generation_config)
+        if r.status_code == 400 and "thinkingConfig" in generation_config and "thinking" in r.text.lower():
+            # This model rejects the thinking setting it was sent (a level it
+            # does not support, say). Its own default is better than failing
+            # every analysis on a tuning knob.
+            logger.warning(f"Gemini {model} rejected thinkingConfig; retrying with the model default")
+            generation_config.pop("thinkingConfig")
+            r = await post(generation_config)
+    except httpx.HTTPError as e:
+        error_msg = str(e)
+        if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY in error_msg:
+            error_msg = error_msg.replace(settings.GEMINI_API_KEY, "********")
+        raise LLMError(f"Gemini connection error: {error_msg}")
+
+    if r.status_code == 429:
+        raise LLMError(f"Gemini rate limit hit on {model}. Try again in a moment.")
+    if r.status_code == 404:
+        # A retired model — or, since September 2026, a 2.5 model on a project
+        # that never used it — answers 404 on every call.
+        raise LLMError(
+            f"Gemini model '{model}' was not found — it may have been "
+            f"retired. Set GEMINI_MODEL to a current model."
+        )
+    if r.status_code in (500, 502, 503, 504):
+        raise LLMError(f"Gemini model '{model}' is unavailable right now (status {r.status_code}, overloaded).")
+    if r.status_code == 400:
         try:
-            r = await client.post(url, json=payload)
+            body = r.json()
+        except ValueError:
+            body = {}
+        raise LLMError(f"Gemini API error: {body.get('error', {}).get('message', 'Bad request')}")
+    if not r.is_success:
+        raise LLMError(f"Gemini API returned status code {r.status_code}")
 
-            if r.status_code == 429:
-                raise LLMError("Gemini rate limit hit. Try again in a moment.")
-            if r.status_code == 400:
-                body = r.json()
-                raise LLMError(f"Gemini API error: {body.get('error', {}).get('message', 'Bad request')}")
+    try:
+        data = r.json()
+    except ValueError:
+        raise LLMError("Gemini returned a response that is not JSON")
 
-            if not r.is_success:
-                raise LLMError(f"Gemini API returned status code {r.status_code}")
+    candidates = data.get("candidates") or []
+    if not candidates:
+        if (data.get("promptFeedback") or {}).get("blockReason"):
+            raise LLMError(f"Gemini blocked the request: {data['promptFeedback']['blockReason']}")
+        raise LLMError("Gemini returned no candidates")
 
-            data = r.json()
-        except httpx.HTTPError as e:
-            error_msg = str(e)
-            if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY in error_msg:
-                error_msg = error_msg.replace(settings.GEMINI_API_KEY, "********")
-            raise LLMError(f"Gemini connection error: {error_msg}")
+    first = candidates[0] if isinstance(candidates[0], dict) else {}
+    parts = (first.get("content") or {}).get("parts") or []
+    if not parts:
+        reason = first.get("finishReason")
+        if reason in ("SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT"):
+            raise LLMError(f"Gemini blocked the response: {reason}")
+        raise LLMError(f"Gemini returned empty content parts (finishReason={reason})")
 
-        # Safe extraction with helpful error
-        try:
-            candidates = data.get("candidates", [])
-            if not candidates:
-                # Check for safety blocks
-                if data.get("promptFeedback", {}).get("blockReason"):
-                    raise LLMError(f"Gemini blocked the request: {data['promptFeedback']['blockReason']}")
-                raise LLMError("Gemini returned no candidates")
-
-            content = candidates[0].get("content", {})
-            parts = content.get("parts", [])
-            if not parts:
-                raise LLMError("Gemini returned empty content parts")
-
-            return parts[0].get("text", "")
-        except (KeyError, IndexError) as e:
-            raise LLMError(f"Unexpected Gemini response structure: {e}. Raw: {str(data)[:200]}")
+    # Thinking models can return thought summaries and signatures as extra
+    # parts; only the answer text is the JSON.
+    text = "".join(
+        part.get("text", "")
+        for part in parts
+        if isinstance(part, dict) and not part.get("thought")
+    )
+    if not text.strip():
+        raise LLMError(f"Gemini returned no answer text (finishReason={first.get('finishReason')})")
+    return text
 
 
 # ── Groq fallback ─────────────────────────────────────────────────────────────
 async def _call_groq(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> str:
+    """
+    Groq's OpenAI-compatible chat API in JSON mode.
+
+    The default model, openai/gpt-oss-120b, is a reasoning model: its
+    reasoning comes back in a separate `reasoning` field, and those tokens
+    count against the completion limit, so the limit gets headroom and the
+    effort is kept low for an extraction task. `reasoning_effort` is sent only
+    to the gpt-oss models, which accept it — other models reject unknown
+    values with a 400.
+    """
     import httpx
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    model = settings.GROQ_MODEL
+    reasoning = model.startswith("openai/gpt-oss")
+    wanted = max_tokens + 1024 if reasoning else max_tokens
+    # Keep the whole request inside GROQ_MAX_REQUEST_TOKENS: on the free plan
+    # a request bigger than the per-minute token limit fails every time. The
+    # prompt is estimated at ~3.5 characters per token, conservatively.
+    prompt_tokens = int((len(prompt) + 200) / 3.5)
+    budget = settings.GROQ_MAX_REQUEST_TOKENS - prompt_tokens
+    if budget < 1024:
+        raise LLMError(
+            f"Groq request too large for GROQ_MAX_REQUEST_TOKENS="
+            f"{settings.GROQ_MAX_REQUEST_TOKENS} (prompt ~{prompt_tokens} tokens)."
+        )
+    completion_tokens = min(wanted, budget)
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a resume analysis AI. Always respond with valid JSON only. No markdown, no prose outside JSON.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": temperature,
+        "max_completion_tokens": completion_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    if reasoning:
+        payload["reasoning_effort"] = "low"
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
-            json={
-                "model": "llama-3.3-70b-versatile",
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": "You are a resume analysis AI. Always respond with valid JSON only. No markdown, no prose outside JSON.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"},
-            },
+            json=payload,
         )
 
-        if r.status_code == 429:
-            raise LLMError("Groq rate limit hit.")
-        r.raise_for_status()
-
+    if r.status_code == 429:
+        raise LLMError("Groq rate limit hit.")
+    if r.status_code == 413:
+        raise LLMError("Groq request too large for this plan's token limit.")
+    if r.status_code == 404:
+        raise LLMError(
+            f"Groq model '{model}' was not found — it may have been retired. "
+            f"Set GROQ_MODEL to a current model."
+        )
+    if r.status_code in (500, 502, 503, 504):
+        raise LLMError(f"Groq is unavailable right now (status {r.status_code}, overloaded).")
+    if r.status_code == 400:
         try:
-            return r.json()["choices"][0]["message"]["content"]
-        except (KeyError, IndexError) as e:
-            raise LLMError(f"Unexpected Groq response: {e}")
+            message = (r.json().get("error") or {}).get("message") or "Bad request"
+        except ValueError:
+            message = "Bad request"
+        raise LLMError(f"Groq API error: {message}")
+    r.raise_for_status()
+
+    try:
+        choice = r.json()["choices"][0]
+        content = choice["message"].get("content") or ""
+    except (KeyError, IndexError, ValueError, AttributeError) as e:
+        raise LLMError(f"Unexpected Groq response: {e}")
+    if not content.strip():
+        raise LLMError(f"Groq returned no answer text (finish_reason={choice.get('finish_reason')})")
+    return content
 
 
 # ── Anthropic fallback ────────────────────────────────────────────────────────
+def _anthropic_client():
+    """
+    The Anthropic client for one call.
+
+    Built through the official SDK rather than a hand-made HTTP request: the
+    SDK owns the API version header and the response envelope, which is
+    exactly what broke here before — the hard-coded model was retired and the
+    first content block is no longer guaranteed to be text.
+
+    Retries are off at this layer because llm_call() already owns the retry
+    and fallback policy; stacking the SDK's own retries on top multiplied the
+    worst-case wait by three. Kept as a factory so tests can substitute a
+    transport.
+    """
+    import anthropic
+
+    return anthropic.AsyncAnthropic(
+        api_key=settings.ANTHROPIC_API_KEY,
+        max_retries=0,
+        timeout=90.0,
+    )
+
+
 async def _call_anthropic(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> str:
-    import httpx
+    """
+    Ask Claude for a JSON answer.
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        r = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": settings.ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "claude-3-5-sonnet-20241022",
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "system": "You are a resume analysis AI. Always respond with valid JSON only. No markdown, no prose.",
-                "messages": [{"role": "user", "content": prompt}],
-            },
+    `temperature` is accepted for signature parity with the other providers
+    and deliberately not sent: current Claude models reject non-default
+    sampling parameters with a 400. Thinking is always on for these models
+    and counts against `max_tokens`, so the budget is raised to leave room for
+    both the reasoning and the JSON, with effort kept at `medium` for what is
+    a structured extraction task.
+    """
+    import anthropic
+
+    client = _anthropic_client()
+    try:
+        response = await client.beta.messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=max(16000, max_tokens),
+            system=(
+                "You are a resume analysis AI. Always respond with valid JSON only. "
+                "No markdown, no prose."
+            ),
+            messages=[{"role": "user", "content": prompt}],
+            output_config={"effort": "medium"},
+            # Server-side refusal fallback: if a safety classifier declines,
+            # the API re-runs the same request on a fallback model inside this
+            # call, routed by refusal category.
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
         )
+    except anthropic.RateLimitError:
+        raise LLMError("Anthropic rate limit hit.")
+    except anthropic.NotFoundError:
+        raise LLMError(
+            f"Anthropic model '{settings.ANTHROPIC_MODEL}' was not found — it may "
+            f"have been retired. Set ANTHROPIC_MODEL to a current model."
+        )
+    except anthropic.APIStatusError as e:
+        raise LLMError(f"Anthropic API error {e.status_code}: {e.message}")
+    except anthropic.APIConnectionError as e:
+        raise LLMError(f"Anthropic connection error: {e}")
+    finally:
+        await client.close()
 
-        if r.status_code == 429:
-            raise LLMError("Anthropic rate limit hit.")
-        r.raise_for_status()
+    if response.stop_reason == "refusal":
+        raise LLMError("Anthropic blocked the request (refusal).")
 
-        try:
-            return r.json()["content"][0]["text"]
-        except (KeyError, IndexError) as e:
-            raise LLMError(f"Unexpected Anthropic response: {e}")
+    text = "".join(
+        getattr(block, "text", "") or ""
+        for block in (response.content or [])
+        if getattr(block, "type", None) == "text"
+    )
+    if not text.strip():
+        raise LLMError(
+            f"Unexpected Anthropic response: no text content (stop_reason={response.stop_reason})"
+        )
+    return text
 
 
 # ── Provider dispatcher with fallback ─────────────────────────────────────────
 async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000) -> dict:
     """
     Call LLM with automatic provider fallback.
-    Priority: Gemini 2.5 Flash → Groq → Anthropic
-    Each provider: 2 attempts with 2s backoff.
+    Priority: each GEMINI_MODEL in order → Groq → Anthropic.
+    Each provider: 2 attempts with 2s backoff, except that a rate limit, a
+    retired model or an overload moves straight to the next provider.
     """
-    providers = []
-    if settings.GEMINI_API_KEY:
-        providers.append(("gemini-2.5-flash", _call_gemini))
-    if settings.GROQ_API_KEY:
-        providers.append(("groq-gpt-oss-120b", _call_groq))
-    if settings.ANTHROPIC_API_KEY:
-        providers.append(("claude-sonnet", _call_anthropic))
+    from functools import partial
+
+    available = {
+        "gemini": [
+            (f"gemini:{model}", partial(_call_gemini, model=model))
+            for model in gemini_models()
+        ] if settings.GEMINI_API_KEY else [],
+        "groq": [(f"groq:{settings.GROQ_MODEL}", _call_groq)] if settings.GROQ_API_KEY else [],
+        "anthropic": (
+            [(f"anthropic:{settings.ANTHROPIC_MODEL}", _call_anthropic)]
+            if settings.ANTHROPIC_API_KEY else []
+        ),
+    }
+    order = [p.strip().lower() for p in (settings.LLM_PROVIDER_ORDER or "").split(",") if p.strip()]
+    # Any configured provider left out of the order still runs, last, so a
+    # typo in the setting cannot silently remove a fallback.
+    order += [name for name in ("gemini", "groq", "anthropic") if name not in order]
+    providers = [entry for name in order for entry in available.get(name, [])]
 
     if not providers:
         raise LLMError(
@@ -246,7 +424,11 @@ async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000
                 # three rate-limited providers held it for six seconds
                 # before failing. Under load that is worker time spent
                 # waiting for nothing.
-                if "rate limit" in str(e).lower():
+                # The same goes for a retired model and an overloaded one:
+                # asking the same model again two seconds later is wasted
+                # time when another model is next in line.
+                lowered = str(e).lower()
+                if any(k in lowered for k in ("rate limit", "not found", "overloaded", "too large")):
                     break
                 if attempt == 0:
                     await asyncio.sleep(2)
@@ -273,6 +455,54 @@ async def llm_call(prompt: str, temperature: float = 0.1, max_tokens: int = 4000
         f"Last error: {last_error}. "
         "Check your API keys and network connectivity."
     )
+
+
+# ── Prompt input helpers ──────────────────────────────────────────────────────
+
+# How much of the extracted structure the analysis and JD-match prompts carry.
+ANALYSIS_INPUT_CHARS = 12_000
+
+
+def _compact_json(data, limit: int) -> str:
+    """
+    Serialise for a prompt without wasting the budget on whitespace.
+
+    This used to be `json.dumps(data, indent=2)[:6000]`. Indentation is a
+    third or more of that output, and a hard slice cuts the JSON wherever the
+    limit falls — so for anyone with a long work history, education, projects
+    and certifications (which come last) never reached the model at all, and
+    it then dutifully flagged them as missing. Compact separators fit roughly
+    twice the content in the same space; the limit is a backstop, not a cut
+    that routinely lands.
+    """
+    text = json.dumps(data, separators=(",", ":"), ensure_ascii=False, default=str)
+    if len(text) > limit:
+        logger.warning(f"Prompt input truncated from {len(text)} to {limit} chars")
+        return text[:limit]
+    return text
+
+
+def _skill_list(value) -> list[str]:
+    """
+    A list of skill names from whatever shape the model answered with.
+
+    `list(value)` on a string answer — "Python, Go" — produces one entry per
+    character, which is how a candidate card ends up showing P, y, t, h, o, n
+    as six missing skills.
+    """
+    if isinstance(value, str):
+        parts = re.split(r"[,;\n]", value)
+    elif isinstance(value, (list, tuple)):
+        parts = value
+    else:
+        return []
+    out = []
+    for item in parts:
+        if isinstance(item, (str, int, float)):
+            text = str(item).strip()
+            if text:
+                out.append(text)
+    return out
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -353,11 +583,21 @@ RULES:
 - Extract information EXACTLY as written — do not interpret, summarize, or add
 - If a field is missing from the resume, use null (not empty string)
 - Include ALL experience entries, even if sparse
-- Metrics must be exact quotes — critical for authenticity check later"""
+- Metrics must be exact quotes — critical for authenticity check later
+- Contact details and the candidate's name may appear as placeholders such as
+  [[EMAIL_1]], [[PHONE_1]], [[URL_1]] and [[CANDIDATE_NAME]]. They are
+  redactions made by the system for privacy, not resume content. Put each
+  placeholder exactly as written in the field it belongs to (for example
+  "email": "[[EMAIL_1]]", "github": "[[URL_2]]" for a GitHub link)."""
 
 
 ANALYSIS_PROMPT = """You are a senior HR consultant with 15 years recruiting for tech companies globally.
 Analyze this extracted resume data and produce a complete credibility assessment.
+
+Contact details and the candidate's name may appear as placeholders such as
+[[EMAIL_1]] or [[CANDIDATE_NAME]]. The system replaced them for privacy before
+analysis. Treat them as present and valid; never flag a placeholder, and never
+count it as missing contact information.
 
 EXTRACTED RESUME DATA:
 {extracted}
@@ -578,12 +818,17 @@ class AnalysisEngine:
                 f"invisible_chars={injection_scan['has_invisible_chars']}"
             )
 
+        redaction = (
+            redact(raw_text) if settings.REDACT_PII_FOR_LLM else Redaction(text=raw_text)
+        )
+
         try:
             async with asyncio.timeout(settings.ANALYSIS_TIMEOUT_SECONDS):
 
-                # Stage 1: Extract
+                # Stage 1: Extract — from text with contact details and the
+                # candidate's name replaced by placeholders (see redaction.py).
                 await progress("extracting", 15)
-                extract_prompt = EXTRACT_PROMPT.format(text=raw_text[:9000])
+                extract_prompt = EXTRACT_PROMPT.format(text=redaction.text[:9000])
                 extracted = await llm_call(extract_prompt, temperature=0.05, max_tokens=3000)
                 logger.info(
                     f"Extracted: "
@@ -596,12 +841,13 @@ class AnalysisEngine:
 
                 # Stage 2: Full analysis
                 analysis_prompt = ANALYSIS_PROMPT.format(
-                    extracted=json.dumps(extracted, indent=2)[:6000]
+                    extracted=_compact_json(extracted, ANALYSIS_INPUT_CHARS)
                 )
                 analysis = await llm_call(analysis_prompt, temperature=0.1, max_tokens=4000)
 
                 await progress("complete", 100)
-                return self._merge(extracted, analysis, injection_scan)
+                # Put the real contact details back, on this server.
+                return redaction.restore(self._merge(extracted, analysis, injection_scan))
 
         except asyncio.TimeoutError:
             logger.error(f"Analysis timed out after {settings.ANALYSIS_TIMEOUT_SECONDS}s")
@@ -812,8 +1058,15 @@ class AnalysisEngine:
 
         Returns: {match_percent, matching_skills, missing_skills, verdict, rationale}
         """
+        # Contact fields are left out: matching skills to a role needs none of
+        # them, and this prompt goes to the same third-party providers.
+        candidate = resume_result.get("candidate") or {}
         candidate_view = {
-            "candidate": resume_result.get("candidate") or {},
+            "candidate": {
+                k: candidate.get(k)
+                for k in ("current_role", "total_experience_years", "location")
+                if isinstance(candidate, dict)
+            },
             "skills": resume_result.get("skills") or {},
             "experience": [
                 {
@@ -834,11 +1087,18 @@ class AnalysisEngine:
         }
 
         prompt = JD_MATCH_PROMPT.format(
-            candidate_json=json.dumps(candidate_view, indent=2)[:6000],
+            candidate_json=_compact_json(candidate_view, ANALYSIS_INPUT_CHARS),
             jd_text=jd_text[:5000],
         )
 
-        raw = await llm_call(prompt, temperature=0.1, max_tokens=1500)
+        # Bounded like the main analysis. Without it, three providers x two
+        # attempts x a 90s timeout could hold a batch concurrency slot for
+        # nine minutes on one candidate.
+        try:
+            async with asyncio.timeout(settings.ANALYSIS_TIMEOUT_SECONDS):
+                raw = await llm_call(prompt, temperature=0.1, max_tokens=1500)
+        except asyncio.TimeoutError:
+            raise AnalysisTimeout()
         return self._merge_jd_match(raw)
 
     def _merge_jd_match(self, raw: dict) -> dict:
@@ -859,8 +1119,8 @@ class AnalysisEngine:
 
         return {
             "match_percent": pct,
-            "matching_skills": list(raw.get("matching_skills") or [])[:25],
-            "missing_skills": list(raw.get("missing_skills") or [])[:25],
+            "matching_skills": _skill_list(raw.get("matching_skills"))[:25],
+            "missing_skills": _skill_list(raw.get("missing_skills"))[:25],
             "verdict": verdict,
             "rationale": str(raw.get("rationale") or ""),
         }

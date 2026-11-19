@@ -89,8 +89,9 @@ class TestProviderFallbackChain:
 
         result = await engine.llm_call("test prompt")
         assert result == {"result": "ok"}
-        # Rate-limit should break out after the FIRST attempt, not retry twice
-        assert call_count["gemini"] == 1
+        # A rate limit breaks out after the FIRST attempt on each Gemini model
+        # rather than retrying it.
+        assert call_count["gemini"] == len(engine.gemini_models())
 
     @pytest.mark.asyncio
     async def test_all_providers_failing_raises_llm_error(self, monkeypatch):
@@ -129,16 +130,65 @@ class TestProviderModelNamesAreCurrent:
     (a provider's hardcoded model string silently becoming invalid/deprecated)."""
 
     def test_groq_model_is_not_the_known_deprecated_one(self):
-        import inspect
-        from app.services.ai import engine
-        source = inspect.getsource(engine._call_groq)
-        assert "llama-3.1-70b-versatile" not in source, (
+        from app.core.config import settings
+        assert settings.GROQ_MODEL != "llama-3.1-70b-versatile", (
             "llama-3.1-70b-versatile was deprecated by Groq in Jan 2025 — "
             "using it makes the Groq fallback silently fail on every call."
         )
 
-    def test_anthropic_model_string_is_set(self):
+    def test_anthropic_model_is_not_a_retired_one(self):
+        from app.core.config import settings
+        assert settings.ANTHROPIC_MODEL
+        assert not settings.ANTHROPIC_MODEL.startswith("claude-3"), (
+            "Claude 3.x models are retired; the Anthropic fallback would 404 on every call."
+        )
+
+    def test_model_names_are_configuration_not_code(self):
         import inspect
         from app.services.ai import engine
-        source = inspect.getsource(engine._call_anthropic)
-        assert '"model":' in source
+        for fn in (engine._call_gemini, engine._call_groq, engine._call_anthropic):
+            source = inspect.getsource(fn)
+            assert "gemini-2.5-flash" not in source
+            assert "llama-3.3-70b-versatile" not in source
+            assert "claude-sonnet" not in source
+
+
+
+class TestProviderOrder:
+    @pytest.mark.asyncio
+    async def test_groq_can_be_put_first(self, monkeypatch):
+        from app.core.config import settings
+        from app.services.ai import engine
+        _set_keys(monkeypatch, gemini="k1", groq="k2")
+        monkeypatch.setattr(settings, "LLM_PROVIDER_ORDER", "groq,gemini")
+        called = []
+
+        async def gemini(prompt, **kw):
+            called.append("gemini")
+            return '{"via": "gemini"}'
+
+        async def groq(prompt, **kw):
+            called.append("groq")
+            return '{"via": "groq"}'
+
+        monkeypatch.setattr(engine, "_call_gemini", gemini)
+        monkeypatch.setattr(engine, "_call_groq", groq)
+        assert await engine.llm_call("p") == {"via": "groq"}
+        assert called == ["groq"]
+
+    @pytest.mark.asyncio
+    async def test_a_provider_missing_from_the_order_still_runs_last(self, monkeypatch):
+        from app.core.config import settings
+        from app.services.ai import engine
+        _set_keys(monkeypatch, gemini="k1", groq="k2")
+        monkeypatch.setattr(settings, "LLM_PROVIDER_ORDER", "groq")
+
+        async def failing_groq(prompt, **kw):
+            raise LLMError("Groq rate limit hit.")
+
+        async def gemini(prompt, **kw):
+            return '{"via": "gemini"}'
+
+        monkeypatch.setattr(engine, "_call_groq", failing_groq)
+        monkeypatch.setattr(engine, "_call_gemini", gemini)
+        assert await engine.llm_call("p") == {"via": "gemini"}

@@ -73,7 +73,36 @@ export async function classifyAuthFailure(
   }
 }
 
-/** Where to send someone whose session has genuinely ended. */
+/**
+ * Where the sign-in guard (RequireAuth) sends the browser once the session is
+ * gone.
+ *
+ * Signing out clears the token, the guard re-renders and redirects — and
+ * that redirect used to be a bare "/login", which landed after, and so
+ * replaced, whatever the page had asked for: "/login?session=expired" lost its
+ * "your session has ended" notice, and "/login?deleted=1" its confirmation.
+ * A page now names the destination before signing out, and the guard uses it.
+ */
+let signInDestination: string | null = null;
+
+export function setSignInDestination(url: string): void {
+  signInDestination = url;
+}
+
+/** The destination a sign-out asked for, or plain "/login". */
+export function pendingSignInDestination(): string {
+  return signInDestination ?? "/login";
+}
+
+/** Forget it once someone is signed in again. */
+export function clearSignInDestination(): void {
+  signInDestination = null;
+}
+
+/** Where to send someone whose session has genuinely ended. Also tells the
+ * sign-in guard, so its own redirect goes to the same place. */
 export function signInUrl(reason: "expired" = "expired"): string {
-  return `/login?session=${reason}`;
+  const url = `/login?session=${reason}`;
+  setSignInDestination(url);
+  return url;
 }

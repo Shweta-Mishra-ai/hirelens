@@ -95,14 +95,13 @@ def _assert_can_access(report_id: str, user_id: str, db) -> None:
             logger.warning(f"Co-pilot access check via DB failed for {report_id}: {e}")
             lookup_failed = True
 
-    # Local path: the in-process copy first, then the durable store.
+    # Local path: the owner's in-process copy, then the durable store, which
+    # also answers for a teammate the report is shared with.
     mem_report = _jobs.get(f"report_{report_id}")
-    if isinstance(mem_report, dict) and mem_report:
-        if mem_report.get("_owner_user_id") != user_id:
-            raise NotFoundError(f"Report '{report_id}' not found.")
+    if isinstance(mem_report, dict) and mem_report.get("_owner_user_id") == user_id:
         return
 
-    if local_db.get_report(report_id, user_id) is not None:
+    if local_db.can_view_report(report_id, user_id):
         return
 
     if lookup_failed:
@@ -116,7 +115,7 @@ def _assert_can_access(report_id: str, user_id: str, db) -> None:
 
 
 @router.get("/{report_id}/copilot", tags=["Interview Co-Pilot"])
-async def get_copilot_data(
+def get_copilot_data(
     report_id: str,
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
@@ -153,7 +152,7 @@ async def get_copilot_data(
 
 
 @router.post("/{report_id}/copilot", tags=["Interview Co-Pilot"])
-async def save_copilot_data(
+def save_copilot_data(
     report_id: str,
     body: CoPilotSaveRequest,
     current_user: dict = Depends(get_current_user),

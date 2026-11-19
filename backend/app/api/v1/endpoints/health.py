@@ -3,7 +3,8 @@
 import logging
 from fastapi import APIRouter, Depends
 from app.core.config import settings
-from app.core.dependencies import get_db, get_redis, get_current_user
+from app.core.dependencies import get_db, get_redis, require_admin
+from app.core import schema_check
 
 logger = logging.getLogger("hirelens")
 router = APIRouter()
@@ -37,6 +38,18 @@ def _snapshot(db, redis) -> dict:
             db_error = str(e)
             logger.warning(f"Health check DB error: {e}")
 
+    # Are the migrations this code needs actually applied? Cached for ten
+    # minutes, so an uptime monitor pinging this route costs nothing extra.
+    schema_status = "not_configured"
+    schema_detail = None
+    if db_status == "ok":
+        report = schema_check.cached(db)
+        schema_status = report.public_status
+        if report.status == "missing":
+            schema_detail = report.describe()
+        elif report.status == "unknown":
+            schema_detail = "; ".join(f"{t}: {e}" for t, e in report.errors.items())
+
     # Test Redis
     redis_status = "not_configured"
     redis_error = None
@@ -53,7 +66,7 @@ def _snapshot(db, redis) -> dict:
     llm_configured = bool(settings.GEMINI_API_KEY or settings.GROQ_API_KEY or settings.ANTHROPIC_API_KEY)
 
     overall = "ok" if llm_configured else "degraded"
-    if db_status == "error" or redis_status == "error":
+    if db_status == "error" or redis_status == "error" or schema_status == "missing_migrations":
         overall = "degraded"
 
     payload = {
@@ -62,6 +75,9 @@ def _snapshot(db, redis) -> dict:
         "env": settings.APP_ENV,
         "services": {
             "database": db_status,
+            # "missing_migrations" means a file in backend/sql has not been
+            # run; which one is in the startup log and /health/diagnostics.
+            "schema": schema_status,
             "redis": redis_status,
             "gemini": "configured" if settings.GEMINI_API_KEY else "not_configured",
             "groq": "configured" if settings.GROQ_API_KEY else "not_configured",
@@ -79,7 +95,7 @@ def _snapshot(db, redis) -> dict:
 
     payload["errors"] = {
         key: value
-        for key, value in (("database", db_error), ("redis", redis_error))
+        for key, value in (("database", db_error), ("schema", schema_detail), ("redis", redis_error))
         if value
     }
 
@@ -87,7 +103,7 @@ def _snapshot(db, redis) -> dict:
 
 
 @router.get("/health", tags=["Health"])
-async def health(db=Depends(get_db), redis=Depends(get_redis)):
+def health(db=Depends(get_db), redis=Depends(get_redis)):
     """
     Public health check, used by Render and by uptime monitors.
 
@@ -102,13 +118,15 @@ async def health(db=Depends(get_db), redis=Depends(get_redis)):
 
 
 @router.get("/health/diagnostics", tags=["Health"])
-async def diagnostics(
-    current_user: dict = Depends(get_current_user),
+def diagnostics(
+    current_user: dict = Depends(require_admin),
     db=Depends(get_db),
     redis=Depends(get_redis),
 ):
     """
     Detailed system diagnostics & load health metrics.
+
+    Operators only (ADMIN_EMAILS): this returns raw provider error text.
     Returns metrics on job queues, system limits, and process capacity.
 
     Requires authentication — this exposes internal process memory, active
@@ -133,7 +151,7 @@ async def diagnostics(
     return {
         "health": h,
         "capacity": {
-            "max_supported_users": 5000,
+            "max_supported_users": settings.MAX_REGISTERED_USERS,
             "bulk_concurrency": settings.BULK_CONCURRENCY,
             "rate_limit_per_minute": settings.RATE_LIMIT_PER_MINUTE,
             "max_file_size_mb": settings.MAX_FILE_SIZE_MB,

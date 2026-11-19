@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { FileQuestion, LayoutDashboard } from "lucide-react";
+import { LegacyReportRedirect } from "@/components/LegacyReportRedirect";
 
 export default function NotFound() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-canvas px-5">
+      <LegacyReportRedirect />
       <div className="w-full max-w-md text-center">
         <div
           aria-hidden

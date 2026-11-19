@@ -182,7 +182,7 @@ class TestNamesInTheUi:
     def test_a_candidate_email_is_signed_with_a_name(self, owner, db, monkeypatch):
         sent = []
 
-        async def fake_send(to_email, subject, body):
+        async def fake_send(to_email, subject, body, reply_to=None):
             sent.append(body)
             return True
 

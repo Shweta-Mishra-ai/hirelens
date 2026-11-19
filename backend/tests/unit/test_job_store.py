@@ -175,16 +175,36 @@ class TestRedisFailureIsGraceful:
 
 
 class TestCleanupStale:
-    def test_removes_entries_older_than_max_age(self):
+    def test_removes_entries_not_written_for_max_age(self):
         redis = FakeRedis()
         store = PersistentJobStore(get_redis_fn=lambda: redis)
-        store["old-job"] = {"created_at": 1000}
-        store["new-job"] = {"created_at": 99999999999}
+        store["old-job"] = {"status": "complete"}
+        store["new-job"] = {"status": "running"}
+        store._written_at["old-job"] -= 3600
 
         removed = store.cleanup_stale(max_age_seconds=10)
         assert removed == 1
         assert "old-job" not in store._mem
         assert "new-job" in store._mem
+
+    def test_a_report_blob_with_an_iso_created_at_does_not_crash_cleanup(self):
+        """
+        Regression: report blobs carry created_at as an ISO string, job
+        records as a float. Cleanup compared the two and raised TypeError —
+        inside the upload handlers, so every upload failed with a 500 once
+        more than 100 entries were held.
+        """
+        store = PersistentJobStore(get_redis_fn=lambda: None)
+        store["job-1"] = {"created_at": 1000.0, "status": "complete"}
+        store["report_abc"] = {"created_at": "2026-01-01T00:00:00+00:00"}
+        store._written_at["job-1"] -= 7200
+        store._written_at["report_abc"] -= 7200
+        assert store.cleanup_stale(max_age_seconds=3600) == 2
+
+    def test_an_entry_still_being_updated_is_not_removed(self):
+        store = PersistentJobStore(get_redis_fn=lambda: None)
+        store["job"] = {"created_at": 0.0, "status": "running"}
+        assert store.cleanup_stale(max_age_seconds=3600) == 0
 
     def test_entries_without_created_at_are_kept(self):
         redis = FakeRedis()

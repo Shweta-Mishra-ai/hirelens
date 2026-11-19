@@ -15,11 +15,16 @@ import {
   X,
   PanelLeftClose,
   PanelLeftOpen,
+  ShieldOff,
+  UserCog,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { initials } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { Skeleton } from "@/components/ui/Feedback";
+import { UsageMeter } from "@/components/UsageMeter";
+import { APIError, authAPI } from "@/lib/api";
+import { clearSignInDestination, pendingSignInDestination } from "@/lib/session";
 
 /**
  * Application chrome: a persistent left sidebar plus a slim top bar.
@@ -116,9 +121,11 @@ function NavList({
 }
 
 function UserMenu({ collapsed }: { collapsed: boolean }) {
-  const { user, logout } = useAuthStore();
+  const { user, token, logout } = useAuthStore();
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  const [signingOutAll, setSigningOutAll] = useState(false);
+  const [menuError, setMenuError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -184,6 +191,15 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
             </div>
             <div className="truncate text-xs text-content-faint">{user?.email}</div>
           </div>
+          <Link
+            role="menuitem"
+            href="/account"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-2 px-3 py-2.5 text-sm text-content-muted transition-colors hover:bg-canvas-inset hover:text-content"
+          >
+            <UserCog aria-hidden className="size-4" />
+            Account and plan
+          </Link>
           <button
             role="menuitem"
             type="button"
@@ -196,6 +212,42 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
             <LogOut aria-hidden className="size-4" />
             Sign out
           </button>
+          <button
+            role="menuitem"
+            type="button"
+            disabled={signingOutAll}
+            onClick={async () => {
+              if (!token) return;
+              setSigningOutAll(true);
+              setMenuError(null);
+              try {
+                await authAPI.logoutAll(token);
+                logout();
+                router.replace("/login");
+              } catch (e) {
+                // Stay signed in and say so: claiming every device was signed
+                // out when the server did not record it would be the one
+                // dangerous answer here.
+                setMenuError(e instanceof APIError ? e.message : "Could not sign out other devices.");
+              } finally {
+                setSigningOutAll(false);
+              }
+            }}
+            className="flex w-full items-center gap-2 border-t border-line-subtle px-3 py-2.5 text-sm text-content-muted transition-colors hover:bg-canvas-inset hover:text-content disabled:opacity-60"
+          >
+            <ShieldOff aria-hidden className="size-4" />
+            {signingOutAll ? "Signing out…" : "Sign out of all devices"}
+          </button>
+          <div className="flex gap-3 border-t border-line-subtle px-3 py-2 text-2xs text-content-faint">
+            <Link href="/privacy" className="hover:text-content-muted">Privacy</Link>
+            <Link href="/terms" className="hover:text-content-muted">Terms</Link>
+            <Link href="/contact" className="hover:text-content-muted">Contact</Link>
+          </div>
+          {menuError && (
+            <p role="alert" className="px-3 pb-2.5 text-xs text-critical">
+              {menuError}
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -248,6 +300,7 @@ function SidebarBody({
       )}
 
       <NavList collapsed={collapsed} onNavigate={onNavigate} />
+      <UsageMeter collapsed={collapsed} />
       <UserMenu collapsed={collapsed} />
     </>
   );
@@ -295,6 +348,7 @@ export function AppShell({
   // desync the server-rendered markup from the first client paint.
   useEffect(() => {
     try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- browser storage is only readable after hydration
       setCollapsed(window.localStorage.getItem(COLLAPSE_KEY) === "1");
     } catch {
       // Private mode or blocked storage — the default (expanded) is fine.
@@ -313,8 +367,15 @@ export function AppShell({
     });
   }
 
-  // Close the mobile drawer on navigation, and lock body scroll while open.
-  useEffect(() => setMobileOpen(false), [pathname]);
+  // Close the mobile drawer on navigation. Done while rendering, not in an
+  // effect, so the new page never paints with the old drawer still open.
+  const [drawerPath, setDrawerPath] = useState(pathname);
+  if (drawerPath !== pathname) {
+    setDrawerPath(pathname);
+    setMobileOpen(false);
+  }
+
+  // Lock body scroll while the drawer is open.
   useEffect(() => {
     if (!mobileOpen) return;
     const previous = document.body.style.overflow;
@@ -412,7 +473,11 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   useEffect(() => {
-    if (hasHydrated && !token) router.replace("/login");
+    if (!hasHydrated) return;
+    // Going to the destination the sign-out named (lib/session.ts), rather
+    // than a bare /login that would land last and wipe its message.
+    if (!token) router.replace(pendingSignInDestination());
+    else clearSignInDestination();
   }, [hasHydrated, token, router]);
 
   if (!hasHydrated || !token) {

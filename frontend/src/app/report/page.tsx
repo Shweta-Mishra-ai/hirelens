@@ -1,6 +1,6 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { Suspense, useEffect, useState, useCallback } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   Sparkles,
   ScanLine,
+  Trash2,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { classifyAuthFailure, signInUrl } from "@/lib/session";
@@ -39,7 +40,7 @@ import type {
 import { VerdictStamp, verdictFromRecommendation, verdictHint } from "@/components/VerdictStamp";
 import { AppShell, PageHeader, RequireAuth } from "@/components/AppShell";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
+import { Button, LinkButton } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input, Textarea } from "@/components/ui/Field";
 import { Alert, EmptyState, Skeleton } from "@/components/ui/Feedback";
@@ -81,13 +82,20 @@ const DEFAULT_SCORECARD: ScorecardItem[] = [
 ];
 
 function ReportContent() {
-  const params = useParams<{ id: string }>();
+  // The id rides in the query string: this page is pre-rendered once and
+  // served for every report. See lib/routes.ts.
+  const searchParams = useSearchParams();
+  const params = { id: searchParams.get("id") ?? "" };
   const router = useRouter();
   const { user, token, logout } = useAuthStore();
 
   const [report, setReport] = useState<Report | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // A link without an id has nothing to load: say so instead of showing the
+  // loading skeleton forever.
+  const [loading, setLoading] = useState(Boolean(params.id));
+  const [error, setError] = useState<string | null>(
+    params.id ? null : "This link doesn't say which report to open.",
+  );
   const [tab, setTab] = useState("overview");
 
   // Decision + candidate notification
@@ -129,6 +137,10 @@ function ReportContent() {
   const [copilotSuccess, setCopilotSuccess] = useState(false);
   const [copilotError, setCopilotError] = useState<string | null>(null);
 
+  // Deletion
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   /* ── Load ─────────────────────────────────────────────────────────────── */
 
   useEffect(() => {
@@ -160,6 +172,25 @@ function ReportContent() {
       cancelled = true;
     };
   }, [params.id, token, logout, router]);
+
+  /* ── Delete ───────────────────────────────────────────────────────────── */
+
+  const deleteReport = useCallback(async () => {
+    if (!token || !params.id || !report) return;
+    const name = report.candidate?.name || "this candidate";
+    if (!window.confirm(
+      `Delete ${name}'s file?\n\nThe report, its interview notes, comments and votes are removed for you and your team. This cannot be undone.`,
+    )) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await reportsAPI.delete(params.id, token);
+      router.replace("/dashboard");
+    } catch (e) {
+      setDeleteError(e instanceof APIError ? e.message : "The file could not be deleted. It is unchanged — please try again.");
+      setDeleting(false);
+    }
+  }, [token, params.id, report, router]);
 
   /* ── Decision ─────────────────────────────────────────────────────────── */
 
@@ -307,6 +338,7 @@ function ReportContent() {
   }, [token, params.id]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     if (tab === "discuss") void loadDiscussData();
   }, [tab, loadDiscussData]);
 
@@ -350,15 +382,22 @@ function ReportContent() {
     [token, params.id],
   );
 
+  /** Share with a team, or stop sharing (null). */
   const shareWithTeam = useCallback(
-    async (teamId: string) => {
+    async (teamId: string | null) => {
       if (!token || !params.id) return;
       setSharing(true);
+      setDiscussError(null);
       try {
-        await collaborationAPI.share(params.id, teamId, token);
+        if (teamId) await collaborationAPI.share(params.id, teamId, token);
+        else await collaborationAPI.unshare(params.id, token);
         setReport((prev) => (prev ? { ...prev, team_id: teamId } : prev));
       } catch (e) {
-        setDiscussError(e instanceof APIError ? e.message : "Could not share this report.");
+        setDiscussError(
+          e instanceof APIError
+            ? e.message
+            : teamId ? "Could not share this report." : "Could not stop sharing this report.",
+        );
       } finally {
         setSharing(false);
       }
@@ -409,6 +448,7 @@ function ReportContent() {
   }, [token, params.id, report]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
     if (tab === "copilot") void loadCopilotData();
   }, [tab, loadCopilotData]);
 
@@ -463,9 +503,9 @@ function ReportContent() {
             title={error ?? "Report not found"}
             description="It may have been deleted, or the link may be wrong."
             action={
-              <Link href="/dashboard">
-                <Button variant="primary">Back to dashboard</Button>
-              </Link>
+              <LinkButton href="/dashboard" variant="primary">
+                Back to dashboard
+              </LinkButton>
             }
           />
         </Card>
@@ -473,6 +513,8 @@ function ReportContent() {
     );
   }
 
+  // Older API versions didn't send is_owner and only ever served the owner.
+  const isOwner = report.is_owner !== false;
   const cred = report.credibility;
   const scores = cred?.sub_scores;
   const rationale = cred?.score_rationale ?? {};
@@ -507,7 +549,28 @@ function ReportContent() {
         description={
           [candidate.current_role, candidate.location].filter(Boolean).join(" · ") || undefined
         }
+        actions={
+          isOwner ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<Trash2 className="size-3.5" />}
+              loading={deleting}
+              onClick={deleteReport}
+            >
+              Delete file
+            </Button>
+          ) : (
+            <Badge tone="neutral">Shared with you</Badge>
+          )
+        }
       />
+
+      {deleteError && (
+        <Alert tone="error" className="mb-5" onDismiss={() => setDeleteError(null)}>
+          {deleteError}
+        </Alert>
+      )}
 
       {/* ── Summary card ───────────────────────────────────────────────── */}
       <Card className="mb-5">
@@ -703,6 +766,7 @@ function ReportContent() {
           githubOverride={githubOverride}
           onGithubOverrideChange={setGithubOverride}
           onRun={runVerification}
+          canRun={isOwner}
         />
         </ErrorBoundary>
       </TabPanel>
@@ -740,6 +804,7 @@ function ReportContent() {
           comments={comments}
           votes={votesResult}
           teams={myTeams}
+          canShare={isOwner}
           sharedTeamId={report.team_id}
           sharing={sharing}
           newComment={newComment}
@@ -756,6 +821,19 @@ function ReportContent() {
       </TabPanel>
 
       {/* ── Decision bar ───────────────────────────────────────────────── */}
+      {!isOwner ? (
+        <Card className="mt-6">
+          <CardHeader
+            title="Decision"
+            description="Recorded by the person who added this candidate. Use Discuss to weigh in."
+          />
+          <CardBody>
+            <p className="text-sm text-content-muted">
+              {DECISIONS.find((d) => d.value === decision)?.label ?? "No decision yet."}
+            </p>
+          </CardBody>
+        </Card>
+      ) : (
       <Card className="mt-6">
         <CardHeader
           title="Your decision"
@@ -821,6 +899,7 @@ function ReportContent() {
           )}
         </CardBody>
       </Card>
+      )}
 
       {/* ── Email editor ───────────────────────────────────────────────── */}
       {notifyEditorOpen && notifyDraft && (
@@ -881,10 +960,25 @@ function ReportContent() {
   );
 }
 
+/**
+ * One ReportContent per report id. With the id in the query string, moving
+ * from one report to another keeps the same page mounted, so without the key
+ * the previous report's decision, comments, verification and open tab would
+ * linger until the new one loaded. Keying by id gives each report fresh
+ * state, as the old /report/[id] route did.
+ */
+function ReportForId() {
+  const id = useSearchParams().get("id") ?? "";
+  return <ReportContent key={id} />;
+}
+
 export default function ReportPage() {
   return (
     <RequireAuth>
-      <ReportContent />
+      {/* useSearchParams needs a Suspense boundary in a statically exported page. */}
+      <Suspense fallback={null}>
+        <ReportForId />
+      </Suspense>
     </RequireAuth>
   );
 }

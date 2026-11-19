@@ -140,11 +140,43 @@ class StorageWriteFailed(HireLensException):
     )
 
 
+class DatabaseUnavailable(HireLensException):
+    """
+    The database did not answer a read the caller depends on.
+
+    503 rather than 404 or an empty result: "not found" and "you have no
+    candidates" are both statements about the data, and the honest statement
+    during an outage is that we could not look. The UI can retry a 503.
+    """
+    http_status = 503; code = "database_unavailable"
+    message = (
+        "We couldn't reach the database just now. Nothing has been lost — "
+        "please try again in a moment."
+    )
+
+
 class ValidationError(HireLensException):
     http_status = 422; code = "validation_error"
     message = "Invalid request data."
 
 class CapacityLimitExceeded(HireLensException):
     http_status = 429; code = "capacity_limit_exceeded"
-    message = "Registration capacity limit of 5,000 active recruiters reached."
+    message = "New sign-ups are paused while we add capacity. Please try again later."
 
+
+
+class QuotaExceeded(HireLensException):
+    """
+    The account has used its plan's analyses for this month.
+
+    402, so the client can tell "upgrade to continue" apart from a rate limit
+    (429, wait a minute) and from an outage (503, try again).
+    """
+    http_status = 402; code = "quota_exceeded"
+    message = "You've used all the analyses included in your plan this month."
+
+    def __init__(self, message: str | None = None, *, plan: str = "free", limit: int = 0, remaining: int = 0):
+        self.plan = plan
+        self.limit = limit
+        self.remaining = remaining
+        super().__init__(message)

@@ -153,6 +153,12 @@ export interface Report {
   created_at?: string;
   file_name?: string;
   team_id?: string | null;
+  /**
+   * False when a teammate is viewing a report shared with their team. The
+   * decision, candidate emails, sharing and deletion are the owner's. Absent
+   * from older API versions, which only ever served the owner.
+   */
+  is_owner?: boolean;
   candidate: Candidate;
   skills: Skills;
   experience: Experience[];
@@ -415,6 +421,20 @@ export interface VerificationResult {
     ai_recommendation: Recommendation;
     reason: string;
   } | null;
+}
+
+/** A candidate file shared with a team, as the team page lists it. */
+export interface TeamReport {
+  id: string;
+  candidate_name: string;
+  file_name: string;
+  overall_score: number | null;
+  recommendation: Recommendation | null;
+  recruiter_decision: Decision | null;
+  created_at: string | null;
+  /** "You", or the owner's name. */
+  shared_by?: string | null;
+  is_mine: boolean;
 }
 
 /** A team invite that has been sent but not yet accepted. */

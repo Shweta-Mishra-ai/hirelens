@@ -10,7 +10,7 @@ Every score cites the sentence that produced it. Every claim is checked against
 public record. Nothing is decided for you.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Shweta-Mishra-ai/hirelens/ci.yml?branch=main&style=flat-square&label=CI)](../../actions)
-[![Tests](https://img.shields.io/badge/tests-1%2C307%20backend%20·%20151%20frontend-10B981?style=flat-square)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1%2C536%20backend%20·%20216%20frontend-10B981?style=flat-square)](#testing)
 [![Coverage](https://img.shields.io/badge/backend%20coverage-87%25-10B981?style=flat-square)](#testing)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![Next.js](https://img.shields.io/badge/Next.js-16.3-000?style=flat-square&logo=next.js)](https://nextjs.org)
@@ -197,8 +197,9 @@ App on **localhost:3000**, interactive API docs on **localhost:8000/docs**.
 
 Leave the Supabase variables unset and everything runs on a local SQLite file —
 no cloud account needed to develop. For production, follow
-[**docs/DEPLOYMENT.md**](docs/DEPLOYMENT.md): five SQL files, one Render
-service, one Vercel project.
+[**docs/DEPLOYMENT.md**](docs/DEPLOYMENT.md): ten SQL files, one Render
+service, one static site (Cloudflare Pages, Netlify or Render — free plans
+included; see *Running at ₹0*).
 
 ---
 
@@ -229,8 +230,8 @@ Every row is covered by a test that fails if the behaviour regresses.
 ```bash
 ./scripts/verify.sh          # everything CI runs, in order, locally
 
-cd backend && python -m pytest tests/ -v           # 1,307 tests
-cd frontend && npm test                            # 151 tests
+cd backend && python -m pytest tests/ -v           # 1,536 tests (+29 on a real DB)
+cd frontend && npm test                            # 216 tests
 cd frontend && npm run build                       # types + production build
 ```
 
@@ -241,9 +242,9 @@ runner ever being assigned — a red tick that says nothing about the code.
 
 | | |
 |---|---|
-| Backend | **1,307** tests · **87%** coverage |
-| Frontend | **151** tests · strict TypeScript · zero lint warnings |
-| CI | pytest · vitest · `pip-audit` · `npm audit` · production build |
+| Backend | **1,536** tests · **88%** coverage, plus **29** against real Postgres + PostgREST (`scripts/postgrest_e2e.sh`) |
+| Frontend | **216** tests · strict TypeScript · zero lint warnings (`npm run lint`) |
+| CI | pytest · real Postgres + PostgREST · production Docker image boot · vitest · `pip-audit` · `npm audit` · production build |
 | Advisories | `pip-audit`: none · `npm audit`: none |
 
 Two things the suite does that a typical one does not:
@@ -286,7 +287,7 @@ dependencies were removed rather than carried.
 **Frontend** — Next.js 16 App Router · React 19 · TypeScript (strict) · Tailwind ·
 Zustand · Vitest + Testing Library
 
-**AI** — Gemini 2.5 Flash, with Groq and Anthropic as fallbacks
+**AI** — Gemini 3.8 Flash → 3.6 Flash → 3.5 Flash-Lite (all on the free tier), then Groq gpt-oss-120b and Anthropic as fallbacks. Model names are configuration
 
 ---
 
@@ -295,7 +296,7 @@ Zustand · Vitest + Testing Library
 | | |
 |---|---|
 | [**Architecture**](docs/ARCHITECTURE.md) | Diagrams, request lifecycle, where state lives, the degradation table |
-| [**Deployment**](docs/DEPLOYMENT.md) | Supabase schema, Render, Vercel, keeping the free tier awake |
+| [**Deployment**](docs/DEPLOYMENT.md) | Supabase schema, Render, the static frontend, keeping the free tier awake, running at ₹0 |
 | [**API**](docs/API.md) | Every endpoint, the error envelope, the limits |
 | [**Security**](docs/SECURITY.md) | Tenancy model, resume-borne attacks, what is deliberately not disclosed |
 | [**Contributing**](CONTRIBUTING.md) | Setup, conventions, what a good PR looks like |

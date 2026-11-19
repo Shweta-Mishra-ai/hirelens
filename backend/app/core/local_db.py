@@ -106,6 +106,13 @@ def init_local_db():
             existing = {row[1] for row in cursor.execute("PRAGMA table_info(reports)")}
             if "job_id" not in existing:
                 cursor.execute("ALTER TABLE reports ADD COLUMN job_id TEXT")
+            # The team a report is shared with (sql/002 adds the same column
+            # in Supabase). Without it, sharing had nowhere to live locally.
+            if "team_id" not in existing:
+                cursor.execute("ALTER TABLE reports ADD COLUMN team_id TEXT")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reports_team_id ON reports(team_id)"
+            )
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reports_job_id ON reports(job_id)"
             )
@@ -153,6 +160,20 @@ def get_user_by_id(user_id: str) -> dict | None:
     except Exception as e:
         logger.error(f"Error fetching user by ID from SQLite: {e}")
         return None
+
+
+def list_users(limit: int = 25, search: str | None = None) -> list[dict]:
+    """Newest accounts first, for the operator screen. Never the password hash."""
+    sql = "SELECT id, email, full_name, company, created_at FROM users"
+    params: list = []
+    if search:
+        sql += " WHERE email LIKE ? ESCAPE '\\'"
+        escaped = search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params.append(f"%{escaped}%")
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(int(limit))
+    with _get_connection() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 def update_password_hash(user_id: str, new_hash: str) -> None:
@@ -274,10 +295,12 @@ def save_report(
                 """
                 INSERT OR REPLACE INTO reports
                     (id, user_id, file_name, candidate_name, overall_score,
-                     recommendation, recruiter_decision, report_data, created_at, job_id)
+                     recommendation, recruiter_decision, report_data, created_at, job_id,
+                     team_id)
                 VALUES (?, ?, ?, ?, ?, ?,
                         COALESCE((SELECT recruiter_decision FROM reports WHERE id = ?), NULL),
-                        ?, ?, ?)
+                        ?, ?, ?,
+                        (SELECT team_id FROM reports WHERE id = ?))
                 """,
                 (
                     report_id,
@@ -290,6 +313,7 @@ def save_report(
                     json.dumps(report_data, default=str),
                     created_at or datetime.now(timezone.utc).isoformat(),
                     job_id,
+                    report_id,  # and the team it is shared with
                 ),
             )
             conn.commit()
@@ -337,25 +361,120 @@ def get_report(report_id: str, user_id: str) -> dict | None:
             row = conn.execute(
                 "SELECT * FROM reports WHERE id = ? AND user_id = ?", (report_id, user_id)
             ).fetchone()
-        if not row:
-            return None
-
-        record = dict(row)
-        try:
-            data = json.loads(record.get("report_data") or "{}")
-        except json.JSONDecodeError as e:
-            logger.error(f"Report {report_id} has unreadable report_data: {e}")
-            return None
-
-        data["id"] = record["id"]
-        data["file_name"] = record.get("file_name") or data.get("file_name") or ""
-        data["created_at"] = record.get("created_at") or ""
-        data["recruiter_decision"] = record.get("recruiter_decision")
-        data["_owner_user_id"] = record["user_id"]
-        return data
+        return _row_to_report(row) if row else None
     except Exception as e:
         logger.error(f"Could not load report {report_id}: {e}")
         return None
+
+
+def _row_to_report(row) -> dict | None:
+    record = dict(row)
+    try:
+        data = json.loads(record.get("report_data") or "{}")
+    except json.JSONDecodeError as e:
+        logger.error(f"Report {record.get('id')} has unreadable report_data: {e}")
+        return None
+    data["id"] = record["id"]
+    data["file_name"] = record.get("file_name") or data.get("file_name") or ""
+    data["created_at"] = record.get("created_at") or ""
+    data["recruiter_decision"] = record.get("recruiter_decision")
+    data["team_id"] = record.get("team_id")
+    data["_owner_user_id"] = record["user_id"]
+    return data
+
+
+def _table_exists(conn, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone() is not None
+
+
+def _viewable_row(conn, report_id: str, user_id: str):
+    """
+    (row, is_owner) when `user_id` may see the report — they own it, or it is
+    shared with a team they belong to — else (None, False). The same rule as
+    teams.access.user_can_access_report, answered in one place for the local
+    store so the report, comments, votes and co-pilot all agree.
+    """
+    row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+    if not row:
+        return None, False
+    if row["user_id"] == user_id:
+        return row, True
+    team_id = row["team_id"]
+    if team_id and _table_exists(conn, "team_members") and conn.execute(
+        "SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?", (team_id, user_id)
+    ).fetchone():
+        return row, False
+    return None, False
+
+
+def get_report_for_viewer(report_id: str, user_id: str) -> dict | None:
+    """
+    A report its owner or a teammate it is shared with may read, with
+    `is_owner` set; None otherwise. A wrong user and a missing row look the
+    same, as with get_report.
+    """
+    try:
+        with _get_connection() as conn:
+            row, is_owner = _viewable_row(conn, report_id, user_id)
+        if not row:
+            return None
+        data = _row_to_report(row)
+        if data is not None:
+            data["is_owner"] = is_owner
+        return data
+    except Exception as e:
+        logger.error(f"Could not load report {report_id} for {user_id}: {e}")
+        return None
+
+
+def can_view_report(report_id: str, user_id: str) -> bool:
+    try:
+        with _get_connection() as conn:
+            row, _ = _viewable_row(conn, report_id, user_id)
+        return row is not None
+    except Exception as e:
+        logger.error(f"Could not check access to {report_id} for {user_id}: {e}")
+        return False
+
+
+def set_report_team(report_id: str, owner_id: str, team_id: str | None) -> bool:
+    """
+    Share a report with a team, or stop sharing it (team_id None). Owner
+    only: False if the report is not theirs. Raises LocalStoreError if the
+    write fails, so a share that did not happen is never reported as done.
+    """
+    try:
+        with _get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE reports SET team_id = ? WHERE id = ? AND user_id = ?",
+                (team_id, report_id, owner_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Could not set the team on report {report_id}: {e}")
+        raise LocalStoreError(str(e)) from e
+
+
+def list_team_reports(team_id: str, limit: int = 100) -> list[dict]:
+    """Summary rows for the reports shared with a team, newest first."""
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, user_id, file_name, candidate_name, overall_score,
+                       recommendation, recruiter_decision, created_at
+                FROM reports WHERE team_id = ?
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (team_id, int(limit)),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Could not list reports for team {team_id}: {e}")
+        raise LocalStoreError(str(e)) from e
 
 
 def list_reports(user_id: str) -> list[dict]:
@@ -377,6 +496,39 @@ def list_reports(user_id: str) -> list[dict]:
         return []
 
 
+def update_report_data(
+    report_id: str,
+    user_id: str,
+    report_data: dict,
+    recommendation: str | None = None,
+) -> bool:
+    """
+    Replace a report's data (and, if given, its recommendation column) in
+    place, keeping its decision, sharing, job and creation time. Owner only:
+    False if the report is not theirs. Raises LocalStoreError if the write
+    fails.
+    """
+    private = {"_owner_user_id", "is_owner", "team_id", "recruiter_decision"}
+    blob = {k: v for k, v in report_data.items() if k not in private}
+    try:
+        with _get_connection() as conn:
+            if recommendation:
+                cur = conn.execute(
+                    "UPDATE reports SET report_data = ?, recommendation = ? WHERE id = ? AND user_id = ?",
+                    (json.dumps(blob, default=str), recommendation, report_id, user_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE reports SET report_data = ? WHERE id = ? AND user_id = ?",
+                    (json.dumps(blob, default=str), report_id, user_id),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Could not update report {report_id}: {e}")
+        raise LocalStoreError(str(e)) from e
+
+
 def set_report_decision(report_id: str, user_id: str, decision: str | None) -> bool:
     try:
         with _get_connection() as conn:
@@ -392,11 +544,20 @@ def set_report_decision(report_id: str, user_id: str, decision: str | None) -> b
 
 
 def delete_report(report_id: str, user_id: str) -> bool:
+    """
+    Delete a report the user owns, with its comments and votes — what the
+    ON DELETE CASCADE in sql/002 does in Supabase, and what the privacy page
+    promises. One transaction.
+    """
     try:
         with _get_connection() as conn:
             cur = conn.execute(
                 "DELETE FROM reports WHERE id = ? AND user_id = ?", (report_id, user_id)
             )
+            if cur.rowcount > 0:
+                for table in ("report_comments", "report_votes"):
+                    if _table_exists(conn, table):
+                        conn.execute(f"DELETE FROM {table} WHERE report_id = ?", (report_id,))
             conn.commit()
             return cur.rowcount > 0
     except Exception as e:
@@ -426,13 +587,13 @@ def count_reports(user_id: str | None = None) -> int:
 
 
 def save_copilot(report_id: str, user_id: str, payload: dict) -> bool:
-    """Attach co-pilot data to a report the user owns. False if not theirs."""
+    """
+    Attach co-pilot data to a report the user may view — its owner, or a
+    teammate it is shared with, as in Supabase. False if they may not.
+    """
     try:
         with _get_connection() as conn:
-            row = conn.execute(
-                "SELECT report_data FROM reports WHERE id = ? AND user_id = ?",
-                (report_id, user_id),
-            ).fetchone()
+            row, _ = _viewable_row(conn, report_id, user_id)
             if not row:
                 return False
             try:
@@ -441,8 +602,8 @@ def save_copilot(report_id: str, user_id: str, payload: dict) -> bool:
                 data = {}
             data["copilot_data"] = payload
             conn.execute(
-                "UPDATE reports SET report_data = ? WHERE id = ? AND user_id = ?",
-                (json.dumps(data, default=str), report_id, user_id),
+                "UPDATE reports SET report_data = ? WHERE id = ?",
+                (json.dumps(data, default=str), report_id),
             )
             conn.commit()
         return True
@@ -452,13 +613,10 @@ def save_copilot(report_id: str, user_id: str, payload: dict) -> bool:
 
 
 def get_copilot(report_id: str, user_id: str) -> dict | None:
-    """Co-pilot data for a report the user owns, or None."""
+    """Co-pilot data for a report the user may view, or None."""
     try:
         with _get_connection() as conn:
-            row = conn.execute(
-                "SELECT report_data FROM reports WHERE id = ? AND user_id = ?",
-                (report_id, user_id),
-            ).fetchone()
+            row, _ = _viewable_row(conn, report_id, user_id)
         if not row:
             return None
         try:
@@ -593,7 +751,7 @@ def list_reports_any_owner(report_id: str) -> list[dict]:
     try:
         with _get_connection() as conn:
             rows = conn.execute(
-                "SELECT id, user_id, candidate_name FROM reports WHERE id = ?", (report_id,)
+                "SELECT id, user_id, team_id, candidate_name FROM reports WHERE id = ?", (report_id,)
             ).fetchall()
         return [dict(r) for r in rows]
     except Exception as e:
@@ -793,6 +951,9 @@ def delete_team(team_id: str, owner_id: str) -> bool:
                 return False
             conn.execute("DELETE FROM team_members WHERE team_id = ?", (team_id,))
             conn.execute("DELETE FROM team_invites WHERE team_id = ?", (team_id,))
+            # Reports shared with it stop being shared (ON DELETE SET NULL in
+            # sql/002), rather than pointing at a team that no longer exists.
+            conn.execute("UPDATE reports SET team_id = NULL WHERE team_id = ?", (team_id,))
             conn.execute("DELETE FROM teams WHERE id = ?", (team_id,))
             conn.commit()
             return True
@@ -1166,8 +1327,276 @@ def count_jds(user_id: str) -> int:
         return 0
 
 
+# ── Plans and usage metering (local fallback for sql/007) ─────────────────────
+
+def init_billing_tables() -> None:
+    try:
+        with _get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    user_id TEXT PRIMARY KEY,
+                    plan TEXT NOT NULL DEFAULT 'free',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS usage_events (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'analysis',
+                    report_id TEXT,
+                    created_at TEXT NOT NULL
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_usage_events_user_created "
+                "ON usage_events(user_id, created_at)"
+            )
+            # Added after the table first shipped: a plan bought for a period.
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(subscriptions)")}
+            if "current_period_end" not in columns:
+                conn.execute("ALTER TABLE subscriptions ADD COLUMN current_period_end TEXT")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS payment_requests (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    plan TEXT NOT NULL,
+                    amount_inr INTEGER NOT NULL,
+                    method TEXT NOT NULL DEFAULT 'upi',
+                    reference TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    note TEXT,
+                    created_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    decided_by TEXT
+                )
+            """)
+            # Same rules as sql/010: one live claim per reference, one
+            # pending claim per account.
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS payment_requests_reference_live "
+                "ON payment_requests(reference) WHERE status <> 'rejected'"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS payment_requests_one_pending "
+                "ON payment_requests(user_id) WHERE status = 'pending'"
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to initialize billing tables: {e}")
+
+
+def get_subscription(user_id: str) -> dict | None:
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT plan, status, current_period_end FROM subscriptions WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"Error reading subscription from SQLite: {e}")
+        return None
+
+
+def set_subscription(
+    user_id: str, plan: str, status: str = "active", current_period_end: str | None = None
+) -> bool:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT INTO subscriptions (user_id, plan, status, updated_at, current_period_end) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan, "
+                "status = excluded.status, updated_at = excluded.updated_at, "
+                "current_period_end = excluded.current_period_end",
+                (user_id, plan, status, datetime.now(timezone.utc).isoformat(), current_period_end),
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error writing subscription to SQLite: {e}")
+        return False
+
+
+class PaymentConflict(Exception):
+    """A second live claim on a reference, or a second pending claim."""
+
+
+def create_payment_request(row: dict) -> dict:
+    """Insert a claim. Raises PaymentConflict on a uniqueness rule, LocalStoreError otherwise."""
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT INTO payment_requests (id, user_id, plan, amount_inr, method, reference, "
+                "status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+                (row["id"], row["user_id"], row["plan"], row["amount_inr"], row.get("method", "upi"),
+                 row["reference"], row["created_at"]),
+            )
+            conn.commit()
+    except sqlite3.IntegrityError as e:
+        raise PaymentConflict(str(e)) from e
+    except sqlite3.Error as e:
+        logger.error(f"Could not store payment request: {e}")
+        raise LocalStoreError("The payment could not be recorded. Please try again.") from e
+    return {**row, "status": "pending", "note": None, "decided_at": None, "decided_by": None}
+
+
+def list_payment_requests(user_id: str | None = None, status: str | None = None, limit: int = 50) -> list[dict]:
+    sql = "SELECT * FROM payment_requests"
+    clauses, params = [], []
+    if user_id:
+        clauses.append("user_id = ?")
+        params.append(user_id)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(int(limit))
+    with _get_connection() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def get_payment_request(request_id: str) -> dict | None:
+    with _get_connection() as conn:
+        row = conn.execute("SELECT * FROM payment_requests WHERE id = ?", (request_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def decide_payment_request(request_id: str, status: str, decided_by: str, note: str | None,
+                           from_status: str = "pending") -> bool:
+    """Move a claim out of `from_status`. False if it was not in that state (someone else decided it)."""
+    with _get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE payment_requests SET status = ?, decided_at = ?, decided_by = ?, note = ? "
+            "WHERE id = ? AND status = ?",
+            (status, datetime.now(timezone.utc).isoformat(), decided_by, note, request_id, from_status),
+        )
+        conn.commit()
+        return cur.rowcount == 1
+
+
+def record_usage(user_id: str, kind: str, report_id: str | None) -> bool:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT INTO usage_events (id, user_id, kind, report_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), user_id, kind, report_id, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error recording usage in SQLite: {e}")
+        return False
+
+
+def count_usage_since(user_id: str, since_iso: str, kind: str = "analysis") -> int:
+    try:
+        with _get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM usage_events WHERE user_id = ? AND kind = ? AND created_at >= ?",
+                (user_id, kind, since_iso),
+            ).fetchone()
+            return int(row[0] or 0)
+    except Exception as e:
+        logger.error(f"Error counting usage in SQLite: {e}")
+        return 0
+
+
+def init_session_table() -> None:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS session_revocations ("
+                "user_id TEXT PRIMARY KEY, revoked_before INTEGER NOT NULL)"
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to initialize session table: {e}")
+
+
+def get_revoked_before(user_id: str) -> int:
+    with _get_connection() as conn:
+        row = conn.execute(
+            "SELECT revoked_before FROM session_revocations WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+
+def set_revoked_before(user_id: str, epoch_ms: int) -> bool:
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT INTO session_revocations (user_id, revoked_before) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET revoked_before = excluded.revoked_before",
+                (user_id, int(epoch_ms)),
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"Error storing session revocation in SQLite: {e}")
+        return False
+
+
+def delete_user_data(user_id: str, email: str | None = None) -> None:
+    """
+    Remove every row this user owns from the local store, and refuse their
+    sessions from now on. One transaction: all of it, or none of it.
+
+    What goes: the account, its reports and the comments and votes on them,
+    their comments and votes elsewhere, teams they own (with those teams'
+    members and invites), memberships, saved job descriptions, password-reset
+    tokens, plan and usage. Raises LocalStoreError if the write fails.
+
+    A table that was never created (its feature never used here) is skipped.
+    """
+    statements = [
+        ("DELETE FROM report_comments WHERE user_id = ? OR report_id IN "
+         "(SELECT id FROM reports WHERE user_id = ?)", (user_id, user_id)),
+        ("DELETE FROM report_votes WHERE user_id = ? OR report_id IN "
+         "(SELECT id FROM reports WHERE user_id = ?)", (user_id, user_id)),
+        ("DELETE FROM team_members WHERE user_id = ? OR team_id IN "
+         "(SELECT id FROM teams WHERE owner_id = ?)", (user_id, user_id)),
+        ("DELETE FROM team_invites WHERE team_id IN (SELECT id FROM teams WHERE owner_id = ?)", (user_id,)),
+        ("UPDATE reports SET team_id = NULL WHERE team_id IN (SELECT id FROM teams WHERE owner_id = ?)", (user_id,)),
+        ("DELETE FROM teams WHERE owner_id = ?", (user_id,)),
+        ("DELETE FROM reports WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM saved_jds WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM password_resets WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM subscriptions WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM usage_events WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM payment_requests WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM users WHERE id = ?", (user_id,)),
+    ]
+    try:
+        with _get_connection() as conn:
+            for sql, params in statements:
+                try:
+                    conn.execute(sql, params)
+                except sqlite3.OperationalError as e:
+                    if "no such table" not in str(e):
+                        raise
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS session_revocations ("
+                "user_id TEXT PRIMARY KEY, revoked_before INTEGER NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO session_revocations (user_id, revoked_before) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET revoked_before = excluded.revoked_before",
+                (user_id, 2**62),
+            )
+            conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Could not delete local data for {user_id}: {e}")
+        raise LocalStoreError("The account could not be deleted. Nothing was removed.") from e
+
+
 init_local_db()
+init_session_table()
 init_collaboration_tables()
 init_team_tables()
 init_password_reset_table()
 init_saved_jd_table()
+init_billing_tables()

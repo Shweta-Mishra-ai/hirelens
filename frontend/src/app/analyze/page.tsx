@@ -10,6 +10,7 @@ import { Card, CardBody } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Alert } from "@/components/ui/Feedback";
 import { cn } from "@/lib/cn";
+import { reportHref } from "@/lib/routes";
 
 /**
  * The pipeline stages, in the order the backend reports them. Showing the real
@@ -80,7 +81,7 @@ function AnalyzeContent() {
 
   useEffect(() => {
     if (state.phase === "complete" && state.report?.id) {
-      router.push(`/report/${state.report.id}`);
+      router.push(reportHref(state.report.id));
     }
   }, [state, router]);
 
