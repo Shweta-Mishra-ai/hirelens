@@ -27,10 +27,10 @@ until it is merged there. Then, in this order:
    if you are on Gemini's free tier, `GROQ_API_KEY`, `FREE_MONTHLY_ANALYSES`
    (e.g. `20`), `BACKEND_URL` (the service's own URL). The model names have
    working defaults; only set `GEMINI_MODEL` / `GROQ_MODEL` to override them.
-3. **Vercel** (project → *Settings → Environment Variables*) — the legal-page
-   variables (section 2, *Legal pages*), including
-   `NEXT_PUBLIC_WEBSITE_HOST=Vercel`. `NEXT_PUBLIC_API_URL` is already there.
-   Then redeploy: these are baked into the build.
+3. **The frontend host** (Cloudflare Pages, or Vercel until you move —
+   section 3) — the legal-page variables (section 2, *Legal pages*),
+   including `NEXT_PUBLIC_WEBSITE_HOST`. Then redeploy: these are baked into
+   the build.
 4. **Verify** — `curl https://<api>.onrender.com/api/v1/health` must show
    `"database": "ok"` and `"schema": "ok"`. `"missing_migrations"` means step
    1 is incomplete; the Render log line starting `DATABASE IS MISSING
@@ -114,9 +114,10 @@ staring at the dashboard with no way to continue.
 
 1. Supabase dashboard → **Authentication** → **URL Configuration**
 2. Set **Site URL** to your frontend origin, e.g. `https://your-site.pages.dev`
-3. Under **Redirect URLs**, add:
-   - `https://<your-frontend>/reset-password`
-   - `https://<your-frontend>/**` if you also deploy previews
+3. Under **Redirect URLs**, add `https://<your-frontend>/**`. That one entry
+   covers the reset page and `/dashboard`, where Google sign-in returns —
+   allow only `/reset-password` and Google sign-in quietly fails, because
+   Supabase sends the token to the Site URL instead.
 
 The same page governs where a Google sign-in and an email confirmation land,
 so it is worth getting right once.
@@ -346,6 +347,43 @@ Cloudflare's free-plan limits page lists 500 builds a month, one build at a
 time and 20,000 files per site (this site has a few hundred), and lists **no
 bandwidth limit**. The response headers in `frontend/public/_headers` are
 applied automatically.
+
+### Moving from Vercel to Cloudflare Pages
+
+Nothing in the code changes; this is settings in four places. Keep the Vercel
+site running until step 6 — invite and password-reset emails already sent
+link to it.
+
+1. **Create the Pages project.** Cloudflare dashboard → *Workers & Pages* →
+   *Create* → *Pages* → *Import an existing Git repository* → this
+   repository. Production branch `main`; the build settings in the table
+   above.
+2. **Environment variables** (*Settings → Environment variables*, for
+   Production and Preview). Copy the values from Vercel (*Settings →
+   Environment Variables*): `NEXT_PUBLIC_API_URL`,
+   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`. Add
+   `NODE_VERSION=22`, the legal-page variables, and
+   `NEXT_PUBLIC_WEBSITE_HOST=Cloudflare`. Then start a new deployment (retry
+   the latest one from *Deployments*, or push a commit) so the build sees
+   them — they are baked in at build time. Note the site's address,
+   `https://<project>.pages.dev`.
+3. **Render** (API service → *Environment*): add the new address to
+   `ALLOWED_ORIGINS`, keeping the Vercel one for now —
+   `https://<project>.pages.dev,https://<your-app>.vercel.app` — and set
+   `FRONTEND_URL=https://<project>.pages.dev`, so new invite and reset emails
+   point at the new site. Save; Render redeploys.
+4. **Supabase** (*Authentication → URL Configuration*): set **Site URL** to
+   the new address and add `https://<project>.pages.dev/**` under **Redirect
+   URLs**. Leave the Vercel entry until step 6.
+5. **Check, on the new address:** sign in with email; sign in with Google;
+   upload a resume and open its report; request a password reset and follow
+   the email; open `https://<api>.onrender.com/api/v1/health`.
+6. **After a week** (when old emails have expired): remove the Vercel
+   address from `ALLOWED_ORIGINS` and from Supabase's Redirect URLs, and
+   delete or pause the Vercel project.
+
+A custom domain later is *Custom domains* on the Pages project; repeat steps
+3 and 4 with it.
 
 ### Netlify
 

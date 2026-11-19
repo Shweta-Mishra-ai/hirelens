@@ -238,3 +238,27 @@ class TestSupabasePath:
         sessions.clear_cache()
         fake.auth.raises = None
         assert client.get("/api/v1/auth/me", headers=user["headers"]).status_code == 200
+
+
+class TestDeletedLookup:
+    """Only a real row in deleted_accounts may sign someone out."""
+
+    def _db(self, data):
+        from unittest.mock import MagicMock
+
+        db = MagicMock()
+        db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = data
+        return db
+
+    def test_a_row_means_deleted(self):
+        assert sessions._is_deleted(self._db([{"user_id": "u"}]), "u") is True
+
+    @pytest.mark.parametrize("data", [[], None, {"user_id": "u"}, "u"])
+    def test_anything_else_does_not(self, data):
+        assert sessions._is_deleted(self._db(data), "u") is False
+
+    def test_a_truthy_non_list_from_an_unexpected_client_does_not(self):
+        from unittest.mock import MagicMock
+
+        db = MagicMock()  # every attribute truthy, as with a generic mock
+        assert sessions._is_deleted(db, "u") is False

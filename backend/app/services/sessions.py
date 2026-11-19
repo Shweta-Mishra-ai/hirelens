@@ -107,7 +107,10 @@ def _is_deleted(db, user_id: str) -> bool:
             .limit(1)
             .execute()
         )
-        return bool(res.data)
+        # Only a real row counts. Anything else (no rows, an unexpected
+        # shape) must not sign someone out.
+        rows = res.data
+        return isinstance(rows, list) and len(rows) > 0
     except Exception:
         return False
 
