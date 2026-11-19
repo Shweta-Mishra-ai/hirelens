@@ -441,3 +441,21 @@ class TestAccountDeletionAgainstPostgres:
         sessions.clear_cache()
         assert client.get("/api/v1/auth/me", headers=headers).status_code == 401
         assert client.get("/api/v1/auth/me", headers=_headers(owner)).status_code == 200
+
+
+class TestOperatorScreenAgainstPostgREST:
+    def test_search_plans_and_detail(self, client, owner, monkeypatch):
+        from app.core.config import settings
+
+        monkeypatch.setattr(settings, "ADMIN_EMAILS", owner[1])
+        headers = _headers(owner)
+        rows = client.get("/api/v1/billing/admin/accounts", params={"q": "e2e-example"}, headers=headers)
+        assert rows.status_code == 200, rows.text
+        assert owner[1] in {r["email"] for r in rows.json()["accounts"]}
+        # "_" is literal: as a wildcard, "owner_" would match "owner@...".
+        literal = client.get("/api/v1/billing/admin/accounts", params={"q": "owner_"}, headers=headers)
+        assert literal.json()["accounts"] == []
+        detail = client.get("/api/v1/billing/admin/account", params={"email": owner[1]}, headers=headers)
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["user_id"] == owner[0]
+        assert "usage" in detail.json()

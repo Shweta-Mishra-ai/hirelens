@@ -27,12 +27,20 @@ class Result:
 
 
 def _matches_ilike(value: Any, pattern: str) -> bool:
-    """SQL ILIKE: % is any run of characters, _ is any single one."""
+    """SQL ILIKE: % is any run of characters, _ is any single one, and a
+    backslash makes the next character literal (Postgres's default escape)."""
     if value is None:
         return False
-    regex = "^" + "".join(
-        ".*" if ch == "%" else "." if ch == "_" else re.escape(ch) for ch in pattern
-    ) + "$"
+    parts, i = [], 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < len(pattern):
+            parts.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        parts.append(".*" if ch == "%" else "." if ch == "_" else re.escape(ch))
+        i += 1
+    regex = "^" + "".join(parts) + "$"
     return re.match(regex, str(value), re.IGNORECASE) is not None
 
 
@@ -81,6 +89,10 @@ class _Query:
     def in_(self, column: str, values):
         wanted = list(values)
         self.filters.append(lambda row, c=column, v=wanted: row.get(c) in v)
+        return self
+
+    def ilike(self, column: str, pattern: str):
+        self.filters.append(lambda row, c=column, p=pattern: _matches_ilike(row.get(c), p))
         return self
 
     def gte(self, column: str, value):

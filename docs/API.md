@@ -57,7 +57,7 @@ the `X-Request-ID` header and is what to quote in a bug report.
 | `POST` | `/auth/signup` | `{ email, password, full_name, company? }`. 409 if taken, **503 if the account store is unreachable** — deliberately never a local shadow account |
 | `POST` | `/auth/login` | 10 attempts per 15 minutes per IP |
 | `POST` | `/auth/oauth-verify` | `{ access_token }` from the Supabase Google round trip. No fallback: an unverifiable token is refused, never exchanged |
-| `GET` | `/auth/me` | The caller's id and email |
+| `GET` | `/auth/me` | The caller's id and email, and `is_admin` — whether the interface should offer the operator screen (each operator route checks `ADMIN_EMAILS` itself) |
 | `POST` | `/auth/forgot-password` | `{ email }`. Always 200 with the same body, whether or not the address exists — a different answer would let anyone enumerate the customer list. 5 per 15 min per IP, and 3 per 15 min per address |
 | `POST` | `/auth/reset-password` | `{ access_token, new_password }`. 401 for a link that is expired or already spent, 422 for a password the policy refuses |
 | `GET` | `/auth/stats` | Capacity headroom |
@@ -348,7 +348,9 @@ worker. With it they are shared across instances.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/v1/billing/usage` | This account's plan, analyses used this month, the limit and what is left. `limit` is `null` and `unlimited` is `true` when no quota applies |
-| `POST` | `/api/v1/billing/admin/plan` | Operators only (`ADMIN_EMAILS`). Body `{"email", "plan"}` with plan `free`, `pro` or `team` |
+| `GET` | `/api/v1/billing/admin/accounts` | Operators only. Newest accounts first (`?limit=`, default 25, max 100), or those whose email contains `?q=` (case-insensitive; `%` and `_` are literal), each with its plan |
+| `GET` | `/api/v1/billing/admin/account` | Operators only. `?email=` — the account with its plan and this month's usage. 404 if there is none; 503 if the database could not be asked |
+| `POST` | `/api/v1/billing/admin/plan` | Operators only (`ADMIN_EMAILS`). Body `{"email", "plan"}` with plan `free`, `pro` or `team`. 503, not 404, when the lookup fails |
 
 An upload that would exceed the month's quota is refused **before** anything is
 read or queued:

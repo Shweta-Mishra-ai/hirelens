@@ -458,8 +458,15 @@ def logout_everywhere(current_user: dict = Depends(get_current_user), db=Depends
 
 @router.get("/me")
 def get_me(current_user: dict = Depends(get_current_user)):
-    """Get current authenticated user's profile."""
-    return current_user
+    """
+    The caller's id and email, and whether they may use the operator screen.
+    `is_admin` only decides what the interface offers; every operator route
+    checks ADMIN_EMAILS itself.
+    """
+    admins = settings.admin_emails
+    email = (current_user.get("email") or "").strip().lower()
+    is_admin = email in admins if admins else not settings.is_production
+    return {**current_user, "is_admin": is_admin}
 
 
 class DeleteAccountRequest(BaseModel):

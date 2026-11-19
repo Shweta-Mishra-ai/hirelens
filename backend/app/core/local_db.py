@@ -155,6 +155,20 @@ def get_user_by_id(user_id: str) -> dict | None:
         return None
 
 
+def list_users(limit: int = 25, search: str | None = None) -> list[dict]:
+    """Newest accounts first, for the operator screen. Never the password hash."""
+    sql = "SELECT id, email, full_name, company, created_at FROM users"
+    params: list = []
+    if search:
+        sql += " WHERE email LIKE ? ESCAPE '\\'"
+        escaped = search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params.append(f"%{escaped}%")
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(int(limit))
+    with _get_connection() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
 def update_password_hash(user_id: str, new_hash: str) -> None:
     """Replace a stored hash in place — used to upgrade legacy hashes."""
     try:

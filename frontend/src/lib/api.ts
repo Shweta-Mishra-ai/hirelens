@@ -402,7 +402,7 @@ export const authAPI = {
     }),
 
   me: (token: string) =>
-    req<{ id: string; email: string }>("/api/v1/auth/me", { token }),
+    req<{ id: string; email: string; is_admin?: boolean }>("/api/v1/auth/me", { token }),
 
   oauthVerify: (accessToken: string) =>
     req<{ access_token: string; user: User }>(
@@ -783,6 +783,36 @@ export interface PlanUsage {
 
 export const billingAPI = {
   usage: (token: string) => req<PlanUsage>("/api/v1/billing/usage", { token }),
+};
+
+// ── Operator screen (ADMIN_EMAILS only; the server checks every call) ──────
+export interface AdminAccountRow {
+  user_id: string;
+  email: string;
+  full_name: string;
+  company: string;
+  created_at: string | null;
+  plan: PlanUsage["plan"];
+}
+
+export interface AdminAccountDetail extends Omit<AdminAccountRow, "plan"> {
+  usage: PlanUsage;
+}
+
+export const adminAPI = {
+  accounts: (token: string, q?: string) =>
+    req<{ accounts: AdminAccountRow[] }>(
+      `/api/v1/billing/admin/accounts${q ? `?q=${encodeURIComponent(q)}` : ""}`,
+      { token },
+    ),
+  account: (email: string, token: string) =>
+    req<AdminAccountDetail>(`/api/v1/billing/admin/account?email=${encodeURIComponent(email)}`, { token }),
+  setPlan: (email: string, plan: PlanUsage["plan"], token: string) =>
+    req<{ status: string; user_id: string; plan: string }>("/api/v1/billing/admin/plan", {
+      method: "POST",
+      token,
+      body: JSON.stringify({ email, plan }),
+    }),
 };
 
 export const healthAPI = {

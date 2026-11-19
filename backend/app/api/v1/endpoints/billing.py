@@ -1,8 +1,10 @@
 """
 HireLens — Plans and usage.
 
-GET  /billing/usage         this account's plan, quota and usage this month
-POST /billing/admin/plan    operator: move an account to a plan
+GET  /billing/usage              this account's plan, quota and usage this month
+GET  /billing/admin/accounts     operator: newest accounts, or those matching ?q=
+GET  /billing/admin/account      operator: one account (?email=), with this month's usage
+POST /billing/admin/plan         operator: move an account to a plan
 
 Payment collection is deliberately outside this module. Until a payment
 provider is wired to a webhook, an operator records an upgrade here after a
@@ -13,13 +15,13 @@ effect on the customer's next upload.
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, EmailStr
 
 from app.api.v1.endpoints.analysis import _jobs
 from app.core import local_db
 from app.core.dependencies import get_current_user, get_db, require_admin
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import DatabaseUnavailable, NotFoundError
 from app.services import billing
 from app.services.teams.access import normalize_email
 
@@ -37,17 +39,112 @@ class SetPlanRequest(BaseModel):
     plan: Literal["free", "pro", "team"]
 
 
-def _user_id_for_email(db, email: str) -> str | None:
+_ACCOUNT_FIELDS = "id,email,full_name,company,created_at"
+
+
+def _account_for_email(db, email: str) -> dict | None:
+    """
+    The account with this email, or None. On a Supabase deployment a failed
+    lookup is an outage (503), not "no such account": answering 404 would
+    tell the operator a paying customer does not exist.
+    """
     if db:
         try:
-            res = db.table("profiles").select("id").eq("email", email).limit(1).execute()
-            rows = res.data or []
-            if rows:
-                return str(rows[0]["id"])
+            res = db.table("profiles").select(_ACCOUNT_FIELDS).eq("email", email).limit(1).execute()
         except Exception as e:
             logger.warning(f"Profile lookup by email failed: {e}")
+            raise DatabaseUnavailable()
+        rows = res.data or []
+        if rows:
+            return dict(rows[0])
     user = local_db.get_user_by_email(email)
-    return user["id"] if user else None
+    if not user:
+        return None
+    return {k: user.get(k) for k in ("id", "email", "full_name", "company", "created_at")}
+
+
+def _user_id_for_email(db, email: str) -> str | None:
+    account = _account_for_email(db, email)
+    return str(account["id"]) if account else None
+
+
+def _plans_for(db, user_ids: list[str]) -> dict[str, str]:
+    """Plan per user, one query. Missing means free."""
+    if not user_ids:
+        return {}
+    if db:
+        try:
+            res = db.table("subscriptions").select("user_id,plan").in_("user_id", user_ids).execute()
+            return {str(r["user_id"]): r.get("plan") or "free" for r in (res.data or [])}
+        except Exception as e:
+            logger.warning(f"Plan lookup for the account list failed: {e}")
+            raise DatabaseUnavailable()
+    plans = {}
+    for uid in user_ids:
+        sub = local_db.get_subscription(uid)
+        if sub:
+            plans[uid] = sub.get("plan") or "free"
+    return plans
+
+
+@router.get("/admin/accounts")
+def list_accounts(
+    q: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=25, ge=1, le=100),
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """Newest accounts first, or those whose email contains `q`, with their plan."""
+    search = (q or "").strip().lower() or None
+    if db:
+        try:
+            query = db.table("profiles").select(_ACCOUNT_FIELDS)
+            if search:
+                # PostgREST ilike: escape the pattern characters, so a search
+                # for "a_b" means that text, not "a" + any char + "b".
+                escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                query = query.ilike("email", f"%{escaped}%")
+            rows = query.order("created_at", desc=True).limit(limit).execute().data or []
+        except Exception as e:
+            logger.warning(f"Account list failed: {e}")
+            raise DatabaseUnavailable()
+    else:
+        rows = local_db.list_users(limit, search)
+    plans = _plans_for(db, [str(r["id"]) for r in rows])
+    return {
+        "accounts": [
+            {
+                "user_id": str(r["id"]),
+                "email": r.get("email"),
+                "full_name": r.get("full_name") or "",
+                "company": r.get("company") or "",
+                "created_at": r.get("created_at"),
+                "plan": plans.get(str(r["id"]), "free"),
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.get("/admin/account")
+def get_account(
+    email: EmailStr,
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """One account with its plan and this month's usage."""
+    account = _account_for_email(db, normalize_email(str(email)))
+    if not account:
+        raise NotFoundError("No account exists for that email address.")
+    uid = str(account["id"])
+    return {
+        "user_id": uid,
+        "email": account.get("email"),
+        "full_name": account.get("full_name") or "",
+        "company": account.get("company") or "",
+        "created_at": account.get("created_at"),
+        "usage": billing.usage_summary(db, uid, _jobs),
+    }
 
 
 @router.post("/admin/plan")

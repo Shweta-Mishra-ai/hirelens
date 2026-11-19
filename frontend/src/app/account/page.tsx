@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ShieldOff, Trash2 } from "lucide-react";
+import { ShieldOff, Trash2, Wrench } from "lucide-react";
 import { AppShell, PageHeader, RequireAuth } from "@/components/AppShell";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/Field";
 import { Alert, Skeleton } from "@/components/ui/Feedback";
 import { useAuthStore } from "@/store/auth";
 import { APIError, authAPI, billingAPI, type PlanUsage } from "@/lib/api";
+import { setSignInDestination } from "@/lib/session";
 
 const PLAN_NAMES: Record<PlanUsage["plan"], string> = { free: "Free", pro: "Pro", team: "Team" };
 
@@ -125,6 +126,7 @@ function DeleteAccountCard() {
     setError(null);
     try {
       await authAPI.deleteAccount(typed.trim(), token);
+      setSignInDestination("/login?deleted=1");
       logout();
       router.replace("/login?deleted=1");
     } catch (e) {
@@ -170,6 +172,39 @@ function DeleteAccountCard() {
   );
 }
 
+/** Shown only to operators (ADMIN_EMAILS); the server checks every operator call. */
+function OperatorCard() {
+  const token = useAuthStore((s) => s.token);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    authAPI
+      .me(token)
+      .then((me) => !cancelled && setIsAdmin(Boolean(me.is_admin)))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [token]);
+
+  if (!isAdmin) return null;
+  return (
+    <Card>
+      <CardHeader title="Operator" description="Customers, their usage, and plan changes." />
+      <CardBody>
+        <Link href="/admin">
+          <Button variant="secondary">
+            <Wrench aria-hidden className="size-4" />
+            Open operator screen
+          </Button>
+        </Link>
+      </CardBody>
+    </Card>
+  );
+}
+
 function AccountContent() {
   const user = useAuthStore((s) => s.user);
   return (
@@ -177,6 +212,7 @@ function AccountContent() {
       <PageHeader title="Account" description={user?.email} />
       <div className="space-y-5">
         <PlanCard />
+        <OperatorCard />
         <SessionsCard />
         <DeleteAccountCard />
       </div>

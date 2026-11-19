@@ -276,7 +276,11 @@ the sidebar, and an upload over the limit is refused with HTTP **402** and a
 message saying how many are left. The limit resets on the 1st of each month, UTC.
 
 **Upgrading a customer after they pay.** Payment collection is not wired to a
-provider yet, so an operator listed in `ADMIN_EMAILS` records the upgrade:
+provider yet, so an operator listed in `ADMIN_EMAILS` records the upgrade. In
+the app: account menu → *Account and plan* → *Open operator screen* (or go to
+`/admin`), find the customer by email, and press the plan. Every operator
+call is checked against `ADMIN_EMAILS` on the server; everyone else sees
+"Operators only". The same from a terminal:
 
 ```bash
 API=https://<your-api>.onrender.com

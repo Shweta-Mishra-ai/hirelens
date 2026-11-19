@@ -24,6 +24,7 @@ import { cn } from "@/lib/cn";
 import { Skeleton } from "@/components/ui/Feedback";
 import { UsageMeter } from "@/components/UsageMeter";
 import { APIError, authAPI } from "@/lib/api";
+import { clearSignInDestination, pendingSignInDestination } from "@/lib/session";
 
 /**
  * Application chrome: a persistent left sidebar plus a slim top bar.
@@ -472,7 +473,11 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   useEffect(() => {
-    if (hasHydrated && !token) router.replace("/login");
+    if (!hasHydrated) return;
+    // Going to the destination the sign-out named (lib/session.ts), rather
+    // than a bare /login that would land last and wipe its message.
+    if (!token) router.replace(pendingSignInDestination());
+    else clearSignInDestination();
   }, [hasHydrated, token, router]);
 
   if (!hasHydrated || !token) {

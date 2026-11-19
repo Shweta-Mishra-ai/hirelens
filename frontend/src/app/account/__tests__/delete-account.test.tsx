@@ -23,7 +23,12 @@ vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
   return {
     ...actual,
-    authAPI: { ...actual.authAPI, deleteAccount: (...a: unknown[]) => deleteMock(...a), logoutAll: vi.fn() },
+    authAPI: {
+      ...actual.authAPI,
+      deleteAccount: (...a: unknown[]) => deleteMock(...a),
+      logoutAll: vi.fn(),
+      me: () => Promise.resolve({ id: "u1", email: "rec@example.com", is_admin: false }),
+    },
     billingAPI: {
       usage: () =>
         Promise.resolve({
