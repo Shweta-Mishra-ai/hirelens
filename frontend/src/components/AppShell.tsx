@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   ShieldOff,
+  UserCog,
 } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
 import { initials } from "@/lib/format";
@@ -189,6 +190,15 @@ function UserMenu({ collapsed }: { collapsed: boolean }) {
             </div>
             <div className="truncate text-xs text-content-faint">{user?.email}</div>
           </div>
+          <Link
+            role="menuitem"
+            href="/account"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-2 px-3 py-2.5 text-sm text-content-muted transition-colors hover:bg-canvas-inset hover:text-content"
+          >
+            <UserCog aria-hidden className="size-4" />
+            Account and plan
+          </Link>
           <button
             role="menuitem"
             type="button"

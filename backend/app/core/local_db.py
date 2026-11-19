@@ -1287,6 +1287,57 @@ def set_revoked_before(user_id: str, epoch_ms: int) -> bool:
         return False
 
 
+def delete_user_data(user_id: str, email: str | None = None) -> None:
+    """
+    Remove every row this user owns from the local store, and refuse their
+    sessions from now on. One transaction: all of it, or none of it.
+
+    What goes: the account, its reports and the comments and votes on them,
+    their comments and votes elsewhere, teams they own (with those teams'
+    members and invites), memberships, saved job descriptions, password-reset
+    tokens, plan and usage. Raises LocalStoreError if the write fails.
+
+    A table that was never created (its feature never used here) is skipped.
+    """
+    statements = [
+        ("DELETE FROM report_comments WHERE user_id = ? OR report_id IN "
+         "(SELECT id FROM reports WHERE user_id = ?)", (user_id, user_id)),
+        ("DELETE FROM report_votes WHERE user_id = ? OR report_id IN "
+         "(SELECT id FROM reports WHERE user_id = ?)", (user_id, user_id)),
+        ("DELETE FROM team_members WHERE user_id = ? OR team_id IN "
+         "(SELECT id FROM teams WHERE owner_id = ?)", (user_id, user_id)),
+        ("DELETE FROM team_invites WHERE team_id IN (SELECT id FROM teams WHERE owner_id = ?)", (user_id,)),
+        ("DELETE FROM teams WHERE owner_id = ?", (user_id,)),
+        ("DELETE FROM reports WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM saved_jds WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM password_resets WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM subscriptions WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM usage_events WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM users WHERE id = ?", (user_id,)),
+    ]
+    try:
+        with _get_connection() as conn:
+            for sql, params in statements:
+                try:
+                    conn.execute(sql, params)
+                except sqlite3.OperationalError as e:
+                    if "no such table" not in str(e):
+                        raise
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS session_revocations ("
+                "user_id TEXT PRIMARY KEY, revoked_before INTEGER NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO session_revocations (user_id, revoked_before) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET revoked_before = excluded.revoked_before",
+                (user_id, 2**62),
+            )
+            conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Could not delete local data for {user_id}: {e}")
+        raise LocalStoreError("The account could not be deleted. Nothing was removed.") from e
+
+
 init_local_db()
 init_session_table()
 init_collaboration_tables()

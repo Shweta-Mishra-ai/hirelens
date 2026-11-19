@@ -8,13 +8,16 @@ target, an exact count — can pass all of them. These run the same endpoints
 through the real supabase-py client against the real server.
 
 Skipped unless a stack is configured. scripts/postgrest_e2e.sh starts one
-(Postgres 16 with sql/001-008 applied, PostgREST, and the /rest/v1 mapping
+(Postgres 16 with every file in sql/ applied, PostgREST, and the /rest/v1 mapping
 Supabase's gateway provides) and runs this file:
 
     HIRELENS_E2E_SUPABASE_URL     e.g. http://127.0.0.1:54321
     HIRELENS_E2E_SERVICE_KEY      a service_role JWT for that PostgREST
     HIRELENS_E2E_USERS            "uuid:email,uuid:email,uuid:email" — rows
                                   already present in auth.users
+    HIRELENS_E2E_DB_CONTAINER     the Postgres container, for the one test
+                                  that must delete from auth.users (no GoTrue
+                                  runs here); that test is skipped without it
 """
 
 import os
@@ -367,3 +370,74 @@ class TestSchemaCheckAgainstPostgREST:
 
         schema_check.clear_cache()
         assert client.get("/api/v1/health").json()["services"]["schema"] == "ok"
+
+
+class TestAccountDeletionAgainstPostgres:
+    """
+    Deleting an account against the real schema: the foreign keys must
+    cascade from auth.users through every table (sql/001-008), saved_jds must
+    be removed by the API (it has no foreign key), and the tombstone (009)
+    must refuse the account's old tokens.
+
+    No GoTrue runs in this stack, so the one admin call — deleting the
+    auth.users row — is done with psql in the Postgres container. Everything
+    else goes through the real endpoint and PostgREST.
+    """
+
+    @pytest.fixture
+    def leaver(self):
+        if len(USERS) < 4 or not os.environ.get("HIRELENS_E2E_DB_CONTAINER"):
+            pytest.skip("needs a fourth seeded user and HIRELENS_E2E_DB_CONTAINER")
+        return USERS[3]
+
+    def test_the_account_and_everything_it_owns_is_deleted(self, client, db, leaver, owner, monkeypatch):
+        import subprocess
+        from app.services import sessions
+
+        uid, email = leaver
+        headers = _headers(leaver)
+        rid, _ = _analyse(client, leaver, _report("Leah Candidate", "leah@example.com", ["SQL"]), "leah.pdf")
+        team = client.post("/api/v1/teams", json={"name": "Leaver's team"}, headers=headers)
+        assert team.status_code == 200, team.text
+        team_id = team.json()["id"]
+        assert client.post(f"/api/v1/reports/{rid}/share", json={"team_id": team_id}, headers=headers).status_code == 200
+        invite = client.post(f"/api/v1/teams/{team_id}/invite", json={"email": "invitee@e2e-example.com"}, headers=headers)
+        assert invite.status_code == 200, invite.text
+        assert client.post("/api/v1/job-descriptions", json={"name": "Data role", "jd_text": "We need a data engineer " * 5},
+                           headers=headers).status_code in (200, 201)
+        # Someone else's comment on the leaver's shared report goes too.
+        db.table("team_members").insert({"team_id": team_id, "user_id": owner[0], "role": "member"}).execute()
+        assert client.post(f"/api/v1/reports/{rid}/comments", json={"comment": "Strong SQL"},
+                           headers=_headers(owner)).status_code == 200
+
+        container = os.environ["HIRELENS_E2E_DB_CONTAINER"]
+
+        def delete_auth_user(user_id, should_soft_delete=False):
+            subprocess.run(
+                ["docker", "exec", container, "psql", "-U", "postgres", "-v", "ON_ERROR_STOP=1", "-qc",
+                 f"delete from auth.users where id = '{uuid.UUID(user_id)}'"],
+                check=True, capture_output=True, text=True,
+            )
+
+        monkeypatch.setattr(db.auth.admin, "delete_user", delete_auth_user)
+        res = client.post("/api/v1/auth/delete-account", json={"confirm_email": email}, headers=headers)
+        assert res.status_code == 200, res.text
+
+        def count(table, column, value):
+            return len(db.table(table).select(column).eq(column, value).execute().data)
+
+        assert count("reports", "user_id", uid) == 0
+        assert count("report_comments", "report_id", rid) == 0
+        assert count("teams", "owner_id", uid) == 0
+        assert count("team_members", "team_id", team_id) == 0
+        assert count("team_invites", "team_id", team_id) == 0
+        assert count("saved_jds", "user_id", uid) == 0
+        assert count("usage_events", "user_id", uid) == 0
+        assert count("profiles", "id", uid) == 0
+        assert count("deleted_accounts", "user_id", uid) == 1
+        # The owner's own account is untouched.
+        assert count("profiles", "id", owner[0]) == 1
+
+        sessions.clear_cache()
+        assert client.get("/api/v1/auth/me", headers=headers).status_code == 401
+        assert client.get("/api/v1/auth/me", headers=_headers(owner)).status_code == 200

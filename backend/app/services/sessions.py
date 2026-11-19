@@ -17,6 +17,10 @@ Two deliberate choices:
 * Comparison is in milliseconds (`iat_ms`), so a sign-in immediately after
   a revocation is accepted and a token from just before it is not. Tokens
   minted before `iat_ms` existed fall back to `iat` in seconds.
+
+A deleted account is revoked forever. Its session_revocations row goes with
+the user (foreign key), so deletion is recorded in deleted_accounts instead
+(sql/009), which has no foreign key and outlives the account.
 """
 
 import logging
@@ -29,6 +33,8 @@ from app.core import local_db
 logger = logging.getLogger("hirelens")
 
 CACHE_SECONDS = 60.0
+# "Every token, whenever issued": what a deleted account's revocation is.
+DELETED = 2**62
 _cache: dict[str, tuple[float, int]] = {}  # user_id -> (fetched_at, revoked_before_ms)
 _lock = threading.Lock()
 
@@ -74,6 +80,9 @@ def revoked_before(db, user_id: str) -> int:
         logger.warning(f"Session revocation lookup failed for {user_id}; allowing: {e}")
         return 0
 
+    if db and not value and _is_deleted(db, user_id):
+        value = DELETED
+
     with _lock:
         _cache[user_id] = (now, value)
         if len(_cache) > 10_000:
@@ -81,6 +90,32 @@ def revoked_before(db, user_id: str) -> int:
             for key in [k for k, (t, _) in _cache.items() if t < cutoff]:
                 _cache.pop(key, None)
     return value
+
+
+def _is_deleted(db, user_id: str) -> bool:
+    """Whether this account was deleted. Never raises.
+
+    A failure here (009 not yet run, Supabase blip) is not logged per call:
+    it would repeat once a minute for every active user, and a missing
+    migration is already reported at startup and on /health.
+    """
+    try:
+        res = (
+            db.table("deleted_accounts")
+            .select("user_id")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        return bool(res.data)
+    except Exception:
+        return False
+
+
+def mark_deleted(user_id: str) -> None:
+    """Refuse this user's tokens in this process at once, before any lookup."""
+    with _lock:
+        _cache[user_id] = (time.monotonic() + 10 * 365 * 24 * 3600, DELETED)
 
 
 def is_revoked(db, user_id: str, payload: dict) -> bool:

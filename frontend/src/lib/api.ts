@@ -393,6 +393,14 @@ export const authAPI = {
   logoutAll: (token: string) =>
     req<{ status: string; message: string }>("/api/v1/auth/logout-all", { method: "POST", token }),
 
+  /** Permanently delete the account. `confirmEmail` must match the account's email. */
+  deleteAccount: (confirmEmail: string, token: string) =>
+    req<{ status: string; message: string }>("/api/v1/auth/delete-account", {
+      method: "POST",
+      token,
+      body: JSON.stringify({ confirm_email: confirmEmail }),
+    }),
+
   me: (token: string) =>
     req<{ id: string; email: string }>("/api/v1/auth/me", { token }),
 

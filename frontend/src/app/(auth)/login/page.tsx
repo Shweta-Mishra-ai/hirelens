@@ -86,6 +86,7 @@ function LoginForm() {
   // in, and saying so is the difference between "the app logged me out for no
   // reason" and "my session ran out".
   const sessionEnded = searchParams.get("session") === "expired";
+  const accountDeleted = searchParams.get("deleted") === "1";
 
   const [email, setEmail] = useState(invite.email ?? "");
   const [password, setPassword] = useState("");
@@ -157,6 +158,11 @@ function LoginForm() {
       footer={<AuthFooterLink prompt="New to HireLens?" href="/signup" label="Create an account" />}
     >
       {invite.email && <InviteBanner email={invite.email} mode="login" />}
+      {accountDeleted && !error && (
+        <Alert tone="success" title="Your account has been deleted" className="mb-5">
+          Your reports, teams and everything else in it are gone. Thank you for trying HireLens.
+        </Alert>
+      )}
       {sessionEnded && !error && (
         <Alert tone="info" title="Your session has ended" className="mb-5">
           Sign in again to pick up where you left off — nothing has been lost.

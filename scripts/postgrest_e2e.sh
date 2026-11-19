@@ -90,7 +90,8 @@ psql_db <<'SQL'
 insert into auth.users (id, email, raw_user_meta_data) values
   ('11111111-1111-1111-1111-111111111111', 'owner@e2e-example.com',    '{"full_name": "Olivia Owner"}'),
   ('22222222-2222-2222-2222-222222222222', 'mate@e2e-example.com',     '{"full_name": "Tariq Mate"}'),
-  ('33333333-3333-3333-3333-333333333333', 'stranger@e2e-example.com', '{"full_name": "Sam Stranger"}');
+  ('33333333-3333-3333-3333-333333333333', 'stranger@e2e-example.com', '{"full_name": "Sam Stranger"}'),
+  ('44444444-4444-4444-4444-444444444444', 'leaver@e2e-example.com',   '{"full_name": "Lee Leaver"}');
 SQL
 
 docker run -d --name "$API" --network "$NET" -p "127.0.0.1:$REST_PORT:3000" \
@@ -116,6 +117,7 @@ done
 cd "$ROOT/backend"
 HIRELENS_E2E_SUPABASE_URL="http://127.0.0.1:$GATEWAY_PORT" \
 HIRELENS_E2E_SERVICE_KEY="$SERVICE_KEY" \
-HIRELENS_E2E_USERS="11111111-1111-1111-1111-111111111111:owner@e2e-example.com,22222222-2222-2222-2222-222222222222:mate@e2e-example.com,33333333-3333-3333-3333-333333333333:stranger@e2e-example.com" \
+HIRELENS_E2E_USERS="11111111-1111-1111-1111-111111111111:owner@e2e-example.com,22222222-2222-2222-2222-222222222222:mate@e2e-example.com,33333333-3333-3333-3333-333333333333:stranger@e2e-example.com,44444444-4444-4444-4444-444444444444:leaver@e2e-example.com" \
+HIRELENS_E2E_DB_CONTAINER="$DB" \
 APP_ENV=development SECRET_KEY=test-secret-key-for-ci-only-do-not-use-in-prod \
   "$PY" -m pytest tests/postgrest -q -p no:cacheprovider

@@ -52,6 +52,7 @@ REQUIREMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("007_billing_and_usage.sql", "subscriptions", ("user_id", "plan", "status", "current_period_end")),
     ("007_billing_and_usage.sql", "usage_events", ("id", "user_id", "kind", "report_id", "created_at")),
     ("008_sessions_and_invite_fk.sql", "session_revocations", ("user_id", "revoked_before")),
+    ("009_account_deletion.sql", "deleted_accounts", ("user_id", "deleted_at")),
 )
 
 # What stops working without each file, for the startup log.
@@ -64,6 +65,7 @@ CONSEQUENCES = {
     "008_sessions_and_invite_fk.sql": (
         "'Sign out of all devices' fails and a password reset cannot end old sessions"
     ),
+    "009_account_deletion.sql": "people cannot delete their own account",
 }
 
 _MISSING_TABLE_CODES = {"PGRST205", "42P01"}

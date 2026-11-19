@@ -55,6 +55,7 @@ error.
 | 6 | `backend/sql/006_index_and_policy_tuning.sql` | indexes and policy rewrites the Supabase advisors flag |
 | 7 | `backend/sql/007_billing_and_usage.sql` | `subscriptions` and the `usage_events` ledger behind plan quotas — writable only by the API |
 | 8 | `backend/sql/008_sessions_and_invite_fk.sql` | `session_revocations` (password reset and "sign out of all devices" end old sessions), and a fix that let a user who had sent a team invite be deleted |
+| 9 | `backend/sql/009_account_deletion.sql` | `deleted_accounts` — lets people delete their own account (*Account and plan* in the account menu) and makes the deleted account's open sessions stop working |
 
 **002 must come after 001** — it adds a column to `reports` and foreign-keys
 four tables to it.
@@ -72,8 +73,8 @@ Or verify from the SQL Editor:
 ```sql
 select table_name from information_schema.tables
 where table_schema = 'public' order by table_name;
--- profiles, report_comments, report_votes, reports, saved_jds, session_revocations,
--- subscriptions, team_invites, team_members, teams, usage_events
+-- deleted_accounts, profiles, report_comments, report_votes, reports, saved_jds,
+-- session_revocations, subscriptions, team_invites, team_members, teams, usage_events
 ```
 
 ### Why `profiles` exists

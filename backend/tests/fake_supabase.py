@@ -273,6 +273,7 @@ SCHEMA: dict[str, set[str]] = {
     },
     "usage_events": {"id", "user_id", "kind", "report_id", "created_at"},
     "session_revocations": {"user_id", "revoked_before"},
+    "deleted_accounts": {"user_id", "deleted_at"},
 }
 
 
@@ -451,3 +452,42 @@ class FakeAuthAdmin:
                 self.auth.users[email] = (new_password, user)
                 return FakeAuthResult(user)
         raise AuthApiError("User not found", status=404, code="user_not_found")
+
+    def delete_user(self, uid: str, should_soft_delete: bool = False):
+        """
+        Deletes the auth user and applies the foreign keys the migrations
+        define (001-008): ON DELETE CASCADE from auth.users, then from the
+        rows that cascaded (teams -> members/invites, reports -> comments and
+        votes), SET NULL for reports.team_id and team_invites.invited_by.
+        Tables with no foreign key to auth.users (saved_jds, deleted_accounts)
+        are left alone, exactly as Postgres would leave them.
+        """
+        self.auth._maybe_raise()
+        self.deleted = getattr(self, "deleted", []) + [uid]
+        found = False
+        for email, (_, user) in list(self.auth.users.items()):
+            if user.id == uid:
+                del self.auth.users[email]
+                found = True
+        if not found:
+            raise AuthApiError("User not found", status=404, code="user_not_found")
+
+        t = self.auth.client.tables
+        teams = {r["id"] for r in t.get("teams", []) if r.get("owner_id") == uid}
+        reports = {r["id"] for r in t.get("reports", []) if r.get("user_id") == uid}
+        for name in ("reports", "profiles", "team_members", "report_comments", "report_votes",
+                     "subscriptions", "usage_events", "session_revocations"):
+            key = "id" if name == "profiles" else "user_id"
+            t[name] = [r for r in t.get(name, []) if r.get(key) != uid]
+        t["teams"] = [r for r in t.get("teams", []) if r.get("id") not in teams]
+        t["team_members"] = [r for r in t.get("team_members", []) if r.get("team_id") not in teams]
+        t["team_invites"] = [r for r in t.get("team_invites", []) if r.get("team_id") not in teams]
+        for name in ("report_comments", "report_votes"):
+            t[name] = [r for r in t.get(name, []) if r.get("report_id") not in reports]
+        for r in t.get("reports", []):
+            if r.get("team_id") in teams:
+                r["team_id"] = None
+        for r in t.get("team_invites", []):
+            if r.get("invited_by") == uid:
+                r["invited_by"] = None
+        return None

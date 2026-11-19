@@ -379,6 +379,7 @@ read or queued:
 | Method | Path | Notes |
 |---|---|---|
 | `POST` | `/api/v1/auth/logout-all` | Ends every session for this account, on every device, this one included. Other copies of the token stop working within a minute (each instance caches the check for 60s) |
+| `POST` | `/api/v1/auth/delete-account` | `{ confirm_email }` — must equal the account's email (case and surrounding spaces ignored), else 422. Permanently deletes the account and everything it owns; the account's tokens are refused from then on. 409 while one of its analyses is running; 503 `account_deletion_unavailable`, with nothing deleted, if `sql/009` has not been run |
 
 A password reset also ends every session issued before it. A revoked token
 gets `401` with `"This session has been signed out. Please sign in again."`

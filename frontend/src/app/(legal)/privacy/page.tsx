@@ -80,9 +80,18 @@ export default function PrivacyPage() {
 
       <H>How long we keep it</H>
       <p>
-        Reports, notes and comments are kept until you delete them or your account is closed.
-        Deleting a report deletes its comments and votes. Usage counts are kept for billing.
-        Request logs are kept by our hosting providers for their standard retention periods.
+        Reports, notes and comments are kept until you delete them or delete your account.
+        Deleting a report deletes its comments and votes. Usage counts are kept for billing
+        while your account exists. Request logs are kept by our hosting providers for their
+        standard retention periods.
+      </p>
+      <p>
+        You can delete your account yourself from <strong className="text-content">Account
+        and plan</strong> in the account menu. That removes, immediately and permanently, your
+        account, every report with its notes, comments and votes, teams you own, your saved job
+        descriptions, and your plan and usage records. We keep only a random identifier of the
+        deleted account and the time it was deleted, so that sessions still open on other devices
+        stop working; it contains no name or email address.
       </p>
 
       <H>Security</H>
@@ -95,7 +104,9 @@ export default function PrivacyPage() {
       <H>Your rights</H>
       <p>
         Depending on where you live you may have rights to access, correct, delete or export your
-        personal data, and to object to or restrict its processing. Email {email} and we will
+        personal data, and to object to or restrict its processing. You can export your reports
+        as CSV from the dashboard and delete your account from the account menu at any time; for
+        anything else, email {email} and we will
         respond within the time the law requires. You may also complain to your data-protection
         authority.
       </p>

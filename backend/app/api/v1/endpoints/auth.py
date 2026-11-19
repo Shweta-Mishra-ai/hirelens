@@ -462,6 +462,42 @@ def get_me(current_user: dict = Depends(get_current_user)):
     return current_user
 
 
+class DeleteAccountRequest(BaseModel):
+    # The account's own email, typed by the person. Guards against a
+    # misclick, not an attacker: anyone holding the token knows the address.
+    confirm_email: str
+
+
+@router.post("/delete-account")
+def delete_account(
+    body: DeleteAccountRequest,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """
+    Permanently delete this account and everything it owns. See
+    app/services/account_deletion.py for exactly what is removed and in what
+    order. The client discards its token; every other copy is refused.
+    """
+    from app.core.exceptions import ValidationError
+    from app.services import account_deletion
+    from app.api.v1.endpoints.analysis import _jobs
+
+    email = (current_user.get("email") or "").strip().lower()
+    if not email:
+        raise ValidationError("Sign out and sign in again, then try deleting your account once more.")
+    if body.confirm_email.strip().lower() != email:
+        raise ValidationError("Type your account's email address exactly as shown to confirm.")
+
+    account_deletion.delete_account(db, current_user["id"], _jobs)
+    # The in-memory mirror of local accounts would otherwise still accept the
+    # old password in this process.
+    _mem_users.pop(email, None)
+    for key in [k for k, v in _mem_users.items() if v.get("id") == current_user["id"]]:
+        _mem_users.pop(key, None)
+    return {"status": "deleted", "message": "Your account and all of its data have been deleted."}
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
