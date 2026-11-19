@@ -169,7 +169,7 @@ jobs:
                    dashboard/index.html report/index.html analyze/index.html \
                    bulk/index.html match/index.html teams/index.html \
                    reset-password/index.html privacy/index.html terms/index.html \
-                   account/index.html admin/index.html; do
+                   account/index.html admin/index.html upgrade/index.html; do
             test -f "out/$f" || { echo "::error::missing out/$f"; exit 1; }
           done
           grep -q 'http-equiv="Content-Security-Policy"' out/index.html \

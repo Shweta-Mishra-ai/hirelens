@@ -459,3 +459,41 @@ class TestOperatorScreenAgainstPostgREST:
         assert detail.status_code == 200, detail.text
         assert detail.json()["user_id"] == owner[0]
         assert "usage" in detail.json()
+
+
+class TestUpiPaymentsAgainstPostgREST:
+    def test_claim_approve_and_the_database_rules(self, client, db, owner, teammate, monkeypatch):
+        from app.core.config import settings
+        from app.services import sessions
+
+        sessions.clear_cache()
+        monkeypatch.setattr(settings, "ADMIN_EMAILS", owner[1])
+        monkeypatch.setattr(settings, "PAYMENT_UPI_ID", "hirelens@okbank")
+        monkeypatch.setattr(settings, "PRO_PRICE_INR", 499)
+        monkeypatch.setattr(settings, "UPGRADE_URL", "")
+        ref = str(uuid.uuid4().int)[:12]
+
+        claim = client.post("/api/v1/billing/payments", json={"plan": "pro", "reference": ref}, headers=_headers(teammate))
+        assert claim.status_code == 201, claim.text
+        pid = claim.json()["id"]
+
+        # The partial unique indexes from sql/010, hit directly: a second
+        # pending claim for the account, and a second live claim on the
+        # reference, are both refused by Postgres itself.
+        with pytest.raises(Exception) as second_pending:
+            db.table("payment_requests").insert({
+                "user_id": teammate[0], "plan": "pro", "amount_inr": 499, "reference": "999999999999",
+            }).execute()
+        assert "23505" in str(second_pending.value) or "duplicate" in str(second_pending.value).lower()
+        reused = client.post("/api/v1/billing/payments", json={"plan": "pro", "reference": ref}, headers=_headers(owner))
+        assert reused.status_code == 409
+
+        approved = client.post(f"/api/v1/billing/admin/payments/{pid}/approve", headers=_headers(owner))
+        assert approved.status_code == 200, approved.text
+        row = db.table("payment_requests").select("status,decided_by").eq("id", pid).execute().data[0]
+        assert row == {"status": "approved", "decided_by": owner[1]}
+        sub = db.table("subscriptions").select("plan,current_period_end,provider").eq("user_id", teammate[0]).execute().data[0]
+        assert sub["plan"] == "pro" and sub["provider"] == "upi" and sub["current_period_end"]
+        usage = client.get("/api/v1/billing/usage", headers=_headers(teammate)).json()
+        assert usage["plan"] == "pro" and usage["plan_expires_at"]
+        assert client.post(f"/api/v1/billing/admin/payments/{pid}/approve", headers=_headers(owner)).status_code == 409

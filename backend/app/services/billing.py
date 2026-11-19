@@ -52,31 +52,75 @@ def period_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
     return start, end
 
 
-def get_plan(db, user_id: str) -> str:
-    """The user's plan. Anything unreadable or inactive is treated as free."""
+def _parse_time(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _plan_from_row(row: dict | None) -> tuple[str, datetime | None]:
+    """(plan, expiry) for a subscription row. A plan bought for a period
+    (current_period_end) is free again once that moment has passed; one set
+    by an operator with no end date does not expire."""
+    if not row or row.get("status") not in (None, "active") or row.get("plan") not in PLANS:
+        return "free", None
+    ends = _parse_time(row.get("current_period_end"))
+    if ends and ends <= datetime.now(timezone.utc):
+        return "free", None
+    return row["plan"], ends
+
+
+def get_subscription(db, user_id: str) -> tuple[str, datetime | None]:
+    """The user's plan and when it lapses (None: it does not). Anything
+    unreadable or inactive is treated as free."""
     if db:
         try:
             res = (
                 db.table("subscriptions")
-                .select("plan,status")
+                .select("plan,status,current_period_end")
                 .eq("user_id", user_id)
                 .maybe_single()
                 .execute()
             )
             row = res.data if res else None
-            if row and row.get("status") in (None, "active") and row.get("plan") in PLANS:
-                return row["plan"]
             if row:
-                return "free"
+                return _plan_from_row(row)
+            return "free", None
         except Exception as e:
             # Not raised: a plan lookup failure must not lock a paying
             # customer out. They are metered as free for this request, which
             # with default limits is unlimited.
             logger.warning(f"Plan lookup failed for {user_id}, treating as free: {e}")
-    row = local_db.get_subscription(user_id)
-    if row and row.get("status") in (None, "active") and row.get("plan") in PLANS:
-        return row["plan"]
-    return "free"
+    return _plan_from_row(local_db.get_subscription(user_id))
+
+
+def get_plan(db, user_id: str) -> str:
+    """The user's plan. Anything unreadable, inactive or lapsed is free."""
+    return get_subscription(db, user_id)[0]
+
+
+def purchasable_plans() -> list[dict]:
+    """Plans that can be bought in the app: priced above 0, with UPI set up."""
+    if not settings.PAYMENT_UPI_ID.strip():
+        return []
+    prices = {"pro": settings.PRO_PRICE_INR, "team": settings.TEAM_PRICE_INR}
+    return [
+        {"plan": plan, "price_inr": int(price), "monthly_analyses": monthly_limit(plan) or None}
+        for plan, price in prices.items()
+        if int(price or 0) > 0
+    ]
+
+
+def upgrade_link() -> str | None:
+    """Where "Upgrade" goes: the operator's own link if set, else the in-app
+    UPI page when something can be bought there, else nowhere."""
+    if settings.UPGRADE_URL:
+        return settings.UPGRADE_URL
+    return "/upgrade" if purchasable_plans() else None
 
 
 def used_this_period(db, user_id: str) -> int:
@@ -133,7 +177,7 @@ def in_flight(user_id: str, jobs) -> int:
 
 
 def usage_summary(db, user_id: str, jobs=None) -> dict:
-    plan = get_plan(db, user_id)
+    plan, plan_ends = get_subscription(db, user_id)
     limit = monthly_limit(plan)
     used = used_this_period(db, user_id)
     pending = in_flight(user_id, jobs) if jobs is not None else 0
@@ -147,7 +191,9 @@ def usage_summary(db, user_id: str, jobs=None) -> dict:
         "limit": limit or None,
         "remaining": None if not limit else max(0, limit - used - pending),
         "unlimited": not limit,
-        "upgrade_url": settings.UPGRADE_URL or None,
+        "upgrade_url": upgrade_link(),
+        # When a plan bought for a period lapses back to free; null if never.
+        "plan_expires_at": plan_ends.isoformat() if plan_ends else None,
     }
 
 
@@ -171,23 +217,38 @@ def ensure_quota(db, user_id: str, requested: int, jobs) -> None:
         raise QuotaExceeded(detail, plan=plan, limit=limit, remaining=remaining)
 
 
-def set_plan(db, user_id: str, plan: str) -> None:
-    """Operator action: move an account to `plan`. Raises if nothing stored it."""
+def set_plan(
+    db,
+    user_id: str,
+    plan: str,
+    period_end: datetime | None = None,
+    provider: str | None = None,
+    reference: str | None = None,
+) -> None:
+    """
+    Move an account to `plan`. With `period_end`, the plan lapses back to
+    free at that moment (a paid month); without, it does not expire (an
+    operator's manual change). Raises if nothing stored it.
+    """
     from app.core.exceptions import StorageWriteFailed
 
     if plan not in PLANS:
         raise ValueError(f"Unknown plan {plan!r}")
+    ends = period_end.isoformat() if period_end else None
     if db:
         try:
             db.table("subscriptions").upsert({
                 "user_id": user_id,
                 "plan": plan,
                 "status": "active",
+                "current_period_end": ends,
+                "provider": provider,
+                "provider_reference": reference,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }, on_conflict="user_id").execute()
             return
         except Exception as e:
             logger.error(f"Plan change failed in Supabase for {user_id}: {e}")
             raise StorageWriteFailed("The plan could not be changed. Nothing was modified.")
-    if not local_db.set_subscription(user_id, plan):
+    if not local_db.set_subscription(user_id, plan, current_period_end=ends):
         raise StorageWriteFailed("The plan could not be changed. Nothing was modified.")

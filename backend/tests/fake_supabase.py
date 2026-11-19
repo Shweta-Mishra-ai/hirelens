@@ -286,6 +286,10 @@ SCHEMA: dict[str, set[str]] = {
     "usage_events": {"id", "user_id", "kind", "report_id", "created_at"},
     "session_revocations": {"user_id", "revoked_before"},
     "deleted_accounts": {"user_id", "deleted_at"},
+    "payment_requests": {
+        "id", "user_id", "plan", "amount_inr", "method", "reference", "status",
+        "note", "created_at", "decided_at", "decided_by",
+    },
 }
 
 
@@ -488,7 +492,7 @@ class FakeAuthAdmin:
         teams = {r["id"] for r in t.get("teams", []) if r.get("owner_id") == uid}
         reports = {r["id"] for r in t.get("reports", []) if r.get("user_id") == uid}
         for name in ("reports", "profiles", "team_members", "report_comments", "report_votes",
-                     "subscriptions", "usage_events", "session_revocations"):
+                     "subscriptions", "usage_events", "session_revocations", "payment_requests"):
             key = "id" if name == "profiles" else "user_id"
             t[name] = [r for r in t.get(name, []) if r.get(key) != uid]
         t["teams"] = [r for r in t.get("teams", []) if r.get("id") not in teams]

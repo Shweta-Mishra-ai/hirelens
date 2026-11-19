@@ -197,7 +197,7 @@ App on **localhost:3000**, interactive API docs on **localhost:8000/docs**.
 
 Leave the Supabase variables unset and everything runs on a local SQLite file —
 no cloud account needed to develop. For production, follow
-[**docs/DEPLOYMENT.md**](docs/DEPLOYMENT.md): nine SQL files, one Render
+[**docs/DEPLOYMENT.md**](docs/DEPLOYMENT.md): ten SQL files, one Render
 service, one static site (Cloudflare Pages, Netlify or Render — free plans
 included; see *Running at ₹0*).
 

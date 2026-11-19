@@ -180,7 +180,7 @@ async function req<T>(
  */
 export const USAGE_CHANGED_EVENT = "hirelens:usage-changed";
 
-function announceUsageChange(): void {
+export function announceUsageChange(): void {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(USAGE_CHANGED_EVENT));
   }
@@ -779,10 +779,57 @@ export interface PlanUsage {
   remaining: number | null;
   unlimited: boolean;
   upgrade_url: string | null;
+  /** When a plan bought for a period lapses back to free; null if it does not. */
+  plan_expires_at?: string | null;
+}
+
+export interface PlanOffer {
+  plan: "pro" | "team";
+  price_inr: number;
+  monthly_analyses: number | null;
+}
+
+export interface PlansInfo {
+  upi_id: string | null;
+  payee_name: string | null;
+  period_days: number;
+  plans: PlanOffer[];
+  usage: PlanUsage;
+}
+
+export interface PaymentClaim {
+  id: string;
+  plan: "pro" | "team";
+  amount_inr: number;
+  method: string;
+  reference: string;
+  status: "pending" | "approved" | "rejected";
+  note: string | null;
+  created_at: string;
+  decided_at: string | null;
+}
+
+export interface OperatorPaymentClaim extends PaymentClaim {
+  user_id: string;
+  email: string;
+  decided_by: string | null;
+}
+
+/** An upgrade link the server sent: in-app ("/upgrade") or an outside URL. */
+export function isInAppLink(url: string | null | undefined): boolean {
+  return Boolean(url && url.startsWith("/") && !url.startsWith("//"));
 }
 
 export const billingAPI = {
   usage: (token: string) => req<PlanUsage>("/api/v1/billing/usage", { token }),
+  plans: (token: string) => req<PlansInfo>("/api/v1/billing/plans", { token }),
+  myPayments: (token: string) => req<{ payments: PaymentClaim[] }>("/api/v1/billing/payments", { token }),
+  submitPayment: (plan: PlanOffer["plan"], reference: string, token: string) =>
+    req<PaymentClaim>("/api/v1/billing/payments", {
+      method: "POST",
+      token,
+      body: JSON.stringify({ plan, reference }),
+    }),
 };
 
 // ── Operator screen (ADMIN_EMAILS only; the server checks every call) ──────
@@ -807,6 +854,19 @@ export const adminAPI = {
     ),
   account: (email: string, token: string) =>
     req<AdminAccountDetail>(`/api/v1/billing/admin/account?email=${encodeURIComponent(email)}`, { token }),
+  payments: (token: string, status: "pending" | "approved" | "rejected" | "all" = "pending") =>
+    req<{ payments: OperatorPaymentClaim[] }>(`/api/v1/billing/admin/payments?status=${status}`, { token }),
+  approvePayment: (id: string, token: string) =>
+    req<{ status: string; plan: string; plan_expires_at: string }>(
+      `/api/v1/billing/admin/payments/${encodeURIComponent(id)}/approve`,
+      { method: "POST", token },
+    ),
+  rejectPayment: (id: string, note: string, token: string) =>
+    req<{ status: string }>(`/api/v1/billing/admin/payments/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      token,
+      body: JSON.stringify({ note: note || null }),
+    }),
   setPlan: (email: string, plan: PlanUsage["plan"], token: string) =>
     req<{ status: string; user_id: string; plan: string }>("/api/v1/billing/admin/plan", {
       method: "POST",

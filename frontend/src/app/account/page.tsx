@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { Alert, Skeleton } from "@/components/ui/Feedback";
 import { useAuthStore } from "@/store/auth";
-import { APIError, authAPI, billingAPI, type PlanUsage } from "@/lib/api";
+import { APIError, authAPI, billingAPI, isInAppLink, type PlanUsage } from "@/lib/api";
 import { setSignInDestination } from "@/lib/session";
 
 const PLAN_NAMES: Record<PlanUsage["plan"], string> = { free: "Free", pro: "Pro", team: "Team" };
@@ -55,11 +55,15 @@ function PlanCard() {
                   ? `${usage.used} analyses this month — no monthly limit`
                   : `${usage.used} of ${usage.limit} analyses used this month`}
                 {usage.period_end && ` · resets ${formatDay(usage.period_end)}`}
+                {usage.plan_expires_at && ` · ${PLAN_NAMES[usage.plan]} until ${formatDay(usage.plan_expires_at)}`}
               </div>
             </div>
-            {usage.upgrade_url && usage.plan === "free" && (
-              <a href={usage.upgrade_url} target="_blank" rel="noopener noreferrer">
-                <Button variant="primary">Upgrade</Button>
+            {usage.upgrade_url && usage.plan !== "team" && (
+              <a
+                href={usage.upgrade_url}
+                {...(isInAppLink(usage.upgrade_url) ? {} : { target: "_blank", rel: "noopener noreferrer" })}
+              >
+                <Button variant="primary">{usage.plan === "free" ? "Upgrade" : "Renew or upgrade"}</Button>
               </a>
             )}
           </div>

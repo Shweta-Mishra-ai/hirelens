@@ -56,6 +56,7 @@ error.
 | 7 | `backend/sql/007_billing_and_usage.sql` | `subscriptions` and the `usage_events` ledger behind plan quotas — writable only by the API |
 | 8 | `backend/sql/008_sessions_and_invite_fk.sql` | `session_revocations` (password reset and "sign out of all devices" end old sessions), and a fix that let a user who had sent a team invite be deleted |
 | 9 | `backend/sql/009_account_deletion.sql` | `deleted_accounts` — lets people delete their own account (*Account and plan* in the account menu) and makes the deleted account's open sessions stop working |
+| 10 | `backend/sql/010_upi_payments.sql` | `payment_requests` — UPI payments customers submit and an operator approves (*Getting paid with UPI* below) |
 
 **002 must come after 001** — it adds a column to `reports` and foreign-keys
 four tables to it.
@@ -73,8 +74,9 @@ Or verify from the SQL Editor:
 ```sql
 select table_name from information_schema.tables
 where table_schema = 'public' order by table_name;
--- deleted_accounts, profiles, report_comments, report_votes, reports, saved_jds,
--- session_revocations, subscriptions, team_invites, team_members, teams, usage_events
+-- deleted_accounts, payment_requests, profiles, report_comments, report_votes, reports,
+-- saved_jds, session_revocations, subscriptions, team_invites, team_members, teams,
+-- usage_events
 ```
 
 ### Why `profiles` exists
@@ -174,7 +176,8 @@ than showing one that fails at the verification step.
 | `RESEND_API_KEY` | ➖ | Candidate and invite emails. On Render's **free** plan this is the only way the API can send mail — see *Email* in section 5 |
 | `SMTP_FROM_EMAIL` | ➖ | Sender address. **Required with Resend**: it must be on a domain you have verified there, or every send is rejected |
 | `FREE_MONTHLY_ANALYSES` / `PRO_…` / `TEAM_…` | ➖ | Completed analyses per calendar month on each plan. `0` (default) = unlimited — see *Plans and quotas* below |
-| `UPGRADE_URL` | ➖ | Where the in-app **Upgrade** button goes: a payment link, a pricing page, or a `mailto:` |
+| `UPGRADE_URL` | ➖ | Where the in-app **Upgrade** button goes: a payment link, a pricing page, or a `mailto:`. Leave empty to use the in-app UPI page |
+| `PAYMENT_UPI_ID`, `PAYMENT_PAYEE_NAME`, `PRO_PRICE_INR`, `TEAM_PRICE_INR`, `PLAN_PERIOD_DAYS` | ➖ | UPI payments without a gateway — see *Getting paid with UPI* |
 | `GEMINI_MODEL` | ➖ | Ordered fallback list, default `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` — all three free of charge on the free tier, none with a shutdown date. `gemini-4-hydrogen` is also free but six days old at the time of writing; test it with your key before putting it first. Do not use `gemini-2.5-*`: since September 2026 Google serves those only to projects that already used them, so a new project gets a 404 on every call |
 | `GROQ_MODEL` | ➖ | Default `openai/gpt-oss-120b`. `llama-3.3-70b-versatile` was shut down for free and developer keys on 16 Aug 2026 |
 | `ANTHROPIC_MODEL` | ➖ | Default `claude-sonnet-5-5` |
@@ -296,6 +299,46 @@ curl -X POST $API/api/v1/billing/admin/plan \
 ```
 
 It takes effect on the customer's next upload. To downgrade, send `"free"`.
+A plan set this way does not expire.
+
+### Getting paid with UPI (no payment gateway)
+
+No Razorpay or Stripe account is needed. The customer pays your UPI ID from
+any UPI app; you confirm the money arrived and approve it in the app.
+
+1. Get a UPI ID to receive payments — a free business QR from your bank or a
+   business UPI app is better than a personal one for a business.
+2. Run `backend/sql/010_upi_payments.sql` in Supabase.
+3. On Render set, then redeploy:
+   ```env
+   PAYMENT_UPI_ID=yourbusiness@okbank
+   PAYMENT_PAYEE_NAME=Your Business Name
+   PRO_PRICE_INR=499          # whole rupees; 0 = not for sale
+   TEAM_PRICE_INR=1499
+   PLAN_PERIOD_DAYS=30
+   FREE_MONTHLY_ANALYSES=20   # limits make upgrading worth it
+   PRO_MONTHLY_ANALYSES=300
+   TEAM_MONTHLY_ANALYSES=0    # 0 = unlimited
+   ```
+   Leave `UPGRADE_URL` empty: **Upgrade** then opens the in-app page. (The
+   prices are examples — pricing is your call.)
+
+What the customer sees at `/upgrade`: the plans and prices, your UPI ID and a
+QR code for the exact amount (on a phone, an *Open UPI app* button), and a box
+for the transaction reference (the 12-digit UTR their app shows). Then
+"Waiting for verification".
+
+What you do: the operator screen shows **Payments to verify**. Find each
+reference in your bank statement, then **Approve** (the plan starts at once,
+for `PLAN_PERIOD_DAYS`, added to any paid time left on the same plan) or
+**Reject** with a reason the customer sees. When the period ends the account
+returns to Free by itself; the customer renews from the same page.
+
+What it does not do: check that the money arrived. Nothing is granted until
+you approve, so never approve a reference you have not found in your
+statement. A reference can be used once, and an account can have one payment
+waiting at a time — Postgres enforces both. When you have a Razorpay account,
+automatic confirmation can replace the manual check.
 
 ---
 

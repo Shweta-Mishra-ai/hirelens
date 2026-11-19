@@ -537,6 +537,11 @@ async def unsupported_type_handler(request: Request, exc: UnsupportedFileType):
         "request_id": _request_id(request),
     })
 
+def _upgrade_link() -> str | None:
+    from app.services.billing import upgrade_link
+    return upgrade_link()
+
+
 @app.exception_handler(QuotaExceeded)
 async def quota_handler(request: Request, exc: QuotaExceeded):
     return JSONResponse(status_code=402, content={
@@ -545,7 +550,7 @@ async def quota_handler(request: Request, exc: QuotaExceeded):
         "plan": exc.plan,
         "limit": exc.limit,
         "remaining": exc.remaining,
-        "upgrade_url": settings.UPGRADE_URL or None,
+        "upgrade_url": _upgrade_link(),
         "request_id": _request_id(request),
     })
 

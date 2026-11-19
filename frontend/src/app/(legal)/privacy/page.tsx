@@ -45,6 +45,10 @@ export default function PrivacyPage() {
         <li>Your decisions, interview notes, comments and votes, to show them to you and your team.</li>
         <li>Candidate email addresses, only to send a message when you choose to send one.</li>
         <li>
+          For a paid plan: the plan, the amount and the payment&apos;s transaction reference you
+          enter, to match it to our bank statement. We never receive your bank or card details.
+        </li>
+        <li>
           Usage counts (analyses per month) for plan limits, and technical data — IP address and
           request logs — to keep the service secure and to rate-limit abuse.
         </li>

@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Sparkles } from "lucide-react";
-import { billingAPI, USAGE_CHANGED_EVENT, type PlanUsage } from "@/lib/api";
+import { billingAPI, isInAppLink, USAGE_CHANGED_EVENT, type PlanUsage } from "@/lib/api";
 import { useAuthStore } from "@/store/auth";
 import { cn } from "@/lib/cn";
 
@@ -104,8 +104,7 @@ export function UsageMeter({ collapsed }: { collapsed: boolean }) {
       {usage.upgrade_url && usage.plan !== "team" && (
         <a
           href={usage.upgrade_url}
-          target="_blank"
-          rel="noopener noreferrer"
+          {...(isInAppLink(usage.upgrade_url) ? {} : { target: "_blank", rel: "noopener noreferrer" })}
           className={cn(
             "mt-2.5 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors",
             "focus-visible:outline-none focus-visible:shadow-focus",

@@ -1206,6 +1206,35 @@ def init_billing_tables() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_usage_events_user_created "
                 "ON usage_events(user_id, created_at)"
             )
+            # Added after the table first shipped: a plan bought for a period.
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(subscriptions)")}
+            if "current_period_end" not in columns:
+                conn.execute("ALTER TABLE subscriptions ADD COLUMN current_period_end TEXT")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS payment_requests (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    plan TEXT NOT NULL,
+                    amount_inr INTEGER NOT NULL,
+                    method TEXT NOT NULL DEFAULT 'upi',
+                    reference TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    note TEXT,
+                    created_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    decided_by TEXT
+                )
+            """)
+            # Same rules as sql/010: one live claim per reference, one
+            # pending claim per account.
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS payment_requests_reference_live "
+                "ON payment_requests(reference) WHERE status <> 'rejected'"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS payment_requests_one_pending "
+                "ON payment_requests(user_id) WHERE status = 'pending'"
+            )
             conn.commit()
     except Exception as e:
         logger.error(f"Failed to initialize billing tables: {e}")
@@ -1215,7 +1244,7 @@ def get_subscription(user_id: str) -> dict | None:
     try:
         with _get_connection() as conn:
             row = conn.execute(
-                "SELECT plan, status FROM subscriptions WHERE user_id = ?", (user_id,)
+                "SELECT plan, status, current_period_end FROM subscriptions WHERE user_id = ?", (user_id,)
             ).fetchone()
             return dict(row) if row else None
     except Exception as e:
@@ -1223,20 +1252,83 @@ def get_subscription(user_id: str) -> dict | None:
         return None
 
 
-def set_subscription(user_id: str, plan: str, status: str = "active") -> bool:
+def set_subscription(
+    user_id: str, plan: str, status: str = "active", current_period_end: str | None = None
+) -> bool:
     try:
         with _get_connection() as conn:
             conn.execute(
-                "INSERT INTO subscriptions (user_id, plan, status, updated_at) VALUES (?, ?, ?, ?) "
+                "INSERT INTO subscriptions (user_id, plan, status, updated_at, current_period_end) "
+                "VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan, "
-                "status = excluded.status, updated_at = excluded.updated_at",
-                (user_id, plan, status, datetime.now(timezone.utc).isoformat()),
+                "status = excluded.status, updated_at = excluded.updated_at, "
+                "current_period_end = excluded.current_period_end",
+                (user_id, plan, status, datetime.now(timezone.utc).isoformat(), current_period_end),
             )
             conn.commit()
             return True
     except Exception as e:
         logger.error(f"Error writing subscription to SQLite: {e}")
         return False
+
+
+class PaymentConflict(Exception):
+    """A second live claim on a reference, or a second pending claim."""
+
+
+def create_payment_request(row: dict) -> dict:
+    """Insert a claim. Raises PaymentConflict on a uniqueness rule, LocalStoreError otherwise."""
+    try:
+        with _get_connection() as conn:
+            conn.execute(
+                "INSERT INTO payment_requests (id, user_id, plan, amount_inr, method, reference, "
+                "status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+                (row["id"], row["user_id"], row["plan"], row["amount_inr"], row.get("method", "upi"),
+                 row["reference"], row["created_at"]),
+            )
+            conn.commit()
+    except sqlite3.IntegrityError as e:
+        raise PaymentConflict(str(e)) from e
+    except sqlite3.Error as e:
+        logger.error(f"Could not store payment request: {e}")
+        raise LocalStoreError("The payment could not be recorded. Please try again.") from e
+    return {**row, "status": "pending", "note": None, "decided_at": None, "decided_by": None}
+
+
+def list_payment_requests(user_id: str | None = None, status: str | None = None, limit: int = 50) -> list[dict]:
+    sql = "SELECT * FROM payment_requests"
+    clauses, params = [], []
+    if user_id:
+        clauses.append("user_id = ?")
+        params.append(user_id)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(int(limit))
+    with _get_connection() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def get_payment_request(request_id: str) -> dict | None:
+    with _get_connection() as conn:
+        row = conn.execute("SELECT * FROM payment_requests WHERE id = ?", (request_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def decide_payment_request(request_id: str, status: str, decided_by: str, note: str | None,
+                           from_status: str = "pending") -> bool:
+    """Move a claim out of `from_status`. False if it was not in that state (someone else decided it)."""
+    with _get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE payment_requests SET status = ?, decided_at = ?, decided_by = ?, note = ? "
+            "WHERE id = ? AND status = ?",
+            (status, datetime.now(timezone.utc).isoformat(), decided_by, note, request_id, from_status),
+        )
+        conn.commit()
+        return cur.rowcount == 1
 
 
 def record_usage(user_id: str, kind: str, report_id: str | None) -> bool:
@@ -1327,6 +1419,7 @@ def delete_user_data(user_id: str, email: str | None = None) -> None:
         ("DELETE FROM password_resets WHERE user_id = ?", (user_id,)),
         ("DELETE FROM subscriptions WHERE user_id = ?", (user_id,)),
         ("DELETE FROM usage_events WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM payment_requests WHERE user_id = ?", (user_id,)),
         ("DELETE FROM users WHERE id = ?", (user_id,)),
     ]
     try:

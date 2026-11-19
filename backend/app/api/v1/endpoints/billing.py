@@ -6,6 +6,12 @@ GET  /billing/admin/accounts     operator: newest accounts, or those matching ?q
 GET  /billing/admin/account      operator: one account (?email=), with this month's usage
 POST /billing/admin/plan         operator: move an account to a plan
 
+GET  /billing/plans              what can be bought in the app, and the UPI details
+POST /billing/payments           "I paid": a UPI transaction reference for a plan
+GET  /billing/payments           this account's payment claims
+GET  /billing/admin/payments     operator: claims (?status=pending by default)
+POST /billing/admin/payments/{id}/approve | /reject   operator: decide a claim
+
 Payment collection is deliberately outside this module. Until a payment
 provider is wired to a webhook, an operator records an upgrade here after a
 customer pays (any provider, invoice or bank transfer). The quota takes
@@ -16,13 +22,15 @@ import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from app.api.v1.endpoints.analysis import _jobs
 from app.core import local_db
-from app.core.dependencies import get_current_user, get_db, require_admin
+from app.core.config import settings
+from app.core.dependencies import get_current_user, get_db, get_redis, require_admin
+from app.core.rate_limit import check_rate_limit
 from app.core.exceptions import DatabaseUnavailable, NotFoundError
-from app.services import billing
+from app.services import billing, payments
 from app.services.teams.access import normalize_email
 
 logger = logging.getLogger("hirelens")
@@ -156,3 +164,71 @@ def set_plan(body: SetPlanRequest, admin: dict = Depends(require_admin), db=Depe
     billing.set_plan(db, user_id, body.plan)
     logger.info(f"Plan changed | user={user_id} plan={body.plan} by={admin.get('email')}")
     return {"status": "ok", "user_id": user_id, "plan": body.plan}
+
+
+# ── UPI payments (see app/services/payments.py) ─────────────────────────────
+
+@router.get("/plans")
+def get_plans(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+    """What the Upgrade page shows: the plans for sale, the UPI details, and
+    where this account stands."""
+    offers = billing.purchasable_plans()
+    return {
+        # Only when something can be bought: a UPI ID with no prices set
+        # would invite payments the operator has no plan to match.
+        "upi_id": (settings.PAYMENT_UPI_ID.strip() or None) if offers else None,
+        "payee_name": settings.PAYMENT_PAYEE_NAME.strip() or None,
+        "period_days": max(1, int(settings.PLAN_PERIOD_DAYS)),
+        "plans": offers,
+        "usage": billing.usage_summary(db, current_user["id"], _jobs),
+    }
+
+
+class PaymentClaim(BaseModel):
+    plan: Literal["pro", "team"]
+    reference: str = Field(..., min_length=1, max_length=64)
+
+
+@router.post("/payments", status_code=201)
+def submit_payment(
+    body: PaymentClaim,
+    current_user: dict = Depends(get_current_user),
+    db=Depends(get_db),
+    redis=Depends(get_redis),
+):
+    # Generous for a person, tight for a script guessing references.
+    check_rate_limit(redis, f"payment_claim:{current_user['id']}", 10, window_seconds=3600)
+    return payments.submit(db, current_user["id"], body.plan, body.reference)
+
+
+@router.get("/payments")
+def my_payments(current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+    return {"payments": payments.list_mine(db, current_user["id"])}
+
+
+@router.get("/admin/payments")
+def operator_payments(
+    status: Literal["pending", "approved", "rejected", "all"] = "pending",
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    return {"payments": payments.list_for_operator(db, None if status == "all" else status)}
+
+
+@router.post("/admin/payments/{request_id}/approve")
+def approve_payment(request_id: str, admin: dict = Depends(require_admin), db=Depends(get_db)):
+    return payments.approve(db, request_id, admin.get("email") or "")
+
+
+class RejectBody(BaseModel):
+    note: str | None = Field(default=None, max_length=300)
+
+
+@router.post("/admin/payments/{request_id}/reject")
+def reject_payment(
+    request_id: str,
+    body: RejectBody | None = None,
+    admin: dict = Depends(require_admin),
+    db=Depends(get_db),
+):
+    return payments.reject(db, request_id, admin.get("email") or "", body.note if body else None)

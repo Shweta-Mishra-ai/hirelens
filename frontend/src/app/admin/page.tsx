@@ -13,6 +13,7 @@ import {
   authAPI,
   type AdminAccountDetail,
   type AdminAccountRow,
+  type OperatorPaymentClaim,
   type PlanUsage,
 } from "@/lib/api";
 
@@ -84,7 +85,10 @@ function AccountDetail({ email, onChanged }: { email: string; onChanged: () => v
             <dl className="grid grid-cols-2 gap-3 text-sm">
               <div>
                 <dt className="text-content-faint">Plan</dt>
-                <dd className="font-medium text-content">{PLAN_NAMES[detail.usage.plan]}</dd>
+                <dd className="font-medium text-content">
+                  {PLAN_NAMES[detail.usage.plan]}
+                  {detail.usage.plan_expires_at ? ` until ${day(detail.usage.plan_expires_at)}` : ""}
+                </dd>
               </div>
               <div>
                 <dt className="text-content-faint">This month</dt>
@@ -120,6 +124,110 @@ function AccountDetail({ email, onChanged }: { email: string; onChanged: () => v
               </div>
             </div>
           </>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
+/**
+ * UPI payments customers say they made. Check each reference against the
+ * bank statement before approving: approval grants the plan, and nothing
+ * else confirms the money arrived.
+ */
+function PendingPayments({ onDecided }: { onDecided: () => void }) {
+  const token = useAuthStore((s) => s.token);
+  const [claims, setClaims] = useState<OperatorPaymentClaim[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!token) return;
+    try {
+      setClaims((await adminAPI.payments(token, "pending")).payments);
+    } catch (e) {
+      setError(e instanceof APIError ? e.message : "Could not load payments.");
+      setClaims([]);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-change: the loader sets loading state, then awaits the API
+    void load();
+  }, [load]);
+
+  async function decide(claim: OperatorPaymentClaim, approve: boolean) {
+    if (!token) return;
+    let note = "";
+    if (approve) {
+      if (!window.confirm(
+        `Approve ₹${claim.amount_inr} from ${claim.email} (reference ${claim.reference})?\n\n` +
+        "Only approve once you have found this reference in your bank statement.",
+      )) return;
+    } else {
+      const answer = window.prompt(`Reason shown to ${claim.email} (optional):`, "Payment not found");
+      if (answer === null) return;
+      note = answer;
+    }
+    setBusy(claim.id);
+    setError(null);
+    setNotice(null);
+    try {
+      if (approve) {
+        const res = await adminAPI.approvePayment(claim.id, token);
+        setNotice(`${claim.email} is on ${PLAN_NAMES[claim.plan as PlanUsage["plan"]]} until ${day(res.plan_expires_at)}.`);
+      } else {
+        await adminAPI.rejectPayment(claim.id, note, token);
+        setNotice(`Payment from ${claim.email} marked as not approved.`);
+      }
+      await load();
+      onDecided();
+    } catch (e) {
+      setError(e instanceof APIError ? e.message : "That could not be saved.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (claims !== null && claims.length === 0 && !error && !notice) return null;
+
+  return (
+    <Card className="mb-5">
+      <CardHeader
+        title="Payments to verify"
+        description="Find each reference in your bank statement before approving it."
+      />
+      <CardBody className="space-y-3">
+        {error && <Alert tone="error">{error}</Alert>}
+        {notice && <Alert tone="success">{notice}</Alert>}
+        {claims === null ? (
+          <Skeleton className="h-16" />
+        ) : claims.length === 0 ? (
+          <p className="text-sm text-content-faint">Nothing waiting.</p>
+        ) : (
+          <ul className="divide-y divide-line-subtle">
+            {claims.map((c) => (
+              <li key={c.id} className="flex flex-wrap items-center justify-between gap-3 py-2.5 text-sm">
+                <span className="min-w-0">
+                  <span className="block truncate font-medium text-content">{c.email || c.user_id}</span>
+                  <span className="block text-xs text-content-faint">
+                    {PLAN_NAMES[c.plan as PlanUsage["plan"]]} · ₹{c.amount_inr} · ref{" "}
+                    <span className="font-mono text-content-muted">{c.reference}</span> · {day(c.created_at)}
+                  </span>
+                </span>
+                <span className="flex shrink-0 gap-2">
+                  <Button variant="primary" size="sm" loading={busy === c.id} disabled={busy !== null}
+                    onClick={() => decide(c, true)}>
+                    Approve
+                  </Button>
+                  <Button variant="secondary" size="sm" disabled={busy !== null} onClick={() => decide(c, false)}>
+                    Reject
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
         )}
       </CardBody>
     </Card>
@@ -195,6 +303,7 @@ function AdminContent() {
           {error}
         </Alert>
       )}
+      <PendingPayments onDecided={loadList} />
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_24rem]">
         <Card>
           <CardHeader title={submitted ? `Accounts matching “${submitted}”` : "Newest accounts"} />

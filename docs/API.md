@@ -348,6 +348,12 @@ worker. With it they are shared across instances.
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/v1/billing/usage` | This account's plan, analyses used this month, the limit and what is left. `limit` is `null` and `unlimited` is `true` when no quota applies |
+| `GET` | `/api/v1/billing/plans` | Plans for sale in the app (priced, with `PAYMENT_UPI_ID` set), the UPI ID and payee name, the period length, and this account's usage |
+| `POST` | `/api/v1/billing/payments` | `{ plan, reference }` — "I paid": a UPI transaction reference (letters/digits, 6–35; spaces and dashes removed). 201 pending; 409 if the reference was already used or a claim is already waiting; 422 for a malformed reference or a plan not for sale; 10 per hour per account |
+| `GET` | `/api/v1/billing/payments` | This account's last 20 claims and their status |
+| `GET` | `/api/v1/billing/admin/payments` | Operators only. `?status=pending` (default), `approved`, `rejected` or `all`; each with the customer's email |
+| `POST` | `/api/v1/billing/admin/payments/{id}/approve` | Operators only. Grants the plan for `PLAN_PERIOD_DAYS`, added to paid time left on the same plan. 409 if already decided; if granting fails the claim goes back to pending (503) |
+| `POST` | `/api/v1/billing/admin/payments/{id}/reject` | Operators only. `{ note? }` shown to the customer. 409 if already decided |
 | `GET` | `/api/v1/billing/admin/accounts` | Operators only. Newest accounts first (`?limit=`, default 25, max 100), or those whose email contains `?q=` (case-insensitive; `%` and `_` are literal), each with its plan |
 | `GET` | `/api/v1/billing/admin/account` | Operators only. `?email=` — the account with its plan and this month's usage. 404 if there is none; 503 if the database could not be asked |
 | `POST` | `/api/v1/billing/admin/plan` | Operators only (`ADMIN_EMAILS`). Body `{"email", "plan"}` with plan `free`, `pro` or `team`. 503, not 404, when the lookup fails |

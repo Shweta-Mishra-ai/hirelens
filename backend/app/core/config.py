@@ -297,6 +297,19 @@ class Settings(BaseSettings):
     # a pricing page, or a mailto:. Empty hides the button.
     UPGRADE_URL: str = ""
 
+    # ── UPI payments, verified by an operator (sql/010) ─────────────────────
+    # No payment gateway needed: the in-app Upgrade page shows this UPI ID and
+    # a QR code for the plan's price; the customer pays from any UPI app and
+    # submits the transaction reference; an operator checks it against the
+    # bank statement and approves it on the operator screen, which grants the
+    # plan for PLAN_PERIOD_DAYS. Off while PAYMENT_UPI_ID is empty. A plan is
+    # offered only when its price is above 0. Prices are whole rupees.
+    PAYMENT_UPI_ID: str = ""
+    PAYMENT_PAYEE_NAME: str = ""
+    PRO_PRICE_INR: int = 0
+    TEAM_PRICE_INR: int = 0
+    PLAN_PERIOD_DAYS: int = 30
+
     # Bulk upload (Feature 1)
     BULK_MAX_FILES: int = 50
     BULK_MAX_TOTAL_MB: int = 150            # total batch payload cap (protects free-tier RAM)
