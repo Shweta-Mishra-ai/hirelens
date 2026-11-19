@@ -15,7 +15,7 @@ from app.core import local_db
 from app.services import directory
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import (
-    HireLensException, NotFoundError, ForbiddenError, StorageWriteFailed,
+    HireLensException, NotFoundError, ForbiddenError, StorageWriteFailed, DatabaseUnavailable,
 )
 from app.services.teams.access import (
     get_user_role, can_manage_team, normalize_email as directory_normalize_email,
@@ -91,7 +91,17 @@ def create_team(body: CreateTeamRequest, current_user: dict = Depends(get_curren
             _mem_team_members.append({"team_id": team_id, "user_id": user_id, "role": "owner", "joined_at": created_at})
             return team
         except Exception as e:
-            logger.warning(f"DB Team creation failed ({e}) — using in-memory fallback")
+            # With Supabase configured it is the only store teammates and
+            # invites are read from. Falling back to the local file put the
+            # team on a disk Render wipes at every restart: it worked until
+            # then and vanished with no error, as the invite path below
+            # already refuses to do.
+            logger.error(f"Team create failed in Supabase | id={team_id} owner={user_id}: {e}")
+            try:
+                db.table("teams").delete().eq("id", team_id).execute()
+            except Exception:
+                pass  # the insert may not have happened at all
+            raise StorageWriteFailed("That team could not be saved. Please try again.")
 
     # Local fallback — persisted, then mirrored into this process's cache.
     #
@@ -124,8 +134,11 @@ def list_my_teams(current_user: dict = Depends(get_current_user), db=Depends(get
                 for t in teams:
                     t["my_role"] = roles_by_team.get(t["id"])
                 return {"teams": teams}
+            return {"teams": []}
         except Exception as e:
-            logger.warning(f"DB list teams failed ({e}) — using in-memory fallback")
+            # An empty list here reads as "you have no teams" during an outage.
+            logger.warning(f"DB list teams failed for {user_id}: {e}")
+            raise DatabaseUnavailable()
 
     # In-memory fallback
     # Durable rows first, then anything this process knows that has not been
@@ -178,15 +191,69 @@ def list_team_members(team_id: str, current_user: dict = Depends(get_current_use
     if db:
         try:
             res = db.table("team_members").select("user_id,role,joined_at").eq("team_id", team_id).execute()
-            if res.data:
-                return {"members": _with_member_names(res.data, current_user["id"], db)}
+            return {"members": _with_member_names(res.data or [], current_user["id"], db)}
         except Exception as e:
-            logger.warning(f"DB list members failed ({e}) — using in-memory fallback")
+            logger.warning(f"DB list members failed for {team_id}: {e}")
+            raise DatabaseUnavailable()
 
     members = local_db.list_team_members(team_id)
     if not members:
         members = [m for m in _mem_team_members if m["team_id"] == team_id]
     return {"members": _with_member_names(members, current_user["id"], db)}
+
+
+_TEAM_REPORT_FIELDS = (
+    "id,user_id,file_name,candidate_name,overall_score,recommendation,"
+    "recruiter_decision,created_at"
+)
+
+
+@router.get("/{team_id}/reports")
+def list_team_reports(team_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
+    """
+    The candidate files shared with this team, newest first. Members only.
+
+    Without this a teammate had no way to find a shared report: the
+    dashboard lists your own uploads, and the team page listed people only —
+    so "share with a team" worked only if the owner also sent the link.
+    """
+    if not get_user_role(db, team_id, current_user["id"]):
+        raise ForbiddenError("You are not a member of this team.")
+
+    if db:
+        try:
+            rows = (
+                db.table("reports").select(_TEAM_REPORT_FIELDS)
+                .eq("team_id", team_id).order("created_at", desc=True).limit(100)
+                .execute().data
+            ) or []
+        except Exception as e:
+            # An empty list here would read as "nothing shared yet".
+            logger.warning(f"Team reports lookup failed for {team_id}: {e}")
+            raise DatabaseUnavailable()
+    else:
+        try:
+            rows = local_db.list_team_reports(team_id, limit=100)
+        except local_db.LocalStoreError:
+            raise DatabaseUnavailable()
+
+    owners = _with_member_names(
+        [{"user_id": r.get("user_id")} for r in rows], current_user["id"], db
+    )
+    reports = []
+    for row, owner in zip(rows, owners):
+        reports.append({
+            "id": row.get("id"),
+            "candidate_name": row.get("candidate_name") or "Unknown",
+            "file_name": row.get("file_name") or "",
+            "overall_score": row.get("overall_score"),
+            "recommendation": row.get("recommendation"),
+            "recruiter_decision": row.get("recruiter_decision"),
+            "created_at": row.get("created_at"),
+            "shared_by": owner.get("user_name"),
+            "is_mine": bool(owner.get("is_me")),
+        })
+    return {"reports": reports}
 
 
 @router.post("/{team_id}/invite")
@@ -424,7 +491,12 @@ def delete_team(team_id: str, current_user: dict = Depends(get_current_user), db
             db.table("team_invites").delete().eq("team_id", team_id).execute()
             db.table("teams").delete().eq("id", team_id).execute()
         except Exception as e:
-            logger.warning(f"DB delete team failed: {e}")
+            # Carrying on reported "deleted" for a team still in Supabase,
+            # roster and shared reports intact.
+            logger.error(f"DB delete team failed for {team_id}: {e}")
+            raise StorageWriteFailed(
+                "That team could not be deleted. Please try again."
+            )
 
     # Durable rows too — without this the team was still on disk and came
     # back, roster intact, on the next restart.

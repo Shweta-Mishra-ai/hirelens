@@ -211,13 +211,18 @@ Returns `detected_columns`, `queued`, `skipped_at_parse` and
 | | Endpoint | Notes |
 |---|---|---|
 | `GET` | `/reports` | `page`, `limit` (≤100), `search`, `sort`, `recommendation` |
-| `GET` | `/reports/{id}` | The full report. Visible to its owner or any member of the team it is shared with |
-| `DELETE` | `/reports/{id}` | |
+| `GET` | `/reports/{id}` | The full report. Visible to its owner or any member of the team it is shared with. `is_owner` says which |
+| `DELETE` | `/reports/{id}` | Owner only. Takes its comments and votes too. `204` only when something was deleted: someone else's file is `403`, an unknown id `404` |
 | `GET` | `/reports/analytics` | Pool distribution, average credibility, top skills |
 | `GET` | `/reports/export.csv` | Everything matching the current filters, 1,000 rows |
 | `POST` | `/reports/{id}/decision` | `advance` · `schedule_followup` · `reject` |
-| `GET` | `/reports/{id}/notify/draft` | A pre-written email for that decision |
-| `POST` | `/reports/{id}/notify` | Sends it |
+| `GET` | `/reports/{id}/notify/draft` | A pre-written email for that decision. Owner only |
+| `POST` | `/reports/{id}/notify` | Sends it. Owner only |
+
+The decision, candidate emails, sharing and deletion belong to whoever added
+the candidate. A teammate the file is shared with can read it, comment, vote
+and use the co-pilot; the page hides the rest when `is_owner` is false, and
+the API refuses them with `403`.
 
 `sort` is `newest` · `oldest` · `score_desc` · `score_asc` · `name_asc`.
 
@@ -302,6 +307,7 @@ the local store — never a raw UUID.
 |---|---|---|
 | `POST` / `GET` | `/teams` | |
 | `GET` | `/teams/{id}/members` | Members only |
+| `GET` | `/teams/{id}/reports` | Members only. The files shared with the team, newest first, with `shared_by` and `is_mine` |
 | `POST` | `/teams/{id}/invite` | Owner or admin. Email-based, so the invitee needs no account yet |
 | `DELETE` | `/teams/{id}/members/{user_id}` | Owner cannot be removed |
 | `DELETE` | `/teams/{id}` | Owner only. Removes membership and pending invites too |

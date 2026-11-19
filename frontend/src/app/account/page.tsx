@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ShieldOff, Trash2, Wrench } from "lucide-react";
 import { AppShell, PageHeader, RequireAuth } from "@/components/AppShell";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
+import { Button, LinkButton } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { Alert, Skeleton } from "@/components/ui/Feedback";
 import { useAuthStore } from "@/store/auth";
@@ -13,6 +13,17 @@ import { APIError, authAPI, billingAPI, isInAppLink, type PlanUsage } from "@/li
 import { setSignInDestination } from "@/lib/session";
 
 const PLAN_NAMES: Record<PlanUsage["plan"], string> = { free: "Free", pro: "Pro", team: "Team" };
+
+
+/**
+ * What the plan card's button offers, or null when there is nothing to buy.
+ * A plan with no end date was set by an operator and doesn't lapse.
+ */
+function upgradeLabel(plan: string, expiresAt: string | null | undefined): string | null {
+  if (plan === "free") return "Upgrade";
+  if (!expiresAt) return plan === "team" ? null : "Upgrade to Team";
+  return plan === "team" ? "Renew" : "Renew or upgrade";
+}
 
 function formatDay(iso: string): string {
   const d = new Date(iso);
@@ -58,13 +69,14 @@ function PlanCard() {
                 {usage.plan_expires_at && ` · ${PLAN_NAMES[usage.plan]} until ${formatDay(usage.plan_expires_at)}`}
               </div>
             </div>
-            {usage.upgrade_url && usage.plan !== "team" && (
-              <a
+            {usage.upgrade_url && upgradeLabel(usage.plan, usage.plan_expires_at) && (
+              <LinkButton
+                variant="primary"
                 href={usage.upgrade_url}
                 {...(isInAppLink(usage.upgrade_url) ? {} : { target: "_blank", rel: "noopener noreferrer" })}
               >
-                <Button variant="primary">{usage.plan === "free" ? "Upgrade" : "Renew or upgrade"}</Button>
-              </a>
+                {upgradeLabel(usage.plan, usage.plan_expires_at)}
+              </LinkButton>
             )}
           </div>
         )}
@@ -198,12 +210,9 @@ function OperatorCard() {
     <Card>
       <CardHeader title="Operator" description="Customers, their usage, and plan changes." />
       <CardBody>
-        <Link href="/admin">
-          <Button variant="secondary">
-            <Wrench aria-hidden className="size-4" />
-            Open operator screen
-          </Button>
-        </Link>
+        <LinkButton href="/admin" variant="secondary" icon={<Wrench className="size-4" />}>
+          Open operator screen
+        </LinkButton>
       </CardBody>
     </Card>
   );

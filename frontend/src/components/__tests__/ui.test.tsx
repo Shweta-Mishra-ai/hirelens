@@ -151,3 +151,20 @@ describe("VerdictStamp", () => {
     expect(screen.queryByText(/reject/i)).not.toBeInTheDocument();
   });
 });
+
+describe("LinkButton", () => {
+  it("is one link, not a button inside a link", async () => {
+    const { LinkButton } = await import("@/components/ui/Button");
+    const { container } = render(<LinkButton href="/analyze" variant="primary">Analyze resume</LinkButton>);
+    const link = screen.getByRole("link", { name: "Analyze resume" });
+    expect(link).toHaveAttribute("href", "/analyze");
+    expect(container.querySelector("a button, button a")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("uses a plain anchor for addresses outside the app", async () => {
+    const { LinkButton } = await import("@/components/ui/Button");
+    render(<LinkButton href="upi://pay?pa=x%40bank">Open UPI app</LinkButton>);
+    expect(screen.getByRole("link", { name: "Open UPI app" })).toHaveAttribute("href", "upi://pay?pa=x%40bank");
+  });
+});

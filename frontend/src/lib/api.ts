@@ -11,6 +11,7 @@
  */
 import type {
   TeamInvite,
+  TeamReport,
   Report,
   ReportListResponse,
   PoolAnalytics,
@@ -619,6 +620,12 @@ export const teamsAPI = {
 
   delete: (teamId: string, token: string) =>
     req<{ status: string }>(`/api/v1/teams/${teamId}`, { method: "DELETE", token }),
+
+  /** Candidate files shared with the team, newest first. Members only. */
+  reports: (teamId: string, token: string) =>
+    req<{ reports: TeamReport[] }>(`/api/v1/teams/${teamId}/reports`, { token }).then(
+      (res): { reports: TeamReport[] } => ({ reports: asArray(res?.reports) }),
+    ),
 };
 
 // ── Report Collaboration (share, comments, votes) ───────────────────────────

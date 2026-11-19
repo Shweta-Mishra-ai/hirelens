@@ -264,8 +264,21 @@ class TestTeamsAndDiscussionAgainstPostgREST:
         assert accept_pending_invites_for_email(create_client(URL, KEY), teammate[0], teammate[1]) >= 1
 
         assert client.post(f"/api/v1/reports/{reports['anita']}/share", headers=_headers(owner), json={"team_id": team_id}).status_code == 200
-        assert client.get(f"/api/v1/reports/{reports['anita']}", headers=_headers(teammate)).status_code == 200
+        as_mate = client.get(f"/api/v1/reports/{reports['anita']}", headers=_headers(teammate))
+        assert as_mate.status_code == 200
+        assert as_mate.json()["is_owner"] is False
+        assert client.get(f"/api/v1/reports/{reports['anita']}", headers=_headers(owner)).json()["is_owner"] is True
         assert client.get(f"/api/v1/reports/{reports['anita']}", headers=_headers(stranger)).status_code == 403
+
+        # The teammate finds it on the team, without being sent the link.
+        shared = client.get(f"/api/v1/teams/{team_id}/reports", headers=_headers(teammate))
+        assert shared.status_code == 200, shared.text
+        assert [r["id"] for r in shared.json()["reports"]] == [reports["anita"]]
+        assert shared.json()["reports"][0]["is_mine"] is False
+        assert client.get(f"/api/v1/teams/{team_id}/reports", headers=_headers(stranger)).status_code == 403
+        # Emailing the candidate and deleting the file stay the owner's.
+        assert client.get(f"/api/v1/reports/{reports['anita']}/notify/draft?decision=reject", headers=_headers(teammate)).status_code == 403
+        assert client.delete(f"/api/v1/reports/{reports['anita']}", headers=_headers(teammate)).status_code == 403
 
         c = client.post(f"/api/v1/reports/{reports['anita']}/comments", headers=_headers(teammate), json={"comment": "Looks good"})
         assert c.status_code == 200, c.text

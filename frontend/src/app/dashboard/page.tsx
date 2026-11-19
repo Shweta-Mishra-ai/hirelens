@@ -21,7 +21,7 @@ import { reportsAPI, APIError } from "@/lib/api";
 import { consumeOAuthFragment } from "@/hooks/useGoogleAuth";
 import { VerdictChip, verdictFromRecommendation } from "@/components/VerdictStamp";
 import { AppShell, PageHeader, RequireAuth } from "@/components/AppShell";
-import { Button } from "@/components/ui/Button";
+import { Button, LinkButton } from "@/components/ui/Button";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Input, Select } from "@/components/ui/Field";
@@ -398,11 +398,9 @@ function DashboardContent() {
         title={firstName ? `Welcome back, ${firstName}` : "Dashboard"}
         description="Every candidate file you've analysed, with the evidence behind each score."
         actions={
-          <Link href="/analyze">
-            <Button variant="primary" icon={<ScanLine className="size-4" />}>
-              Analyze resume
-            </Button>
-          </Link>
+          <LinkButton href="/analyze" variant="primary" icon={<ScanLine className="size-4" />}>
+            Analyze resume
+          </LinkButton>
         }
       />
 

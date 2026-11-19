@@ -8,7 +8,7 @@ import { authAPI, APIError, API_URL_NOT_CONFIGURED } from "@/lib/api";
 import { useGoogleAuth } from "@/hooks/useGoogleAuth";
 import { InviteBanner } from "@/components/InviteBanner";
 import { readInviteParams, withInvite } from "@/lib/invite";
-import { Button } from "@/components/ui/Button";
+import { Button, LinkButton } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { Alert } from "@/components/ui/Feedback";
 import { AuthLayout, AuthFooterLink, GoogleButton, OrDivider } from "../AuthLayout";
@@ -141,9 +141,9 @@ function SignupForm() {
             <span className="font-medium text-content">{pendingConfirmEmail}</span>. Open it to
             activate your account.
           </p>
-          <Link href="/login" className="mt-5 inline-block">
-            <Button variant="primary">Back to sign in</Button>
-          </Link>
+          <LinkButton href="/login" variant="primary" className="mt-5">
+            Back to sign in
+          </LinkButton>
         </div>
       </AuthLayout>
     );

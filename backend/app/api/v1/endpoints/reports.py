@@ -518,6 +518,9 @@ def get_report(
                 report["created_at"] = row.get("created_at")
                 report["file_name"] = row.get("file_name") or report.get("file_name", "")
                 report["team_id"] = row.get("team_id")
+                # Decisions, candidate emails, sharing and deletion are the
+                # owner's; the page shows those controls only when this is set.
+                report["is_owner"] = row.get("user_id") == current_user["id"]
                 return report
 
         except ForbiddenError:
@@ -527,25 +530,33 @@ def get_report(
             db_failed = True
             # Fall through to in-memory
 
+    # ── Fallback: durable local store ─────────────────────────────────────────
+    # Where a report lives without Supabase, or when its Supabase write
+    # failed. Read first, ahead of this process's in-memory copy: it is the
+    # copy that knows the decision, who it is shared with and the last
+    # verification, and the only one a teammate it is shared with can be
+    # checked against. Access is decided in the query, so a wrong user and a
+    # missing row are indistinguishable from here.
+    persisted = local_db.get_report_for_viewer(report_id, current_user["id"])
+    if persisted:
+        is_owner = bool(persisted.pop("is_owner", False))
+        report = dict(normalize_report(persisted))
+        report["is_owner"] = is_owner
+        if not is_owner:
+            report.pop("_owner_user_id", None)
+        return report
+
     # ── Fallback: in-memory store ─────────────────────────────────────────────
-    # Same ownership rule as the DB path above: no owner stamp means nobody
-    # can read it here, not "everybody can". See _mem_reports_for_user().
+    # A report whose write to the local store failed when it was analysed.
+    # Same ownership rule as above: no owner stamp means nobody can read it
+    # here, not "everybody can". See _mem_reports_for_user().
     data = _jobs.get(f"report_{report_id}")
     if isinstance(data, dict) and data:
         if data.get("_owner_user_id") != current_user["id"]:
             raise ForbiddenError()
-        return normalize_report(data)
-
-    # ── Fallback: durable local store ─────────────────────────────────────────
-    # Reached after a restart, when the in-memory copy is gone. Ownership is
-    # part of the query, so a wrong owner and a missing row are
-    # indistinguishable from here.
-    persisted = local_db.get_report(report_id, current_user["id"])
-    if persisted:
-        persisted = normalize_report(persisted)
-        # Warm this process's cache so repeat reads skip the disk.
-        _jobs[f"report_{report_id}"] = persisted
-        return persisted
+        report = dict(normalize_report(data))
+        report["is_owner"] = True
+        return report
 
     if db_failed:
         # The report most likely lives in Supabase, which did not answer.
@@ -628,6 +639,20 @@ def submit_decision(
     }
 
 
+def _require_owner(report: dict) -> None:
+    """
+    Emailing a candidate is the owner's call, like the decision it announces.
+    A teammate the report is shared with could otherwise tell a candidate
+    "not a match" while the owner has advanced them — and the send would not
+    even be recorded, since that write is scoped to the owner.
+    """
+    if not report.get("is_owner"):
+        raise ForbiddenError(
+            "Only the person who added this candidate can email them. "
+            "Leave a comment for them in Discuss instead."
+        )
+
+
 @router.get("/{report_id}/notify/draft")
 async def get_notify_draft(
     report_id: str,
@@ -644,6 +669,7 @@ async def get_notify_draft(
     # Reuses get_report's access checks and fallbacks. It is synchronous
     # (Supabase's client is), so it runs on the threadpool, not the loop.
     report = await run_in_threadpool(get_report, report_id, current_user, db)
+    _require_owner(report)
     candidate = as_dict(report.get("candidate"))
     candidate_email = candidate.get("email")
     candidate_name = as_str(candidate.get("name")) or "Candidate"
@@ -699,6 +725,7 @@ async def notify_candidate(
     check_rate_limit(redis, f"notify:{current_user['id']}", settings.NOTIFY_RATE_LIMIT_PER_MINUTE)
 
     report = await run_in_threadpool(get_report, report_id, current_user, db)
+    _require_owner(report)
     candidate = as_dict(report.get("candidate"))
     candidate_email = as_str(candidate.get("email")).strip()
 
@@ -754,7 +781,13 @@ def delete_report(
     current_user: dict = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Permanently delete a report. Cannot be undone."""
+    """
+    Permanently delete a report, with its comments and votes. Owner only.
+    Cannot be undone. 204 only when something of the caller's was deleted.
+    """
+    not_yours = ForbiddenError("Only the person who added this candidate can delete their file.")
+    removed = False
+
     if db:
         try:
             # Verify ownership first
@@ -766,9 +799,11 @@ def delete_report(
                 .execute()
             )
             if check.data and check.data["user_id"] != current_user["id"]:
-                raise ForbiddenError()
+                raise not_yours
 
-            db.table("reports").delete().eq("id", report_id).eq("user_id", current_user["id"]).execute()
+            if check.data:
+                db.table("reports").delete().eq("id", report_id).eq("user_id", current_user["id"]).execute()
+                removed = True
         except ForbiddenError:
             raise
         except Exception as e:
@@ -787,13 +822,17 @@ def delete_report(
     existing = _jobs.get(mem_key)
     if existing is not None:
         if existing.get("_owner_user_id") != current_user["id"]:
-            raise ForbiddenError()
+            raise not_yours
         _jobs.pop(mem_key, None)
+        removed = True
 
     # And from the durable local store, or the report would reappear on the
-    # next restart when the in-memory cache is repopulated from disk.
+    # next restart when the in-memory cache is repopulated from disk. (With
+    # Supabase configured a report can still live only here: the one whose
+    # Supabase write failed when it was analysed.)
     try:
-        local_db.delete_report(report_id, current_user["id"])
+        if local_db.delete_report(report_id, current_user["id"]):
+            removed = True
     except local_db.LocalStoreError:
         # "Deleted" has to mean deleted. Reporting success here leaves the
         # report on the dashboard at the next restart, after the recruiter
@@ -802,5 +841,12 @@ def delete_report(
         raise StorageWriteFailed(
             "That report could not be deleted. It is unchanged — please try again."
         )
+
+    if not removed:
+        # Answering 204 here told a teammate they had deleted the owner's
+        # file, and anyone that a mistyped id was gone.
+        if local_db.list_reports_any_owner(report_id):
+            raise not_yours
+        raise NotFoundError(f"Report '{report_id}' not found.")
 
     logger.info(f"Report deleted | id={report_id} user={current_user['id']}")

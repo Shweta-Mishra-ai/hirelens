@@ -15,7 +15,7 @@ from typing import Literal
 
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import (
-    HireLensException, NotFoundError, ForbiddenError, DBRequiredError, DatabaseUnavailable,
+    HireLensException, NotFoundError, ForbiddenError, DatabaseUnavailable, StorageWriteFailed,
 )
 from app.api.v1.endpoints.analysis import _jobs
 from app.core.shapes import as_dict, as_str
@@ -73,8 +73,17 @@ def _fetch_report_row(db, report_id: str) -> dict:
             raise NotFoundError(f"Report '{report_id}' not found.")
         return res.data
 
-    # Local path. `team_id` is None because team sharing needs Supabase —
-    # see share_report below, which says so explicitly rather than failing.
+    # Local path. The durable store first: it holds the team the report is
+    # shared with, which this process's in-memory copy does not track.
+    for row in local_db.list_reports_any_owner(report_id):
+        return {
+            "id": report_id,
+            "user_id": row["user_id"],
+            "team_id": row.get("team_id"),
+            "candidate_name": row.get("candidate_name") or "Unknown",
+        }
+
+    # Only in memory: its local write failed. It can't be shared, so no team.
     mem = _jobs.get(f"report_{report_id}")
     if isinstance(mem, dict) and mem.get("_owner_user_id"):
         return {
@@ -82,14 +91,6 @@ def _fetch_report_row(db, report_id: str) -> dict:
             "user_id": mem["_owner_user_id"],
             "team_id": None,
             "candidate_name": as_str(as_dict(mem.get("candidate")).get("name")) or "Unknown",
-        }
-
-    for row in local_db.list_reports_any_owner(report_id):
-        return {
-            "id": report_id,
-            "user_id": row["user_id"],
-            "team_id": None,
-            "candidate_name": row.get("candidate_name") or "Unknown",
         }
 
     raise NotFoundError(f"Report '{report_id}' not found.")
@@ -132,43 +133,53 @@ def _local_mode(db) -> bool:
 @router.post("/{report_id}/share")
 def share_report(report_id: str, body: ShareRequest, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
     """Owner-only: shares a report with a team they belong to."""
-    if _local_mode(db):
-        # Team membership itself lives in Supabase, so there is no correct
-        # local answer here. Name the reason instead of a bare 503.
-        raise DBRequiredError(
-            "Sharing a report with a team needs the shared database, which "
-            "isn't configured on this deployment. Comments and votes still "
-            "work on reports you own."
-        )
     row = _fetch_report_row(db, report_id)
     if row["user_id"] != current_user["id"]:
-        raise ForbiddenError()
+        raise ForbiddenError("Only the person who added this candidate can share it.")
     if not is_team_member(db, body.team_id, current_user["id"]):
-        raise HireLensException("You must be a member of the team you're sharing with.")
+        raise ForbiddenError("You must be a member of the team you're sharing with.")
+
+    if _local_mode(db):
+        _set_team_locally(report_id, current_user["id"], body.team_id)
+        return {"status": "shared", "team_id": body.team_id}
 
     try:
         db.table("reports").update({"team_id": body.team_id}).eq("id", report_id).execute()
         return {"status": "shared", "team_id": body.team_id}
     except Exception as e:
         logger.error(f"Share report failed for {report_id}: {e}")
-        raise HireLensException("Could not share this report. Please try again.")
+        raise StorageWriteFailed("Could not share this report. Nothing changed — please try again.")
+
+
+def _set_team_locally(report_id: str, owner_id: str, team_id: str | None) -> None:
+    """Share or unshare in the local store; raise unless it was written."""
+    try:
+        written = local_db.set_report_team(report_id, owner_id, team_id)
+    except local_db.LocalStoreError:
+        raise StorageWriteFailed("Could not update sharing for this report. Nothing changed — please try again.")
+    if not written:
+        # The report exists only in this process's memory (its own write to
+        # the local store failed), so there is nowhere durable to record it.
+        raise StorageWriteFailed(
+            "This report could not be shared because it was never saved to storage. "
+            "Analyse the resume again, then share the new report."
+        )
 
 
 @router.post("/{report_id}/unshare")
 def unshare_report(report_id: str, current_user: dict = Depends(get_current_user), db=Depends(get_db)):
-    if _local_mode(db):
-        raise DBRequiredError(
-            "Team sharing isn't configured on this deployment."
-        )
     row = _fetch_report_row(db, report_id)
     if row["user_id"] != current_user["id"]:
-        raise ForbiddenError()
+        raise ForbiddenError("Only the person who added this candidate can change who it's shared with.")
+    if _local_mode(db):
+        _set_team_locally(report_id, current_user["id"], None)
+        return {"status": "unshared"}
     try:
         db.table("reports").update({"team_id": None}).eq("id", report_id).execute()
         return {"status": "unshared"}
     except Exception as e:
         logger.error(f"Unshare report failed for {report_id}: {e}")
-        raise HireLensException("Could not unshare this report. Please try again.")
+        raise StorageWriteFailed("Could not stop sharing this report. Nothing changed — please try again.")
 
 
 @router.get("/{report_id}/comments")

@@ -25,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.dependencies import get_current_user, get_db
 from app.core.exceptions import NotFoundError, ForbiddenError
 from app.api.v1.endpoints.analysis import _jobs
+from app.core import local_db
 from app.core.shapes import as_dict, as_list, as_score, normalize_report
 from app.services.verify.github_verify import verify_github, extract_username
 from app.services.verify.education_verify import verify_education
@@ -66,6 +67,13 @@ def _load_report(report_id: str, user_id: str, db) -> tuple[dict, str]:
     # written after this fix, but may exist from an older in-flight job)
     # is treated as inaccessible rather than open-to-anyone, since "we
     # can't tell who owns this" must fail closed, not open.
+    # The durable local store: where a report lives without Supabase, or when
+    # its Supabase write failed. Before this, only the in-memory copy was
+    # consulted, so after a restart "Run checks" said the report was gone.
+    persisted = local_db.get_report(report_id, user_id)
+    if persisted:
+        return normalize_report(persisted), "local"
+
     data = _jobs.get(f"report_{report_id}")
     if isinstance(data, dict) and data:
         owner = data.get("_owner_user_id")
@@ -86,7 +94,15 @@ def _persist_verification(report_id: str, user_id: str, report: dict, source: st
             return
         except Exception as e:
             logger.warning(f"Failed to persist verification for report {report_id} to DB: {e}")
-    # Always mirror to in-memory too, so it's available even if the DB write above failed.
+    # The durable local store. Results kept only in memory were lost on the
+    # next restart — and with them any downgrade verification made to the
+    # recommendation.
+    recommendation = (top_level_updates or {}).get("recommendation")
+    try:
+        local_db.update_report_data(report_id, user_id, report, recommendation=recommendation)
+    except local_db.LocalStoreError:
+        logger.error(f"Verification for report {report_id} was not saved to the local store")
+    # Always mirror to in-memory too, so it's available even if the writes above failed.
     #
     # Defensively (re-)stamp the owner here regardless of `source`. If this
     # report originally came from the DB (source == "db") and the DB write

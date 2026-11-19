@@ -106,6 +106,13 @@ def init_local_db():
             existing = {row[1] for row in cursor.execute("PRAGMA table_info(reports)")}
             if "job_id" not in existing:
                 cursor.execute("ALTER TABLE reports ADD COLUMN job_id TEXT")
+            # The team a report is shared with (sql/002 adds the same column
+            # in Supabase). Without it, sharing had nowhere to live locally.
+            if "team_id" not in existing:
+                cursor.execute("ALTER TABLE reports ADD COLUMN team_id TEXT")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_reports_team_id ON reports(team_id)"
+            )
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reports_job_id ON reports(job_id)"
             )
@@ -288,10 +295,12 @@ def save_report(
                 """
                 INSERT OR REPLACE INTO reports
                     (id, user_id, file_name, candidate_name, overall_score,
-                     recommendation, recruiter_decision, report_data, created_at, job_id)
+                     recommendation, recruiter_decision, report_data, created_at, job_id,
+                     team_id)
                 VALUES (?, ?, ?, ?, ?, ?,
                         COALESCE((SELECT recruiter_decision FROM reports WHERE id = ?), NULL),
-                        ?, ?, ?)
+                        ?, ?, ?,
+                        (SELECT team_id FROM reports WHERE id = ?))
                 """,
                 (
                     report_id,
@@ -304,6 +313,7 @@ def save_report(
                     json.dumps(report_data, default=str),
                     created_at or datetime.now(timezone.utc).isoformat(),
                     job_id,
+                    report_id,  # and the team it is shared with
                 ),
             )
             conn.commit()
@@ -351,25 +361,120 @@ def get_report(report_id: str, user_id: str) -> dict | None:
             row = conn.execute(
                 "SELECT * FROM reports WHERE id = ? AND user_id = ?", (report_id, user_id)
             ).fetchone()
-        if not row:
-            return None
-
-        record = dict(row)
-        try:
-            data = json.loads(record.get("report_data") or "{}")
-        except json.JSONDecodeError as e:
-            logger.error(f"Report {report_id} has unreadable report_data: {e}")
-            return None
-
-        data["id"] = record["id"]
-        data["file_name"] = record.get("file_name") or data.get("file_name") or ""
-        data["created_at"] = record.get("created_at") or ""
-        data["recruiter_decision"] = record.get("recruiter_decision")
-        data["_owner_user_id"] = record["user_id"]
-        return data
+        return _row_to_report(row) if row else None
     except Exception as e:
         logger.error(f"Could not load report {report_id}: {e}")
         return None
+
+
+def _row_to_report(row) -> dict | None:
+    record = dict(row)
+    try:
+        data = json.loads(record.get("report_data") or "{}")
+    except json.JSONDecodeError as e:
+        logger.error(f"Report {record.get('id')} has unreadable report_data: {e}")
+        return None
+    data["id"] = record["id"]
+    data["file_name"] = record.get("file_name") or data.get("file_name") or ""
+    data["created_at"] = record.get("created_at") or ""
+    data["recruiter_decision"] = record.get("recruiter_decision")
+    data["team_id"] = record.get("team_id")
+    data["_owner_user_id"] = record["user_id"]
+    return data
+
+
+def _table_exists(conn, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone() is not None
+
+
+def _viewable_row(conn, report_id: str, user_id: str):
+    """
+    (row, is_owner) when `user_id` may see the report — they own it, or it is
+    shared with a team they belong to — else (None, False). The same rule as
+    teams.access.user_can_access_report, answered in one place for the local
+    store so the report, comments, votes and co-pilot all agree.
+    """
+    row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+    if not row:
+        return None, False
+    if row["user_id"] == user_id:
+        return row, True
+    team_id = row["team_id"]
+    if team_id and _table_exists(conn, "team_members") and conn.execute(
+        "SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?", (team_id, user_id)
+    ).fetchone():
+        return row, False
+    return None, False
+
+
+def get_report_for_viewer(report_id: str, user_id: str) -> dict | None:
+    """
+    A report its owner or a teammate it is shared with may read, with
+    `is_owner` set; None otherwise. A wrong user and a missing row look the
+    same, as with get_report.
+    """
+    try:
+        with _get_connection() as conn:
+            row, is_owner = _viewable_row(conn, report_id, user_id)
+        if not row:
+            return None
+        data = _row_to_report(row)
+        if data is not None:
+            data["is_owner"] = is_owner
+        return data
+    except Exception as e:
+        logger.error(f"Could not load report {report_id} for {user_id}: {e}")
+        return None
+
+
+def can_view_report(report_id: str, user_id: str) -> bool:
+    try:
+        with _get_connection() as conn:
+            row, _ = _viewable_row(conn, report_id, user_id)
+        return row is not None
+    except Exception as e:
+        logger.error(f"Could not check access to {report_id} for {user_id}: {e}")
+        return False
+
+
+def set_report_team(report_id: str, owner_id: str, team_id: str | None) -> bool:
+    """
+    Share a report with a team, or stop sharing it (team_id None). Owner
+    only: False if the report is not theirs. Raises LocalStoreError if the
+    write fails, so a share that did not happen is never reported as done.
+    """
+    try:
+        with _get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE reports SET team_id = ? WHERE id = ? AND user_id = ?",
+                (team_id, report_id, owner_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Could not set the team on report {report_id}: {e}")
+        raise LocalStoreError(str(e)) from e
+
+
+def list_team_reports(team_id: str, limit: int = 100) -> list[dict]:
+    """Summary rows for the reports shared with a team, newest first."""
+    try:
+        with _get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, user_id, file_name, candidate_name, overall_score,
+                       recommendation, recruiter_decision, created_at
+                FROM reports WHERE team_id = ?
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (team_id, int(limit)),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error(f"Could not list reports for team {team_id}: {e}")
+        raise LocalStoreError(str(e)) from e
 
 
 def list_reports(user_id: str) -> list[dict]:
@@ -391,6 +496,39 @@ def list_reports(user_id: str) -> list[dict]:
         return []
 
 
+def update_report_data(
+    report_id: str,
+    user_id: str,
+    report_data: dict,
+    recommendation: str | None = None,
+) -> bool:
+    """
+    Replace a report's data (and, if given, its recommendation column) in
+    place, keeping its decision, sharing, job and creation time. Owner only:
+    False if the report is not theirs. Raises LocalStoreError if the write
+    fails.
+    """
+    private = {"_owner_user_id", "is_owner", "team_id", "recruiter_decision"}
+    blob = {k: v for k, v in report_data.items() if k not in private}
+    try:
+        with _get_connection() as conn:
+            if recommendation:
+                cur = conn.execute(
+                    "UPDATE reports SET report_data = ?, recommendation = ? WHERE id = ? AND user_id = ?",
+                    (json.dumps(blob, default=str), recommendation, report_id, user_id),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE reports SET report_data = ? WHERE id = ? AND user_id = ?",
+                    (json.dumps(blob, default=str), report_id, user_id),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"Could not update report {report_id}: {e}")
+        raise LocalStoreError(str(e)) from e
+
+
 def set_report_decision(report_id: str, user_id: str, decision: str | None) -> bool:
     try:
         with _get_connection() as conn:
@@ -406,11 +544,20 @@ def set_report_decision(report_id: str, user_id: str, decision: str | None) -> b
 
 
 def delete_report(report_id: str, user_id: str) -> bool:
+    """
+    Delete a report the user owns, with its comments and votes — what the
+    ON DELETE CASCADE in sql/002 does in Supabase, and what the privacy page
+    promises. One transaction.
+    """
     try:
         with _get_connection() as conn:
             cur = conn.execute(
                 "DELETE FROM reports WHERE id = ? AND user_id = ?", (report_id, user_id)
             )
+            if cur.rowcount > 0:
+                for table in ("report_comments", "report_votes"):
+                    if _table_exists(conn, table):
+                        conn.execute(f"DELETE FROM {table} WHERE report_id = ?", (report_id,))
             conn.commit()
             return cur.rowcount > 0
     except Exception as e:
@@ -440,13 +587,13 @@ def count_reports(user_id: str | None = None) -> int:
 
 
 def save_copilot(report_id: str, user_id: str, payload: dict) -> bool:
-    """Attach co-pilot data to a report the user owns. False if not theirs."""
+    """
+    Attach co-pilot data to a report the user may view — its owner, or a
+    teammate it is shared with, as in Supabase. False if they may not.
+    """
     try:
         with _get_connection() as conn:
-            row = conn.execute(
-                "SELECT report_data FROM reports WHERE id = ? AND user_id = ?",
-                (report_id, user_id),
-            ).fetchone()
+            row, _ = _viewable_row(conn, report_id, user_id)
             if not row:
                 return False
             try:
@@ -455,8 +602,8 @@ def save_copilot(report_id: str, user_id: str, payload: dict) -> bool:
                 data = {}
             data["copilot_data"] = payload
             conn.execute(
-                "UPDATE reports SET report_data = ? WHERE id = ? AND user_id = ?",
-                (json.dumps(data, default=str), report_id, user_id),
+                "UPDATE reports SET report_data = ? WHERE id = ?",
+                (json.dumps(data, default=str), report_id),
             )
             conn.commit()
         return True
@@ -466,13 +613,10 @@ def save_copilot(report_id: str, user_id: str, payload: dict) -> bool:
 
 
 def get_copilot(report_id: str, user_id: str) -> dict | None:
-    """Co-pilot data for a report the user owns, or None."""
+    """Co-pilot data for a report the user may view, or None."""
     try:
         with _get_connection() as conn:
-            row = conn.execute(
-                "SELECT report_data FROM reports WHERE id = ? AND user_id = ?",
-                (report_id, user_id),
-            ).fetchone()
+            row, _ = _viewable_row(conn, report_id, user_id)
         if not row:
             return None
         try:
@@ -607,7 +751,7 @@ def list_reports_any_owner(report_id: str) -> list[dict]:
     try:
         with _get_connection() as conn:
             rows = conn.execute(
-                "SELECT id, user_id, candidate_name FROM reports WHERE id = ?", (report_id,)
+                "SELECT id, user_id, team_id, candidate_name FROM reports WHERE id = ?", (report_id,)
             ).fetchall()
         return [dict(r) for r in rows]
     except Exception as e:
@@ -807,6 +951,9 @@ def delete_team(team_id: str, owner_id: str) -> bool:
                 return False
             conn.execute("DELETE FROM team_members WHERE team_id = ?", (team_id,))
             conn.execute("DELETE FROM team_invites WHERE team_id = ?", (team_id,))
+            # Reports shared with it stop being shared (ON DELETE SET NULL in
+            # sql/002), rather than pointing at a team that no longer exists.
+            conn.execute("UPDATE reports SET team_id = NULL WHERE team_id = ?", (team_id,))
             conn.execute("DELETE FROM teams WHERE id = ?", (team_id,))
             conn.commit()
             return True
@@ -1413,6 +1560,7 @@ def delete_user_data(user_id: str, email: str | None = None) -> None:
         ("DELETE FROM team_members WHERE user_id = ? OR team_id IN "
          "(SELECT id FROM teams WHERE owner_id = ?)", (user_id, user_id)),
         ("DELETE FROM team_invites WHERE team_id IN (SELECT id FROM teams WHERE owner_id = ?)", (user_id,)),
+        ("UPDATE reports SET team_id = NULL WHERE team_id IN (SELECT id FROM teams WHERE owner_id = ?)", (user_id,)),
         ("DELETE FROM teams WHERE owner_id = ?", (user_id,)),
         ("DELETE FROM reports WHERE user_id = ?", (user_id,)),
         ("DELETE FROM saved_jds WHERE user_id = ?", (user_id,)),

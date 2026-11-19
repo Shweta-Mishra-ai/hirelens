@@ -1,11 +1,10 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import QRCode from "qrcode";
 import { Check, Copy, Smartphone } from "lucide-react";
 import { AppShell, PageHeader, RequireAuth } from "@/components/AppShell";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
-import { Button } from "@/components/ui/Button";
+import { Button, LinkButton } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Field";
 import { Alert, EmptyState, Skeleton } from "@/components/ui/Feedback";
 import { useAuthStore } from "@/store/auth";
@@ -149,12 +148,9 @@ function PayPanel({ info, offer, waiting, onSubmitted }: {
               <div className="text-content-faint">Amount</div>
               <div className="text-content">{rupees(offer.price_inr)}</div>
             </div>
-            <a href={link} className="inline-block sm:hidden">
-              <Button variant="secondary">
-                <Smartphone aria-hidden className="size-4" />
-                Open UPI app
-              </Button>
-            </a>
+            <LinkButton href={link} variant="secondary" className="sm:hidden" icon={<Smartphone className="size-4" />}>
+              Open UPI app
+            </LinkButton>
           </div>
         </div>
 
@@ -258,9 +254,9 @@ function UpgradeContent() {
             title="Upgrades aren't available in the app yet"
             description="Contact us and we'll set up your plan."
             action={
-              <Link href="/contact">
-                <Button variant="primary">Contact us</Button>
-              </Link>
+              <LinkButton href="/contact" variant="primary">
+                Contact us
+              </LinkButton>
             }
           />
         </Card>

@@ -185,6 +185,7 @@ export function VerifyPanel({
   githubOverride,
   onGithubOverrideChange,
   onRun,
+  canRun = true,
 }: {
   verification: VerificationResult | null;
   loading: boolean;
@@ -192,6 +193,8 @@ export function VerifyPanel({
   githubOverride: string;
   onGithubOverrideChange: (v: string) => void;
   onRun: () => void;
+  /** Running checks can change the recommendation, so it is the owner's call. */
+  canRun?: boolean;
 }) {
   const [showOverride, setShowOverride] = useState(false);
 
@@ -200,9 +203,13 @@ export function VerifyPanel({
       <Card>
         <CardHeader
           title="Public-record verification"
-          description="Live checks against GitHub, university domain registries, certificate links and company websites. Run on demand — nothing is cached."
+          description={
+            canRun
+              ? "Live checks against GitHub, university domain registries, certificate links and company websites. Run on demand — nothing is cached."
+              : "Live checks against GitHub, university domain registries, certificate links and company websites. The person who added this candidate runs them."
+          }
           action={
-            <Button
+            canRun && <Button
               variant="primary"
               size="sm"
               loading={loading}
@@ -214,14 +221,14 @@ export function VerifyPanel({
           }
         />
         <CardBody className="space-y-3">
-          <button
+          {canRun && <button
             type="button"
             onClick={() => setShowOverride((v) => !v)}
             className="text-xs text-brand-400 underline-offset-4 hover:underline"
           >
             {showOverride ? "Hide" : "GitHub username wrong or missing?"}
-          </button>
-          {showOverride && (
+          </button>}
+          {canRun && showOverride && (
             <Input
               label="GitHub username override"
               value={githubOverride}
